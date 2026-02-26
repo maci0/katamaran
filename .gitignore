@@ -12,7 +12,6 @@ query_qmp.py
 *.qcow2
 *.img
 *.iso
+testenv/kata_test_rsa
+testenv/kata_test_rsa.pub
 
-# SSH keys
-kata_test_rsa
-kata_test_rsa.pub
