@@ -54,76 +54,67 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 
 	r := bufio.NewReader(conn)
 
-	// Background context monitor: if the parent context is cancelled during
-	// the handshake, close the connection to unblock any in-progress reads.
-	// This is safe here because a handshake failure aborts the whole client.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-done:
-		}
-	}()
-
-	// Set a short read deadline specifically for the greeting.
-	// This prevents hanging indefinitely if QEMU doesn't send a greeting (wait=off).
-	if err := conn.SetReadDeadline(time.Now().Add(GreetingTimeout)); err != nil {
+	// If the context is cancelled during the handshake, close the connection
+	// to unblock any in-progress reads. context.AfterFunc (Go 1.21+) provides
+	// an atomic stop() that guarantees the callback will NOT fire if stop()
+	// returns true — eliminating the race in the previous goroutine+channel
+	// pattern where select could non-deterministically pick ctx.Done() and
+	// close a successfully-returned connection.
+	stop := context.AfterFunc(ctx, func() {
 		conn.Close()
-		return nil, fmt.Errorf("setting greeting deadline: %w", err)
+	})
+	fail := func(err error) (*Client, error) {
+		stop()
+		conn.Close()
+		return nil, err
 	}
 
-	// Attempt to read the QMP greeting banner.
+	if err := conn.SetReadDeadline(time.Now().Add(GreetingTimeout)); err != nil {
+		return fail(fmt.Errorf("setting greeting deadline: %w", err))
+	}
+
 	if _, err := r.ReadString('\n'); err != nil {
 		var netErr net.Error
-		// If we hit a timeout, assume QEMU didn't send a greeting and proceed.
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			// Ignore the timeout; QEMU likely skipped the greeting.
+			// Ignore timeout — QEMU likely skipped the greeting (wait=off).
 		} else {
-			conn.Close()
-			return nil, fmt.Errorf("reading QMP greeting: %w", err)
+			return fail(fmt.Errorf("reading QMP greeting: %w", err))
 		}
 	}
 
-	// Reset the deadline for the rest of the handshake (capabilities negotiation).
 	if err := conn.SetReadDeadline(time.Now().Add(DialTimeout)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("setting capabilities deadline: %w", err)
+		return fail(fmt.Errorf("setting capabilities deadline: %w", err))
 	}
 
-	// Negotiate capabilities (required before any command can be issued).
 	capReq := request{Execute: "qmp_capabilities"}
 	capBytes, err := json.Marshal(capReq)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("marshaling qmp_capabilities: %w", err)
+		return fail(fmt.Errorf("marshaling qmp_capabilities: %w", err))
 	}
 	if _, err = conn.Write(append(capBytes, '\n')); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("sending qmp_capabilities: %w", err)
+		return fail(fmt.Errorf("sending qmp_capabilities: %w", err))
 	}
 
-	// Read and validate the capabilities response.
 	capLine, err := r.ReadString('\n')
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("reading qmp_capabilities response: %w", err)
+		return fail(fmt.Errorf("reading qmp_capabilities response: %w", err))
 	}
 	var capResp response
 	if err = json.Unmarshal([]byte(capLine), &capResp); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("unmarshaling qmp_capabilities response: %w", err)
+		return fail(fmt.Errorf("unmarshaling qmp_capabilities response: %w", err))
 	}
 	if capResp.Error != nil {
-		conn.Close()
-		return nil, fmt.Errorf("qmp_capabilities rejected: %w", capResp.Error)
+		return fail(fmt.Errorf("qmp_capabilities rejected: %w", capResp.Error))
 	}
 
-	// Clear the handshake deadline — subsequent reads use per-call deadlines.
 	if err = conn.SetReadDeadline(time.Time{}); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("clearing handshake deadline: %w", err)
+		return fail(fmt.Errorf("clearing handshake deadline: %w", err))
+	}
+
+	// Atomically prevent the AfterFunc from closing the connection.
+	// If stop() returns false, the callback already fired — conn is closed.
+	if !stop() {
+		return nil, ctx.Err()
 	}
 
 	return &Client{conn: conn, r: r}, nil

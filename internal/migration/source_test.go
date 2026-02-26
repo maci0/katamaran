@@ -117,39 +117,6 @@ func startFakeQMPServer(t *testing.T, handler func(cmd string, args json.RawMess
 	return socketPath
 }
 
-func TestRunSource_SharedStorage_FullMigration(t *testing.T) {
-	t.Parallel()
-
-	queryCount := 0
-	sock := startFakeQMPServer(t, func(cmd string, args json.RawMessage) interface{} {
-		switch cmd {
-		case "migrate-set-capabilities":
-			return map[string]interface{}{"return": map[string]interface{}{}}
-		case "migrate-set-parameters":
-			return map[string]interface{}{"return": map[string]interface{}{}}
-		case "migrate":
-			return map[string]interface{}{"return": map[string]interface{}{}}
-		case "query-migrate":
-			queryCount++
-			if queryCount >= 2 {
-				return map[string]interface{}{"return": map[string]interface{}{"status": "completed"}}
-			}
-			return map[string]interface{}{"return": map[string]interface{}{"status": "active"}}
-		case "migrate_cancel":
-			return map[string]interface{}{"return": map[string]interface{}{}}
-		default:
-			return map[string]interface{}{"return": map[string]interface{}{}}
-		}
-	})
-
-	// RunSource will hang waiting for STOP event — we need our server to emit it.
-	// The current approach won't work for full integration since we need events.
-	// Let's test just that it connects and gets past the first QMP commands.
-	// For a full test we'd need the fake server to emit STOP/RESUME events.
-	// We verify the connection/validation path instead.
-	_ = sock
-}
-
 func TestRunSource_NonShared_BadQMPSocket(t *testing.T) {
 	t.Parallel()
 	err := RunSource(

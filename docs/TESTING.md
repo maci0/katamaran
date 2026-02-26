@@ -1,5 +1,19 @@
 # Testing Guide
 
+### TL;DR
+
+```bash
+./testenv/test.sh                  # smoke tests — no VMs, no KVM, runs anywhere
+./testenv/minikube-e2e.sh          # two-node live migration (Calico CNI)
+./testenv/minikube-ovn-e2e.sh      # two-node + zero-drop proof (OVN-Kubernetes)
+./testenv/minikube-nfs-e2e.sh      # two-node + NFS shared storage + zero-drop proof
+./testenv/kind-e2e.sh              # two-node + zero-drop proof (Kind + Podman)
+```
+
+All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
+
+---
+
 All test environments use minikube with KVM. No manual QEMU VM provisioning is needed.
 
 ## Table of Contents
@@ -131,24 +145,21 @@ This section documents a complete end-to-end live migration with continuous traf
 
 ### Topology
 
-```text
-                        25 Gbps link
-  ┌─────────────────┐ ───────────────── ┌─────────────────┐
-  │  Node 1 (source) │                   │  Node 2 (dest)   │
-  │  192.168.1.10    │                   │  192.168.1.20    │
-  │                  │                   │                   │
-  │  ┌──────────┐   │                   │  ┌──────────┐    │
-  │  │  Kata VM  │   │   ── migrates ──► │  │  Kata VM  │    │
-  │  │ 10.244.1.5│   │                   │  │ 10.244.1.5│    │
-  │  └────┬─────┘   │                   │  └────┬─────┘    │
-  │       │ tap0_kata│                   │       │ tap0_kata │
-  └───────┼─────────┘                   └───────┼──────────┘
-          │                                      │
-  ┌───────┴─────────┐
-  │  Client machine  │
-  │  192.168.1.99    │
-  │  (sends pings)   │
-  └─────────────────┘
+```mermaid
+graph TD
+    subgraph Node1["Node 1 — Source (192.168.1.10)"]
+        VM1["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
+    end
+
+    subgraph Node2["Node 2 — Destination (192.168.1.20)"]
+        VM2["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
+    end
+
+    Client["Client machine<br/>192.168.1.99<br/>(sends pings)"]
+
+    Node1 -- "25 Gbps link" --- Node2
+    VM1 -. "migrates" .-> VM2
+    Client --> VM1
 ```
 
 - **VM pod IP**: `10.244.1.5` (stays the same after migration)
@@ -279,44 +290,42 @@ Expected output (with `-shared-storage`, phases 1-2 are skipped):
 
 The critical zero-drop window is the ~50ms between `STOP` (source VM pauses) and `RESUME` (destination VM starts). Here is the exact sequence and what katamaran did at each moment:
 
-```text
-Timeline (not to scale)
-──────────────────────────────────────────────────────────────────────
+```mermaid
+sequenceDiagram
+    participant C as Client<br/>(192.168.1.99)
+    participant S as Source Node 1<br/>(192.168.1.10)
+    participant D as Dest Node 2<br/>(192.168.1.20)
 
-T=0ms    QEMU emits STOP on source
-         │  Source VM is now paused. No more replies to pings.
-         │  Pings from client still arrive at Node 1 (stale ARP/routes).
-         │
-T=1ms    katamaran source: ip tunnel add mig-tun mode ipip remote 192.168.1.20
-         │  Creates IPIP tunnel pointing at Node 2.
-         │
-T=2ms    katamaran source: ip link set mig-tun up
-         │
-T=3ms    katamaran source: ip route add 10.244.1.5 dev mig-tun
-         │  Host route installed. Packets for 10.244.1.5 now go through
-         │  the tunnel to 192.168.1.20 instead of to the local (dead) VM.
-         │
-         │  Meanwhile, destination qdisc is in "block" mode — packets
-         │  arriving via the tunnel are buffered in the kernel, not dropped.
-         │
-T=~50ms  QEMU finishes final dirty page transfer.
-         QEMU emits RESUME on destination.
-         │  Destination VM is now running.
-         │
-T=~51ms  katamaran dest: tc qdisc change dev tap0_kata root plug release_indefinite
-         │  FLUSH — all buffered packets (including those forwarded via tunnel)
-         │  are delivered to the now-running VM in order. It processes them
-         │  and replies.
-         │
-T=~52ms  katamaran dest: announce-self (GARP, 5 rounds)
-         │  Switches learn the VM's MAC is now on Node 2's port.
-         │  New packets from the client go directly to Node 2.
-         │
-T=5050ms katamaran source: ip link del mig-tun
-         │  Tunnel torn down. CNI has converged by now.
-         │  All traffic flows directly to Node 2.
+    Note over S: T=0ms — QEMU emits STOP
+    Note over S: VM paused. No more replies.
+    C->>S: Pings still arrive (stale ARP)
 
-──────────────────────────────────────────────────────────────────────
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: T=1–3ms — Tunnel setup
+    S->>S: ip tunnel add mig-tun mode ipip remote 192.168.1.20
+    S->>S: ip link set mig-tun up
+    S->>S: ip route add 10.244.1.5 dev mig-tun
+    Note over S: Packets for VM now forwarded via tunnel
+    end
+
+    C->>S: Pings arrive at source
+    S->>D: Forwarded through IPIP tunnel
+    Note over D: qdisc in "block" mode — packets buffered, not dropped
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over D: T≈50ms — QEMU emits RESUME
+    Note over D: Destination VM is now running
+    D->>D: tc qdisc change ... plug release_indefinite
+    Note over D: FLUSH — all buffered packets delivered in order
+    D->>C: Replies to buffered pings (~48ms RTT)
+    end
+
+    D->>D: announce-self (GARP × 5 rounds)
+    Note over D: Switches learn VM MAC on Node 2
+
+    Note over S: T≈5050ms — CNI converged
+    S->>S: ip link del mig-tun
+    C->>D: Traffic flows directly to Node 2
 ```
 
 Meanwhile, on the destination side, the output completes:

@@ -10,7 +10,7 @@
 #   6. Binary rejects unexpected positional arguments
 #   7. Binary rejects invalid -mode values with specific error message
 #   8. Empty mode prints "Usage" message
-#   9. -help flag prints flag descriptions (all seven flags)
+#   9. -help flag prints flag descriptions (all eight flags)
 #  10. Binary rejects invalid IP addresses for -dest-ip and -vm-ip
 #  11. Binary rejects single-missing-flag combinations (-dest-ip only, -vm-ip only)
 #  12. Binary validates IPv6 addresses (valid and invalid)

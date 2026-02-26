@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,7 +76,7 @@ func TestRunCmd_WithOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); !contains(got, "failure output") {
+	if got := err.Error(); !strings.Contains(got, "failure output") {
 		t.Fatalf("expected error to contain command output, got: %v", err)
 	}
 }
@@ -90,7 +91,7 @@ func TestRunCmd_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
-	if !contains(err.Error(), "cancel") {
+	if !strings.Contains(err.Error(), "cancel") {
 		t.Fatalf("expected cancel-related error, got: %v", err)
 	}
 }
@@ -155,15 +156,30 @@ func TestConstants_Reasonable(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
+func TestFormatQEMUHost(t *testing.T) {
+	t.Parallel()
 
-func searchSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+	tests := []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"ipv4", "10.0.0.1", "10.0.0.1"},
+		{"ipv4 loopback", "127.0.0.1", "127.0.0.1"},
+		{"ipv6 full", "fd00::1", "[fd00::1]"},
+		{"ipv6 loopback", "::1", "[::1]"},
+		{"ipv6 long", "2001:db8::1", "[2001:db8::1]"},
+		{"ipv4-mapped ipv6", "::ffff:10.0.0.1", "::ffff:10.0.0.1"},
+		{"unparseable", "not-an-ip", "not-an-ip"},
+		{"empty", "", ""},
 	}
-	return false
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := FormatQEMUHost(tt.ip)
+			if got != tt.want {
+				t.Errorf("FormatQEMUHost(%q) = %q, want %q", tt.ip, got, tt.want)
+			}
+		})
+	}
 }

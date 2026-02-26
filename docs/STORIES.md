@@ -2,6 +2,10 @@
 
 User stories for katamaran — zero-packet-drop live migration for Kata Containers.
 
+### TL;DR
+
+15 stories across 5 areas: **core migration** (local storage, shared storage, zero-drop network cutover), **IPv4/IPv6** support, **graceful shutdown** (SIGINT/SIGTERM cleanup, idempotent setup), **error handling** (storage/RAM failure detection, CLI validation), **destination ops** (packet buffering, GARP), and **testing** (smoke, single-node QMP, two-node E2E).
+
 ---
 
 ## Core Migration

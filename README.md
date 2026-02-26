@@ -6,6 +6,23 @@
 
 Zero-packet-drop live migration for [Kata Containers](https://katacontainers.io/).
 
+### TL;DR
+
+```bash
+go build -o katamaran ./cmd/katamaran/
+
+# Destination node (run first)
+sudo ./katamaran -mode dest -qmp /run/vc/vm/<id>/qmp.sock -tap tap0_kata
+
+# Source node
+sudo ./katamaran -mode source -qmp /run/vc/vm/<id>/qmp.sock \
+  -dest-ip <dest-node-ip> -vm-ip <pod-ip>
+```
+
+Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume — zero drops. Add `-shared-storage` with Ceph/NFS to skip the storage phase entirely.
+
+---
+
 Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS — skip mirroring with `-shared-storage`).
 
 Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata Containers, pods typically use local virtio-blk disks — meaning the entire block device must be migrated alongside RAM and network state. `katamaran` orchestrates all three phases in the correct order while guaranteeing **zero in-flight packet drops** during the cutover.
@@ -38,19 +55,30 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 
 Migration proceeds in three sequential phases:
 
-```
-Source Node                                    Destination Node
-┌──────────────────────┐                      ┌──────────────────────┐
-│  VM running           │   Phase 1: Storage   │  NBD server listening │
-│  drive-mirror ───────────── NBD ──────────►  │  (block device ready) │
-│  (background sync)    │                      │                       │
-│                       │   Phase 2: Compute   │                       │
-│  migrate ────────────────── TCP ──────────►  │  (RAM pre-copy)       │
-│  VM pauses (STOP)     │                      │  VM resumes (RESUME)  │
-│                       │   Phase 3: Network   │                       │
-│  IPIP/GRE tunnel ────────────────────────────►  │  sch_plug unplug      │
-│  (redirect traffic)   │                      │  (flush buffered pkts)│
-└──────────────────────┘                      └──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant D as Destination Node
+
+    rect rgb(59, 130, 246, 0.1)
+    Note over S,D: Phase 1 — Storage Mirroring
+    S->>D: NBD drive-mirror (background sync)
+    D-->>S: Block device ready
+    Note over S: VM keeps running
+    end
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over S,D: Phase 2 — Compute Migration
+    S->>D: RAM pre-copy (TCP)
+    Note over S: VM pauses (STOP)
+    Note over D: VM resumes (RESUME)
+    end
+
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: Phase 3 — Network Cutover
+    S->>D: IPIP/GRE tunnel (redirect traffic)
+    Note over D: sch_plug unplug (flush buffered pkts)
+    end
 ```
 
 ### Phase 1 — Storage Mirroring (NBD + drive-mirror)
@@ -273,13 +301,23 @@ The storage strategy depends on whether the cluster uses **shared storage** (bot
 
 With Ceph RBD, migration skips the most time-consuming phase entirely. The flow becomes:
 
-```text
-1. Destination QEMU opens the same RBD image (read-only initially)
-2. katamaran -mode dest -shared-storage   → installs qdisc, waits for RESUME
-3. katamaran -mode source -shared-storage  → RAM pre-copy only
-4. Source VM pauses (STOP), destination resumes (RESUME)
-5. RBD image ownership transfers (unmap source, promote dest to read-write)
-6. Network cutover via IPIP tunnel + sch_plug flush
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant RBD as Ceph RBD
+    participant D as Destination Node
+
+    D->>RBD: Open same RBD image (read-only)
+    Note over D: katamaran -mode dest -shared-storage
+    D->>D: Install qdisc, wait for RESUME
+
+    Note over S: katamaran -mode source -shared-storage
+    S->>D: RAM pre-copy only (no storage mirror)
+    Note over S: VM pauses (STOP)
+    Note over D: VM resumes (RESUME)
+    S-->>RBD: Unmap image
+    D->>RBD: Promote to read-write
+    S->>D: IPIP tunnel + sch_plug flush
 ```
 
 Total migration time is dominated by RAM pre-copy convergence — typically **seconds** for a 4 GB VM with moderate dirty page rate.
@@ -288,10 +326,26 @@ Total migration time is dominated by RAM pre-copy convergence — typically **se
 
 With Longhorn or local disks, all three phases run:
 
-```text
-1. NBD drive-mirror copies the entire block device (minutes to hours for large disks)
-2. RAM pre-copy runs after storage is synchronized
-3. Network cutover as above
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant D as Destination Node
+
+    rect rgb(59, 130, 246, 0.1)
+    Note over S,D: Phase 1 — minutes to hours (scales with disk size)
+    S->>D: NBD drive-mirror (entire block device)
+    Note over S: VM keeps running
+    end
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over S,D: Phase 2 — seconds (after storage sync)
+    S->>D: RAM pre-copy
+    end
+
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: Phase 3 — milliseconds
+    S->>D: Network cutover (tunnel + qdisc flush)
+    end
 ```
 
 The NBD mirror runs in the background while the VM stays live, but total wall-clock time scales with disk size and write rate.
@@ -364,14 +418,20 @@ spec:
 
 The operator's reconciliation loop:
 
-```text
-1. Validate: target node has capacity, Kata runtime, compatible kernel
-2. Prepare destination: create placeholder pod, get QMP socket path
-3. Start dest-side: invoke katamaran -mode dest on target node
-4. Start source-side: invoke katamaran -mode source on source node
-5. Wait for completion (or timeout/rollback)
-6. Update: patch pod's nodeName, update endpoint slices, clean up source
-7. If failed: cancel migration, resume source VM, clean up destination
+```mermaid
+flowchart TD
+    A[VMMigration CR created] --> B{Validate target node}
+    B -->|capacity, runtime, kernel| C[Prepare destination pod]
+    C --> D[Get QMP socket paths]
+    D --> E["katamaran -mode dest (target node)"]
+    E --> F["katamaran -mode source (source node)"]
+    F --> G{Migration result}
+    G -->|Success| H[Patch pod nodeName]
+    H --> I[Update endpoint slices]
+    I --> J[Clean up source]
+    G -->|Failure| K[migrate_cancel]
+    K --> L[Resume source VM]
+    L --> M[Clean up destination]
 ```
 
 ### Open Questions for Production

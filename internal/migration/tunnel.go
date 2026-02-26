@@ -55,10 +55,11 @@ func SetupTunnel(ctx context.Context, destIP, vmIP, tunnelMode string) error {
 
 	// Remove any stale tunnel from a previous run. Errors are ignored
 	// because the tunnel may not exist, which is the common case.
-	// "ip link del" works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
-	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err == nil {
+	cctx, ccancel := CleanupCtx()
+	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
 	}
+	ccancel()
 
 	// Create tunnel with the selected encapsulation mode.
 	// ipip: ipip (v4) / ip6ip6 (v6) — minimal overhead, may be blocked by cloud VPCs.
