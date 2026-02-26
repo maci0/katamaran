@@ -22,16 +22,15 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-readonly BINARY="${PROJECT_ROOT}/katamaran"
 readonly PROFILE="katamaran-e2e"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 readonly KATA_CHART_VERSION="3.27.0"
 
 cd "${SCRIPT_DIR}"
 
-log() { echo -e "\n\033[1;34m>>> $1\033[0m"; }
-success() { echo -e "\033[1;32m  PASS: $1\033[0m"; }
-error() { echo -e "\033[1;31m  ERROR: $1\033[0m" >&2; }
+log() { echo -e "\n\033[1;34m>>> \$1\033[0m"; }
+success() { echo -e "\033[1;32m  PASS: \$1\033[0m"; }
+error() { echo -e "\033[1;31m  ERROR: \$1\033[0m" >&2; }
 
 cleanup() {
     log "Cleaning up minikube profile '${PROFILE}'..."
@@ -45,16 +44,12 @@ fi
 
 # 1. Pre-flight
 log "Checking prerequisites..."
-for cmd in minikube kubectl helm; do
+for cmd in minikube kubectl helm podman; do
     if ! command -v "$cmd" >/dev/null; then
         error "$cmd is required."
         exit 1
     fi
 done
-if [[ ! -x "${BINARY}" ]]; then
-    error "katamaran binary not found at ${BINARY}. Build it first."
-    exit 1
-fi
 
 # 2. Start Cluster
 log "Starting 2-node minikube cluster (kvm2, Calico CNI)..."
@@ -106,12 +101,12 @@ for node in "${PROFILE}" "${PROFILE}-m02"; do
 done
 success "extra QMP monitor sockets configured"
 
-# 5. Copy Binary
-log "Copying katamaran binary to both nodes..."
-for node in "${PROFILE}" "${PROFILE}-m02"; do
-    minikube -p "${PROFILE}" cp "${BINARY}" "${node}:/tmp/katamaran"
-    minikube -p "${PROFILE}" ssh -n "$node" -- sudo chmod +x /tmp/katamaran
-done
+# 5. Deploy katamaran Binary
+log "Building and deploying katamaran container image..."
+podman build -t katamaran:dev "${PROJECT_ROOT}"
+minikube -p "${PROFILE}" image load katamaran:dev
+kubectl --context "${PROFILE}" apply -f "${PROJECT_ROOT}/deploy/daemonset.yaml"
+kubectl --context "${PROFILE}" -n kube-system rollout status daemonset/katamaran-deploy --timeout=120s
 
 log "Cleaning up old pods..."
 kubectl --context "${PROFILE}" delete pod kata-src kata-dst --force --grace-period=0 2>/dev/null || true
@@ -225,14 +220,14 @@ log "Starting katamaran DESTINATION on Node 2..."
 minikube -p "${PROFILE}" ssh -n "${PROFILE}-m02" -- "
     sudo systemctl reset-failed katamaran-dest.service 2>/dev/null || true
     sudo systemctl stop katamaran-dest.service 2>/dev/null || true
-    sudo systemd-run --unit=katamaran-dest.service --remain-after-exit /tmp/katamaran -mode dest -qmp '${DST_SOCK}' -shared-storage
+    sudo systemd-run --unit=katamaran-dest.service --remain-after-exit /usr/local/bin/katamaran -mode dest -qmp '${DST_SOCK}' -shared-storage
 "
 
 sleep 3 # Wait for dest to be ready
 
 log "Starting katamaran SOURCE on Node 1 (migrating directly to host IP ${NODE2_IP})..."
 set +e
-minikube -p "${PROFILE}" ssh -n "${PROFILE}" -- "sudo /tmp/katamaran -mode source -qmp '${SRC_SOCK}' -dest-ip '${NODE2_IP}' -vm-ip '${SRC_IP}' -shared-storage" 2>&1 | tee /tmp/katamaran-source.log
+minikube -p "${PROFILE}" ssh -n "${PROFILE}" -- "sudo /usr/local/bin/katamaran -mode source -qmp '${SRC_SOCK}' -dest-ip '${NODE2_IP}' -vm-ip '${SRC_IP}' -shared-storage" 2>&1 | tee /tmp/katamaran-source.log
 MIG_STATUS=${PIPESTATUS[0]}
 set -e
 

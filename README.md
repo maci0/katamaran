@@ -129,6 +129,8 @@ The result: packets that arrive during the switchover are queued, not dropped. A
 
 ```text
 go.mod                          # Go module declaration
+Dockerfile                      # Multi-stage container image build
+.dockerignore                   # Build context exclusions
 cmd/
   katamaran/
     main.go                     # CLI entry point — flag parsing and dispatch
@@ -141,6 +143,11 @@ internal/
   qmp/
     client.go                   # QMP client (connect, execute, wait for events)
     types.go                    # QMP protocol types and command argument structs
+deploy/
+  daemonset.yaml                # DaemonSet for binary installation on nodes
+  job-dest.yaml                 # Job template for destination-side migration
+  job-source.yaml                # Job template for source-side migration
+  migrate.sh                    # Orchestration wrapper for Job-based migration
 README.md                       # This file
 docs/
   TESTING.md                    # Test environment guide
@@ -152,6 +159,26 @@ testenv/                        # Test infrastructure
   minikube-ovn-e2e.sh           # Two-node E2E with OVN-Kubernetes + zero-drop ping proof
   minikube-nfs-e2e.sh           # Two-node E2E with NFS shared storage + zero-drop ping proof
   kind-e2e.sh                   # Two-node E2E with Kind + Podman + zero-drop ping proof
+  job-e2e.sh                    # Two-node E2E with Kind + Podman + Jobs + zero-drop ping proof
+```
+
+---
+
+## Container Image
+
+Build the container image (required for Kubernetes deployment):
+
+```bash
+podman build -t katamaran:dev .
+```
+
+The multi-stage build produces a minimal Alpine image (~20 MB) with
+`iproute2` (for `ip` and `tc` commands) and the katamaran binary.
+
+Run directly from the image:
+
+```bash
+podman run --rm katamaran:dev -help
 ```
 
 ---
@@ -506,3 +533,13 @@ Alternative to minikube for environments with Podman. Kind uses container "nodes
 
 Requires `kind`, `kubectl`, `helm`, and rootful `podman`. Uses kindnet CNI (default). See [TESTING.md](docs/TESTING.md) Section 6 for details.
 
+### Job-Based E2E Migration Test (Zero-Drop Proof)
+
+Uses Kubernetes Jobs instead of SSH for migration execution — closer to the production deployment model:
+
+```bash
+./testenv/job-e2e.sh              # run full e2e with zero-drop proof
+./testenv/job-e2e.sh teardown     # destroy cluster only
+```
+
+Requires `kind`, `kubectl`, `helm`, `podman`, and `/dev/kvm`. See [TESTING.md](docs/TESTING.md) Section 8 for details.

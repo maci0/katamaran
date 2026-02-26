@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: katamaran-deploy
+  namespace: kube-system
+  labels:
+    app: katamaran
+spec:
+  selector:
+    matchLabels:
+      app: katamaran
+  template:
+    metadata:
+      labels:
+        app: katamaran
+    spec:
+      nodeSelector:
+        katacontainers.io/kata-runtime: "true"
+      containers:
+      - name: installer
+        image: katamaran:dev
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /usr/local/bin/katamaran /host/usr/local/bin/katamaran
+            chmod 0755 /host/usr/local/bin/katamaran
+            echo "katamaran binary installed"
+            trap 'rm -f /host/usr/local/bin/katamaran; echo "katamaran binary removed"' TERM
+            sleep infinity &
+            wait $!
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "rm -f /host/usr/local/bin/katamaran"]
+        volumeMounts:
+        - name: host-bin
+          mountPath: /host/usr/local/bin
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: host-bin
+        hostPath:
+          path: /usr/local/bin
+          type: DirectoryOrCreate

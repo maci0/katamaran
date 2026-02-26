@@ -8,9 +8,12 @@
 ./testenv/minikube-ovn-e2e.sh      # two-node + zero-drop proof (OVN-Kubernetes)
 ./testenv/minikube-nfs-e2e.sh      # two-node + NFS shared storage + zero-drop proof
 ./testenv/kind-e2e.sh              # two-node + zero-drop proof (Kind + Podman)
+./testenv/job-e2e.sh               # two-node + zero-drop proof (Kind + Podman + Jobs)
 ```
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
+
+> **Note:** E2E tests now build a container image and deploy the katamaran binary to nodes via a DaemonSet. A pre-built binary is no longer required for E2E tests; only `podman` and the Go source are needed.
 
 ---
 
@@ -25,6 +28,7 @@ All test environments use minikube with KVM. No manual QEMU VM provisioning is n
 - [4. Zero-Packet-Drop Proof — Full Worked Example](#4-zero-packet-drop-proof--full-worked-example)
 - [5. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#5-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
 - [6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
+- [7. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)](#7-job-based-e2e-migration-test-kind--podman-zero-drop-proof)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -834,6 +838,44 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 | `/tmp/katamaran-nfs-source.log` | Full source-side katamaran output |
 | `/tmp/katamaran-nfs-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
+
+## 7. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)
+
+Alternative to the SSH-based E2E tests. Uses Kubernetes Jobs to run the migration instead of `systemd-run` via SSH/`podman exec`. This is closer to the production deployment model where a controller creates Jobs.
+
+### Prerequisites
+
+Same as Kind + Podman test (Section 6).
+
+### Running
+
+```bash
+./testenv/job-e2e.sh              # run full e2e, clean up on exit
+./testenv/job-e2e.sh teardown     # destroy cluster only
+```
+
+### What the Script Does
+
+1. Creates a 2-node Kind cluster (Podman provider, /dev/kvm mount)
+2. Installs Kata Containers via Helm
+3. Configures QMP sockets and loads kernel modules on both nodes
+4. Builds and loads container image into Kind cluster
+5. Deploys source pod & extracts QEMU state
+6. Installs state-matching QEMU wrapper on destination node
+7. Deploys destination pod
+8. Starts continuous ping for zero-drop proof
+9. Executes migration via `deploy/migrate.sh` (K8s Jobs)
+10. Collects results and reports zero-drop proof
+
+### Key Differences from SSH-Based Tests
+
+| Operation | SSH-Based (kind-e2e.sh) | Job-Based (job-e2e.sh) |
+|-----------|------------------------|------------------------|
+| Dest execution | systemd-run via podman exec | K8s Job (deploy/job-dest.yaml) |
+| Source execution | Direct via podman exec | K8s Job (deploy/job-source.yaml) |
+| Orchestration | Script-inline | deploy/migrate.sh |
+| Binary deployment | DaemonSet | Not needed (Jobs use image) |
+| Log collection | journalctl | kubectl logs |
 
 ## Troubleshooting
 
