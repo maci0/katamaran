@@ -1,0 +1,17 @@
+# Compiled binary
+katamaran
+
+# Merge/patch artifacts
+*.orig
+*.patch
+
+# Utility scripts
+query_qmp.py
+
+# Test environment artifacts
+*.qcow2
+*.img
+*.iso
+testenv/kata_test_rsa
+testenv/kata_test_rsa.pub
+
