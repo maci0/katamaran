@@ -2,12 +2,21 @@
 # minikube-e2e.sh — Automates a full 2-node live migration using Minikube.
 #
 # This script:
-#   1. Creates a 2-node minikube cluster (kvm2 driver, flannel CNI).
+#   1. Creates a 2-node minikube cluster (kvm2 driver, Calico CNI).
 #   2. Installs Kata Containers via Helm on both nodes.
 #   3. Enables the extra QMP monitor socket on both nodes.
 #   4. Deploys a source pod on Node 1 and a destination pod on Node 2.
 #   5. Automates the katamaran live migration between them.
-#   6. Runs continuous ping to verify zero-packet-drop.
+#
+# Prerequisites:
+#   - Linux host with KVM and nested virtualization enabled
+#   - minikube, kubectl, helm installed
+#   - ~20 GB free disk space, ~16 GB free RAM
+#   - katamaran binary built (go build -o katamaran ./cmd/katamaran/)
+#
+# Usage:
+#   ./testenv/minikube-e2e.sh              # run full e2e, clean up on exit
+#   ./testenv/minikube-e2e.sh teardown     # destroy cluster only
 
 set -euo pipefail
 
@@ -211,52 +220,6 @@ if [[ -z "$SRC_SOCK" || -z "$DST_SOCK" ]]; then
 fi
 success "Source QMP: $SRC_SOCK"
 success "Dest QMP:   $DST_SOCK"
-
-log "Starting katamaran DESTINATION on Node 2..."
-minikube -p "${PROFILE}" ssh -n "${PROFILE}-m02" -- "
-    sudo systemctl reset-failed katamaran-dest.service 2>/dev/null || true
-    sudo systemctl stop katamaran-dest.service 2>/dev/null || true
-    sudo systemd-run --unit=katamaran-dest.service --remain-after-exit /tmp/katamaran -mode dest -qmp '${DST_SOCK}' -shared-storage
-"
-
-sleep 3 # Wait for dest to be ready
-
-log "Starting katamaran SOURCE on Node 1 (migrating directly to host IP ${NODE2_IP})..."
-set +e
-minikube -p "${PROFILE}" ssh -n "${PROFILE}" -- "sudo /tmp/katamaran -mode source -qmp '${SRC_SOCK}' -dest-ip '${NODE2_IP}' -vm-ip '${SRC_IP}' -shared-storage" 2>&1 | tee /tmp/katamaran-source.log
-MIG_STATUS=${PIPESTATUS[0]}
-set -e
-
-sync
-
-echo ""
-echo "=== DESTINATION LOGS ==="
-minikube -p "${PROFILE}" ssh -n "${PROFILE}-m02" -- "sudo journalctl -u katamaran-dest.service --no-pager" || true
-
-echo ""
-echo "=== MIGRATION RESULTS ==="
-if [ $MIG_STATUS -eq 0 ]; then
-    success "Live migration command completed successfully!"
-else
-    error "Live migration command failed (exit code $MIG_STATUS)."
-fi
-    sleep 2
-done
-success "Destination QMP socket is ready (PID: \$DST_PID)"
-
-SRC_IP=\$(kubectl --context "${PROFILE}" get node "${PROFILE}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-NODE2_IP=\$(kubectl --context "${PROFILE}" get node "${PROFILE}-m02" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-
-# 9. Execute Migration
-log "Locating QMP sockets..."
-SRC_SOCK=\$(minikube -p "${PROFILE}" ssh -n "${PROFILE}" -- 'sudo find /run/vc -name "extra-monitor.sock" 2>/dev/null | head -1' | tr -d '\r\n')
-
-if [[ -z "\$SRC_SOCK" || -z "\$DST_SOCK" ]]; then
-    error "Could not find extra-monitor.sock on one or both nodes."
-    exit 1
-fi
-success "Source QMP: \$SRC_SOCK"
-success "Dest QMP:   \$DST_SOCK"
 
 log "Starting katamaran DESTINATION on Node 2..."
 minikube -p "${PROFILE}" ssh -n "${PROFILE}-m02" -- "

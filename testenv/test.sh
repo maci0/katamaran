@@ -12,9 +12,13 @@
 #   8. Empty mode prints "Usage" message
 #   9. -help flag prints flag descriptions (all seven flags)
 #  10. Binary rejects invalid IP addresses for -dest-ip and -vm-ip
-#  11. Shell scripts have valid syntax (bash -n), including minikube-test.sh and k3s-e2e.sh
-#  12. Required project files exist
-#  13. Start scripts fail early when required VM files are missing
+#  11. Binary rejects single-missing-flag combinations (-dest-ip only, -vm-ip only)
+#  12. Binary validates IPv6 addresses (valid and invalid)
+#  13. Binary validates -tunnel-mode flag (valid values and rejection of invalid)
+#  14. Binary rejects cross-family IP combinations (IPv4 dest + IPv6 vm and vice versa)
+#  15. Binary normalizes IPv4-mapped IPv6 addresses (::ffff:10.0.0.1 treated as IPv4)
+#  16. Shell scripts have valid syntax (bash -n)
+#  17. Required project files exist
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +36,6 @@ readonly GO_CMD
 PASS=0
 FAIL=0
 readonly BINARY="${PROJECT_ROOT}/katamaran"
-readonly GO_FILES="main.go config.go qmp.go dest.go source.go tunnel.go"
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -44,7 +47,7 @@ echo ""
 # Go commands must run from the module root (PROJECT_ROOT).
 echo "--- Go source ---"
 
-if (cd "${PROJECT_ROOT}" && "${GO_CMD}" vet .) 2>/dev/null; then
+if (cd "${PROJECT_ROOT}" && "${GO_CMD}" vet ./...) 2>/dev/null; then
     pass "go vet reports no issues"
 else
     fail "go vet found issues"
@@ -57,14 +60,14 @@ if [[ ! -x "${GOFMT_CMD}" ]]; then
     GOFMT_CMD="gofmt"
 fi
 readonly GOFMT_CMD
-GOFMT_DIFF=$(cd "${PROJECT_ROOT}" && "${GOFMT_CMD}" -l ${GO_FILES} 2>/dev/null)
+GOFMT_DIFF=$(cd "${PROJECT_ROOT}" && find cmd internal -name '*.go' -exec "${GOFMT_CMD}" -l {} + 2>/dev/null)
 if [[ -z "${GOFMT_DIFF}" ]]; then
     pass "gofmt reports no formatting issues"
 else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if (cd "${PROJECT_ROOT}" && GOOS=linux GOARCH=amd64 "${GO_CMD}" build -o "${BINARY}" .) 2>/dev/null; then
+if (cd "${PROJECT_ROOT}" && GOOS=linux GOARCH=amd64 "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/) 2>/dev/null; then
     pass "go build succeeds"
 else
     fail "go build failed"
@@ -163,7 +166,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "-help output should include -mode flag description"
     fi
 
-    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage; do
+    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode; do
         if echo "${HELP_OUT}" | grep -q "\-${flag_name}"; then
             pass "-help output includes -${flag_name} flag"
         else
@@ -206,6 +209,104 @@ if [[ -x "${BINARY}" ]]; then
     else
         pass "valid IPs pass validation (fails at QMP connect as expected)"
     fi
+
+    # Single missing flag: only -dest-ip provided → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip 10.0.0.1 2>/dev/null; then
+        fail "source mode should reject when only -dest-ip is provided"
+    else
+        pass "source mode rejects missing -vm-ip when -dest-ip is set"
+    fi
+
+    # Single missing flag: only -vm-ip provided → should exit non-zero
+    if "${BINARY}" -mode source -vm-ip 10.244.1.15 2>/dev/null; then
+        fail "source mode should reject when only -vm-ip is provided"
+    else
+        pass "source mode rejects missing -dest-ip when -vm-ip is set"
+    fi
+
+    # Valid IPv6 addresses should pass validation (fail later at QMP connect)
+    VALID6_ERR=$("${BINARY}" -mode source -dest-ip fd00::1 -vm-ip fd00::2 2>&1 || true)
+    if echo "${VALID6_ERR}" | grep -q "invalid"; then
+        fail "valid IPv6 addresses should not trigger validation errors"
+    else
+        pass "valid IPv6 addresses pass validation"
+    fi
+
+    # Invalid IPv6 -dest-ip → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip "::gg" -vm-ip fd00::1 2>/dev/null; then
+        fail "source mode should reject invalid IPv6 -dest-ip"
+    else
+        pass "source mode rejects invalid IPv6 -dest-ip"
+    fi
+
+    # Invalid IPv6 -vm-ip → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip fd00::1 -vm-ip "::gg" 2>/dev/null; then
+        fail "source mode should reject invalid IPv6 -vm-ip"
+    else
+        pass "source mode rejects invalid IPv6 -vm-ip"
+    fi
+
+    # -tunnel-mode ipip → should pass validation (fail later at QMP connect)
+    TUNIPIP_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -tunnel-mode ipip 2>&1 || true)
+    if echo "${TUNIPIP_ERR}" | grep -q "invalid -tunnel-mode"; then
+        fail "-tunnel-mode ipip should be accepted"
+    else
+        pass "-tunnel-mode ipip passes validation"
+    fi
+
+    # -tunnel-mode gre → should pass validation (fail later at QMP connect)
+    TUNGRE_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -tunnel-mode gre 2>&1 || true)
+    if echo "${TUNGRE_ERR}" | grep -q "invalid -tunnel-mode"; then
+        fail "-tunnel-mode gre should be accepted"
+    else
+        pass "-tunnel-mode gre passes validation"
+    fi
+
+    # Invalid -tunnel-mode → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -tunnel-mode vxlan 2>/dev/null; then
+        fail "source mode should reject invalid -tunnel-mode"
+    else
+        pass "source mode rejects invalid -tunnel-mode"
+    fi
+
+    # Invalid -tunnel-mode → error should mention the flag name
+    TUNBAD_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -tunnel-mode bogus 2>&1 || true)
+    if echo "${TUNBAD_ERR}" | grep -q "invalid -tunnel-mode"; then
+        pass "invalid -tunnel-mode error mentions the flag name"
+    else
+        fail "invalid -tunnel-mode error should mention the flag name"
+    fi
+
+    # Cross-family: IPv4 dest + IPv6 vm → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip fd00::1 2>/dev/null; then
+        fail "source mode should reject cross-family IPs (IPv4 dest + IPv6 vm)"
+    else
+        pass "source mode rejects cross-family IPs (IPv4 dest + IPv6 vm)"
+    fi
+
+    # Cross-family: IPv6 dest + IPv4 vm → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip fd00::1 -vm-ip 10.0.0.1 2>/dev/null; then
+        fail "source mode should reject cross-family IPs (IPv6 dest + IPv4 vm)"
+    else
+        pass "source mode rejects cross-family IPs (IPv6 dest + IPv4 vm)"
+    fi
+
+    # Cross-family error → should mention "address family"
+    XFAM_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip fd00::1 2>&1 || true)
+    if echo "${XFAM_ERR}" | grep -q "address family"; then
+        pass "cross-family error mentions 'address family'"
+    else
+        fail "cross-family error should mention 'address family'"
+    fi
+
+    # IPv4-mapped IPv6 address (::ffff:10.0.0.1) should be treated as IPv4
+    # and pass validation when paired with a plain IPv4 address.
+    V4MAP_ERR=$("${BINARY}" -mode source -dest-ip "::ffff:10.0.0.1" -vm-ip 10.244.1.15 2>&1 || true)
+    if echo "${V4MAP_ERR}" | grep -q "address family"; then
+        fail "IPv4-mapped ::ffff:10.0.0.1 should be treated as IPv4 (not rejected as cross-family)"
+    else
+        pass "IPv4-mapped ::ffff:10.0.0.1 is normalized to IPv4"
+    fi
 else
     fail "binary not found or not executable"
 fi
@@ -213,7 +314,7 @@ fi
 # --- 3. Shell script syntax ---
 echo "--- Shell scripts ---"
 
-for script in setup.sh start-node-a.sh start-node-b.sh test.sh minikube-test.sh k3s-e2e.sh; do
+for script in test.sh minikube-test.sh minikube-e2e.sh minikube-ovn-e2e.sh minikube-nfs-e2e.sh kind-e2e.sh; do
     if [[ -f "${script}" ]]; then
         if bash -n "${script}" 2>/dev/null; then
             pass "${script} has valid syntax"
@@ -228,7 +329,7 @@ done
 # --- 4. Required files ---
 echo "--- Required files ---"
 
-for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/main.go" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/TESTING.md" cloud-init/network-config.yaml cloud-init/user-data.yaml; do
+for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md"; do
     basename="$(basename "${file}")"
     if [[ -f "${file}" ]]; then
         pass "${basename} exists"
@@ -236,32 +337,6 @@ for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/main.go" "${PROJECT_ROOT}/
         fail "${basename} missing"
     fi
 done
-
-# --- 5. Start script pre-flight checks ---
-echo "--- Start script pre-flight ---"
-
-# Run start scripts from a temp dir where VM files don't exist.
-# Copy only the scripts (not the qcow2/iso files) so the pre-flight check fires.
-TMPDIR_PREFLIGHT="$(mktemp -d)"
-trap 'rm -rf "${TMPDIR_PREFLIGHT}"' EXIT
-cp start-node-a.sh start-node-b.sh "${TMPDIR_PREFLIGHT}/"
-
-# start-node-a.sh should fail when node-a.qcow2 is missing
-# Capture output first to avoid pipefail interfering with grep.
-NODE_A_OUT="$(bash "${TMPDIR_PREFLIGHT}/start-node-a.sh" 2>&1 || true)"
-if echo "${NODE_A_OUT}" | grep -q "not found"; then
-    pass "start-node-a.sh fails when VM files missing"
-else
-    fail "start-node-a.sh should fail when VM files missing"
-fi
-
-# start-node-b.sh should fail when node-b.qcow2 is missing
-NODE_B_OUT="$(bash "${TMPDIR_PREFLIGHT}/start-node-b.sh" 2>&1 || true)"
-if echo "${NODE_B_OUT}" | grep -q "not found"; then
-    pass "start-node-b.sh fails when VM files missing"
-else
-    fail "start-node-b.sh should fail when VM files missing"
-fi
 
 # --- Summary ---
 echo ""

@@ -1,44 +1,53 @@
-package main
+package migration
 
 import (
 	"context"
 	"fmt"
 	"log"
 	"net"
+
+	"katamaran/internal/qmp"
 )
 
-// setupDestination prepares the destination node for incoming live migration.
+// RunDestination prepares the destination node for incoming live migration.
 //
 // Deferred cleanups ensure the qdisc and NBD server are released on any early
-// return, preventing resource leaks. They are disarmed on the success path.
+// return, preventing resource leaks. They are disarmed on the success path by
+// setting the corresponding guard bool to false.
 //
 // Sequentially it:
 //  1. Installs a tc sch_plug qdisc on the tap interface in pass-through mode
 //     (sch_plug defaults to buffering, so we immediately release_indefinite;
-//     non-fatal if sch_plug is unavailable)
+//     non-fatal if sch_plug is unavailable or tapIface is empty)
 //  2. Starts an NBD server for storage mirroring (unless shared-storage mode)
 //  3. Plugs the network queue to catch in-flight packets (skipped if step 1 failed)
 //  4. Waits for the RESUME event (unconditional)
 //  5. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
 //  6. Stops the NBD server (unless shared-storage mode)
 //  7. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
-func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sharedStorage bool) error {
-	log.Printf("Setting up destination node. Preparing network queue on %s...", tapIface)
+func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sharedStorage bool) error {
+	log.Println("Setting up destination node...")
 
 	// Step 1: Install sch_plug qdisc in pass-through mode.
 	qdiscInstalled := false
 	if tapIface != "" {
+		log.Printf("Preparing network queue on %s...", tapIface)
+
 		if _, err := net.InterfaceByName(tapIface); err != nil {
 			log.Printf("Warning: TAP interface %q not found (%v). Skipping network queue setup.", tapIface, err)
 		} else {
-			// Idempotency: clear any existing qdisc on this interface before adding
-			_ = runCmd(context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second), "tc", "qdisc", "del", "dev", tapIface, "root")
+			// Idempotency: clear any existing qdisc on this interface before adding.
+			cctx, ccancel := CleanupCtx()
+			_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+			ccancel()
 
-			if err := runCmd(ctx, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", plugQdiscLimit); err != nil {
+			if err := RunCmd(ctx, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", PlugQdiscLimit); err != nil {
 				log.Printf("Warning: failed to add plug qdisc on %s (is sch_plug available?): %v", tapIface, err)
-			} else if err := runCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
+			} else if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 				log.Printf("Warning: failed to release plug qdisc on %s, removing it: %v", tapIface, err)
-				_ = runCmd(context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second), "tc", "qdisc", "del", "dev", tapIface, "root")
+				cctx, ccancel := CleanupCtx()
+				_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+				ccancel()
 			} else {
 				qdiscInstalled = true
 				log.Println("Network queue installed (pass-through, not plugged yet).")
@@ -50,34 +59,34 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 
 	// Deferred cleanup: remove qdisc on any early return to prevent leaking it.
 	// Disarmed on the success path by setting qdiscInstalled = false.
-	// We use context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second) here so cleanup runs even if the main ctx is cancelled.
-	cleanupCtx, cancel := context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second)
-		defer cancel()
-		defer func(ctx context.Context) {
+	// Uses CleanupCtx() so cleanup runs even if the main ctx is cancelled.
+	defer func() {
 		if qdiscInstalled && tapIface != "" {
-			_ = runCmd(context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second), "tc", "qdisc", "del", "dev", tapIface, "root")
+			cctx, ccancel := CleanupCtx()
+			defer ccancel()
+			_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
 		}
 	}()
 
-	qmp, err := NewQMPClient(ctx, qmpSocket)
+	client, err := qmp.NewClient(ctx, qmpSocket)
 	if err != nil {
 		return fmt.Errorf("connecting to destination QMP: %w", err)
 	}
-	defer qmp.Close()
+	defer client.Close()
 
 	nbdStarted := false
 	if !sharedStorage {
 		// Step 2: Start NBD server to receive storage mirroring from the source.
 		log.Println("Starting NBD server for storage migration...")
-		// Idempotency: Attempt to stop any existing NBD server first, ignore errors.
-		_, _ = qmp.Execute(ctx, "nbd-server-stop", nil)
+		// Idempotency: attempt to stop any existing NBD server first, ignore errors.
+		_, _ = client.Execute(ctx, "nbd-server-stop", nil)
 
-		if _, err = qmp.Execute(ctx, "nbd-server-start", nbdServerStartArgs{
-			Addr: nbdServerAddr{
+		if _, err = client.Execute(ctx, "nbd-server-start", qmp.NBDServerStartArgs{
+			Addr: qmp.NBDServerAddr{
 				Type: "inet",
-				Data: nbdServerAddrData{
+				Data: qmp.NBDServerAddrData{
 					Host: "0.0.0.0",
-					Port: nbdPort,
+					Port: NBDPort,
 				},
 			},
 		}); err != nil {
@@ -87,23 +96,23 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 
 		// Deferred cleanup: stop NBD server on any early return to prevent
 		// leaking it. Disarmed on the success path by setting nbdStarted = false.
-		cleanupCtx, cancel := context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second)
-		defer cancel()
-		defer func(ctx context.Context) {
+		defer func() {
 			if nbdStarted {
-				if _, stopErr := qmp.Execute(context.WithTimeout(context.WithTimeout(context.Background(), 10*time.Second), 10*time.Second), "nbd-server-stop", nil); stopErr != nil {
+				cctx, ccancel := CleanupCtx()
+				defer ccancel()
+				if _, stopErr := client.Execute(cctx, "nbd-server-stop", nil); stopErr != nil {
 					log.Printf("Warning: deferred NBD server stop failed: %v", stopErr)
 				}
 			}
 		}()
 
-		if _, err = qmp.Execute(ctx, "nbd-server-add", nbdServerAddArgs{
+		if _, err = client.Execute(ctx, "nbd-server-add", qmp.NBDServerAddArgs{
 			Device:   driveID,
 			Writable: true,
 		}); err != nil {
 			return fmt.Errorf("adding NBD export for drive %q: %w", driveID, err)
 		}
-		log.Printf("NBD server listening on 0.0.0.0:%s", nbdPort)
+		log.Printf("NBD server listening on 0.0.0.0:%s", NBDPort)
 	} else {
 		log.Println("Shared storage mode: skipping NBD server setup.")
 	}
@@ -114,7 +123,7 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 	// when the source emits its STOP event. In this standalone tool, we plug
 	// proactively before waiting for RESUME.
 	if qdiscInstalled {
-		if err := runCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
+		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
 			log.Printf("Warning: failed to plug network queue on %s: %v", tapIface, err)
 		} else {
 			log.Println("Network queue plugged. Buffering in-flight packets...")
@@ -123,7 +132,7 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 
 	// Step 4: Wait for the destination VM to resume.
 	log.Println("Waiting for QEMU RESUME event...")
-	if err = qmp.WaitForEvent(ctx, "RESUME", eventWaitTimeout); err != nil {
+	if err = client.WaitForEvent(ctx, "RESUME", EventWaitTimeout); err != nil {
 		return fmt.Errorf("waiting for RESUME event: %w", err)
 	}
 	if qdiscInstalled {
@@ -137,7 +146,7 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 	// the qdisc is still in "plugged" state and the deferred cleanup must
 	// remove it so the VM's network isn't left permanently blocked.
 	if qdiscInstalled {
-		if err := runCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
+		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 			log.Printf("Warning: failed to unplug network queue on %s: %v", tapIface, err)
 		} else {
 			log.Println("Queue unplugged. Buffered packets delivered. Zero drops achieved.")
@@ -150,30 +159,34 @@ func setupDestination(ctx context.Context, qmpSocket, tapIface, driveID string, 
 	if !sharedStorage {
 		// Step 6: Stop the NBD server (storage migration is complete).
 		// Disarm the deferred cleanup since we're handling it explicitly.
+		// Uses CleanupCtx() so the stop succeeds even if the main ctx was
+		// cancelled (e.g., SIGINT received after RESUME).
 		nbdStarted = false
-		if _, err := qmp.Execute(ctx, "nbd-server-stop", nil); err != nil {
+		cctx, ccancel := CleanupCtx()
+		if _, err := client.Execute(cctx, "nbd-server-stop", nil); err != nil {
 			log.Printf("Warning: failed to stop NBD server: %v", err)
 		} else {
 			log.Println("NBD server stopped.")
 		}
+		ccancel()
 	}
 
 	// Step 7: Broadcast Gratuitous ARP via QEMU's announce-self command.
 	// Unlike host-side arping (which sends the host tap MAC), announce-self
 	// emits GARP/RARP from the guest's actual MAC address on all NICs,
 	// ensuring switches learn the correct port-to-MAC binding.
-	// With Kube-OVN, OVN handles port-chassis rebinding automatically.
+	// With OVN-based CNIs (OVN-Kubernetes, Kube-OVN), OVN handles port-chassis rebinding automatically.
 	// For other CNIs (Cilium, Calico, Flannel), GARP accelerates convergence.
 	log.Println("Broadcasting Gratuitous ARP via QEMU announce-self...")
-	if _, err := qmp.Execute(ctx, "announce-self", announceSelfArgs{
-		Initial: garpInitialMS,
-		Max:     garpMaxMS,
-		Rounds:  garpRounds,
-		Step:    garpStepMS,
+	if _, err := client.Execute(ctx, "announce-self", qmp.AnnounceSelfArgs{
+		Initial: GARPInitialMS,
+		Max:     GARPMaxMS,
+		Rounds:  GARPRounds,
+		Step:    GARPStepMS,
 	}); err != nil {
 		log.Printf("Warning: GARP announce-self failed: %v", err)
 	} else {
-		log.Printf("GARP announce-self scheduled (%d rounds).", garpRounds)
+		log.Printf("GARP announce-self scheduled (%d rounds).", GARPRounds)
 	}
 
 	log.Println("Destination setup complete.")

@@ -1,17 +1,18 @@
 # Compiled binary
 katamaran
 
-# Generated test environment artifacts
-testenv/*.qcow2
-testenv/*.iso
-testenv/*.img
-testenv/ssh_key*
-testenv/kata_test_rsa
-testenv/kata_test_rsa.pub
-
 # Merge/patch artifacts
 *.orig
 *.patch
 
 # Utility scripts
 query_qmp.py
+
+# Test environment artifacts
+*.qcow2
+*.img
+*.iso
+
+# SSH keys
+kata_test_rsa
+kata_test_rsa.pub
