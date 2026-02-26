@@ -1,0 +1,46 @@
+#cloud-config
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    plain_text_passwd: ubuntu
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCwYr+qS0xy1n8ijYI0Ll8n+ReVAvuID9V9jaNXFMMiI6/U69wym0jcHeB/4fcu+rm3TFXAht3xt5zUKsbh3CVYnAQuN6efoDzezT0Mc+CvdSHSsPQfuiP1ihpoG5nxTpCwHlpFHE8CMPviHViYa046nNonRsL2wVlC0mXtaY7D6TY4F9McgAFEZRPIxQSLnKPGO1kIYA+gvcbAVRLoei3/dliTpAiLyki4cBACnvX4KS+uO5L5OaV8OQc3V5r0tNv9jYsIhYxvpU9lKwTZraHlQ20TI171L9GmLL/5XX2n9SHEu30Tk02wwmw2VRNTKpo4IGKQJ0e+qlBvIjmSsM0pVjA5JCVSL5P8lFP31HnyL6tHRUgoCSnM6VKHOauJ3b8yJvpDjfoPoAyUvE9rNp0jiNE/Ru80Q/teRKLJH+haV8eoaE3W2JeNyD72LAk6lRWAFnLv+ushTxTHE7aDDNzo3IAXRsQSPdqf7cZBKvfga5afGyiLIIhQFtt4/s5fxsClQGJvr1QhKDPteokTyAAq2qJyC2BKYtUBYndrD9HhnJV66df7KxBTRsLESsBHXNeP8FYrcq3HmEp+wd4l9R/1Ys8Cn23tCheNLZjWfj9kFzciERN816NFPGUqrMpHhaRyBWLl2UHpQK8KPgS/3p8vGEgMfnaIpUgakZ9S6SQscQ== maci@speedy3.lan
+
+packages:
+  - containerd
+  - qemu-kvm
+  - iproute2
+
+bootcmd:
+  - systemctl stop systemd-resolved || true
+  - systemctl disable systemd-resolved || true
+  - rm -f /etc/resolv.conf
+  - echo "nameserver 10.0.2.3" > /etc/resolv.conf
+  - chattr +i /etc/resolv.conf
+
+runcmd:
+  - chattr -i /etc/resolv.conf
+
+  # Load kernel modules required for nested KVM
+  - modprobe kvm || true
+  - modprobe kvm_intel || true
+  - modprobe kvm_amd || true
+  - modprobe vhost_net || true
+  - modprobe vhost_vsock || true
+  - modprobe sch_plug || true
+  - modprobe ipip || true
+
+  # Install Kata Containers 3.x
+  - curl -sL --connect-timeout 30 --max-time 300 https://raw.githubusercontent.com/kata-containers/kata-containers/main/utils/kata-manager.sh -o /tmp/kata-manager.sh
+  - chmod +x /tmp/kata-manager.sh
+  - /tmp/kata-manager.sh
+
+  # Configure containerd for Kata runtime
+  - mkdir -p /etc/containerd
+  - containerd config default > /etc/containerd/config.toml
+  - sed -i '/\[plugins."io.containerd.grpc.v1.cri".containerd.runtimes\]/a \        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]\n          runtime_type = "io.containerd.kata.v2"\n          privileged_without_host_devices = true\n          pod_annotations = ["io.katacontainers.*"]' /etc/containerd/config.toml
+  - systemctl restart containerd
+
+  # Bring up the private inter-node network (enp0s4)
+  - ip link set enp0s4 up
