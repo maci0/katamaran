@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${POD_NAME}
+  labels:
+    app: ping-test
+spec:
+  runtimeClassName: kata-qemu
+  nodeName: ${NODE_NAME}
+  hostNetwork: ${HOST_NETWORK}
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+${VOLUME_MOUNTS_SECTION}
+${VOLUMES_SECTION}

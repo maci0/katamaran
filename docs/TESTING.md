@@ -3,12 +3,12 @@
 ### TL;DR
 
 ```bash
-./testenv/test.sh                  # smoke tests — no VMs, no KVM, runs anywhere
-./testenv/minikube-e2e.sh          # two-node live migration (Calico CNI)
-./testenv/minikube-ovn-e2e.sh      # two-node + zero-drop proof (OVN-Kubernetes)
-./testenv/minikube-nfs-e2e.sh      # two-node + NFS shared storage + zero-drop proof
-./testenv/kind-e2e.sh              # two-node + zero-drop proof (Kind + Podman)
-./testenv/job-e2e.sh               # two-node + zero-drop proof (Kind + Podman + Jobs)
+./scripts/test.sh                  # smoke tests — no VMs, no KVM, runs anywhere
+./scripts/e2e.sh --provider minikube --cni calico # two-node live migration (Calico)
+./scripts/e2e.sh --provider minikube --cni ovn    # two-node + zero-drop proof (OVN-Kubernetes)
+./scripts/e2e.sh --provider minikube --storage nfs # two-node + NFS shared storage + zero-drop proof
+./scripts/e2e.sh --provider kind                  # two-node + zero-drop proof (Kind + Podman)
+./scripts/e2e.sh --provider kind --method job     # two-node + zero-drop proof (Kind + Podman + Jobs)
 ```
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
@@ -17,7 +17,7 @@ All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests 
 
 ---
 
-All test environments use minikube with KVM. No manual QEMU VM provisioning is needed.
+E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM provisioning is needed.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -28,7 +28,8 @@ All test environments use minikube with KVM. No manual QEMU VM provisioning is n
 - [4. Zero-Packet-Drop Proof — Full Worked Example](#4-zero-packet-drop-proof--full-worked-example)
 - [5. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#5-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
 - [6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
-- [7. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)](#7-job-based-e2e-migration-test-kind--podman-zero-drop-proof)
+- [7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#7-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
+- [8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)](#8-job-based-e2e-migration-test-kind--podman-zero-drop-proof)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -52,7 +53,7 @@ cat /sys/module/kvm_amd/parameters/nested     # should print 1
 Validates Go source quality and CLI behavior without any VMs:
 
 ```bash
-./testenv/test.sh
+./scripts/test.sh
 ```
 
 This validates:
@@ -62,7 +63,7 @@ This validates:
 - Source mode missing-flags error mentions `-dest-ip` and `-vm-ip` specifically
 - Dest mode QMP error mentions the socket path for debuggability
 - Empty mode prints a "Usage" message
-- `-help` flag prints descriptions for all seven flags
+- `-help` flag prints descriptions for all eight flags
 - `-shared-storage` flag combinations work correctly
 - Invalid IP addresses for `-dest-ip` and `-vm-ip` are rejected with specific error messages
 - Valid IP addresses pass validation (fail later at QMP connect, not at validation)
@@ -77,13 +78,13 @@ Validates katamaran against a real Kata Containers QMP socket inside a single-no
 
 - `minikube`, `kubectl`, `helm` installed
 - ~20 GB free disk space, ~16 GB free RAM
-- katamaran binary built (`go build -o katamaran ./cmd/katamaran/`)
+- katamaran binary built (`go build -o bin/katamaran ./cmd/katamaran/`)
 
 ### Run
 
 ```bash
-./testenv/minikube-test.sh          # auto-cleans up after
-./testenv/minikube-test.sh --keep   # keep cluster for debugging
+./scripts/e2e.sh --provider minikube --cni calico
+./scripts/e2e.sh teardown --provider minikube --cni calico
 ```
 
 The script:
@@ -120,8 +121,9 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 ### Run
 
 ```bash
-./testenv/minikube-e2e.sh           # run full e2e, clean up on exit
-./testenv/minikube-e2e.sh teardown  # destroy cluster only
+./scripts/minikube-e2e.sh           # run full e2e, clean up on exit
+./scripts/minikube-e2e.sh teardown  # destroy cluster only
+./scripts/minikube-e2e.sh --env-only # stop after environment setup
 ```
 
 The script:
@@ -507,7 +509,7 @@ And the destination output includes the NBD server:
 2026/02/26 04:30:01 Preparing network queue on tap0_kata...
 2026/02/26 04:30:01 Network queue installed (pass-through, not plugged yet).
 2026/02/26 04:30:01 Starting NBD server for storage migration...
-2026/02/26 04:30:01 NBD server listening on 0.0.0.0:10809
+2026/02/26 04:30:01 NBD server listening on [::]:10809
 2026/02/26 04:30:01 Network queue plugged. Buffering in-flight packets...
 2026/02/26 04:30:01 Waiting for QEMU RESUME event...
 2026/02/26 04:30:26 VM resumed. Flushing buffered packets...
@@ -540,7 +542,7 @@ OVN-Kubernetes provides the best CNI integration for live migration: its central
 
 ### Why Test with OVN-Kubernetes?
 
-| Feature | OVN-Kubernetes | Calico (minikube-e2e.sh) |
+| Feature | OVN-Kubernetes | Calico (e2e.sh --cni calico) |
 |---------|---------------|------------------------|
 | Port rebinding | OVN southbound DB (atomic) | BGP route propagation (2-5s) |
 | MAC learning | OVS + GARP | Kernel bridge + GARP |
@@ -558,8 +560,8 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 ### Run
 
 ```bash
-./testenv/minikube-ovn-e2e.sh              # run full e2e, clean up on exit
-./testenv/minikube-ovn-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni ovn --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni ovn
 ```
 
 ### What the Script Does
@@ -666,8 +668,8 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 ### Running
 
 ```bash
-./testenv/kind-e2e.sh              # run full e2e, clean up on exit
-./testenv/kind-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider kind --ping-proof
+./scripts/e2e.sh teardown --provider kind
 ```
 
 ### What the Script Does
@@ -768,8 +770,8 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 ### Running
 
 ```bash
-./testenv/minikube-nfs-e2e.sh              # run full e2e, clean up on exit
-./testenv/minikube-nfs-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni calico --storage nfs
 ```
 
 ### What the Script Does
@@ -839,7 +841,7 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 | `/tmp/katamaran-nfs-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
 
-## 7. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)
+## 8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)
 
 Alternative to the SSH-based E2E tests. Uses Kubernetes Jobs to run the migration instead of `systemd-run` via SSH/`podman exec`. This is closer to the production deployment model where a controller creates Jobs.
 
@@ -850,8 +852,30 @@ Same as Kind + Podman test (Section 6).
 ### Running
 
 ```bash
-./testenv/job-e2e.sh              # run full e2e, clean up on exit
-./testenv/job-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider kind --method job --ping-proof
+./scripts/e2e.sh teardown --provider kind --method job
+```
+
+### Job Orchestration Topology
+
+```mermaid
+sequenceDiagram
+    participant T as scripts/e2e.sh
+    participant K as Kubernetes API
+    participant D as Job: katamaran-dest
+    participant S as Job: katamaran-source
+
+    T->>K: Apply destination VM pod
+    T->>T: Detect QMP sockets + destination tap
+    T->>K: Run deploy/migrate.sh
+    T->>K: Apply rendered job-dest.yaml
+    K-->>D: Start privileged dest job on dest node
+    T->>K: Wait dest readiness gate
+    T->>K: Apply rendered job-source.yaml
+    K-->>S: Start privileged source job on source node
+    S->>D: Execute live migration (storage/ram/network)
+    T->>K: Wait source job complete
+    T->>K: Collect logs/describe output
 ```
 
 ### What the Script Does
@@ -869,7 +893,7 @@ Same as Kind + Podman test (Section 6).
 
 ### Key Differences from SSH-Based Tests
 
-| Operation | SSH-Based (kind-e2e.sh) | Job-Based (job-e2e.sh) |
+| Operation | SSH-Based (e2e.sh --method ssh) | Job-Based (e2e.sh --method job) |
 |-----------|------------------------|------------------------|
 | Dest execution | systemd-run via podman exec | K8s Job (deploy/job-dest.yaml) |
 | Source execution | Direct via podman exec | K8s Job (deploy/job-source.yaml) |
@@ -884,11 +908,11 @@ Same as Kind + Podman test (Section 6).
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `Failed to connect to QMP` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/qmp.sock` |
-| `Failed to add plug qdisc` | `sch_plug` module not loaded | `modprobe sch_plug` |
-| `NBD server start failed` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
-| `drive-mirror failed` | Destination NBD not ready | Ensure dest mode is running first |
-| `QEMU reported migration failed` | Insufficient resources or network issue | Check QEMU logs; verify dest is reachable on port 4444 |
+| `dialing QMP socket` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/qmp.sock` |
+| `failed to add plug qdisc` | `sch_plug` module not loaded | `modprobe sch_plug` |
+| `starting NBD server` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
+| `starting drive-mirror` | Destination NBD not ready | Ensure dest mode is running first |
+| `migration failed` | Insufficient resources or network issue | Check QEMU logs; verify dest is reachable on port 4444 |
 | `migration did not complete within` | Migration never converged (dirty page churn) | Reduce VM workload or increase `migrationTimeout` constant |
 | `storage sync for job.*did not complete` | Drive-mirror never converged (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
 | `timed out waiting for QMP response` | QEMU unresponsive mid-command | Check QEMU process health; may need restart |
@@ -896,4 +920,3 @@ Same as Kind + Podman test (Section 6).
 | minikube won't start | KVM not available or nested virt disabled | Check `/dev/kvm` exists and nested virt is enabled |
 | kata-deploy pod not starting | Image pull issues or resource constraints | Check pod events: `kubectl -n kube-system describe pod -l name=kata-deploy` |
 | No extra-monitor.sock found | extra_monitor_socket not configured | Verify `enable_debug = true` and `extra_monitor_socket = "qmp"` in Kata config |
-
