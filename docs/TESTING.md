@@ -83,8 +83,9 @@ Validates katamaran against a real Kata Containers QMP socket inside a single-no
 ### Run
 
 ```bash
-./scripts/e2e.sh --provider minikube --cni calico
-./scripts/e2e.sh teardown --provider minikube --cni calico
+./scripts/minikube-test.sh          # auto-cleans up after
+./scripts/minikube-test.sh --keep   # keep cluster for debugging
+./scripts/minikube-test.sh --env-only # stop after environment setup
 ```
 
 The script:
@@ -121,9 +122,9 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 ### Run
 
 ```bash
-./scripts/minikube-e2e.sh           # run full e2e, clean up on exit
-./scripts/minikube-e2e.sh teardown  # destroy cluster only
-./scripts/minikube-e2e.sh --env-only # stop after environment setup
+./scripts/e2e.sh --provider minikube --cni calico           # run full e2e, clean up on exit
+./scripts/e2e.sh teardown --provider minikube --cni calico  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico --env-only # stop after environment setup
 ```
 
 The script:
@@ -586,42 +587,10 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 The script produces a structured report at the end:
 
 ```text
-========================================================================
-=== OVN-KUBERNETES E2E MIGRATION RESULTS ===
-========================================================================
-
---- Migration Status ---
-  PASS: Live migration completed successfully!
-
---- Destination Logs ---
-  ... (katamaran dest output showing qdisc, RESUME, flush, GARP) ...
-
-========================================================================
-=== ZERO-DROP PING PROOF ===
-========================================================================
-
-  40 packets transmitted, 40 received, 0% packet loss, time 1960ms
-
-  PASS: ZERO PACKET LOSS: 40 transmitted, 40 received, 0% loss
-  rtt min/avg/max/mdev = 0.312/2.847/48.712/8.431 ms
-
---- Packets with elevated RTT (>10ms, likely buffered during cutover) ---
-  64 bytes from 10.244.0.5: icmp_seq=22 ttl=64 time=48.712 ms
-  64 bytes from 10.244.0.5: icmp_seq=23 ttl=64 time=47.331 ms
-  64 bytes from 10.244.0.5: icmp_seq=24 ttl=64 time=46.019 ms
-
-========================================================================
-=== SUMMARY ===
-========================================================================
-
-  CNI:              OVN-Kubernetes
-  Nodes:            katamaran-ovn-e2e (source) → katamaran-ovn-e2e-m02 (dest)
-  Pod IP:           10.244.0.5
-  Storage:          shared (skipped NBD)
-  Migration exit:   0
-  Ping result:      40 packets transmitted, 40 received, 0% packet loss
-
-  PASS: OVN-KUBERNETES ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  40 packets transmitted, 40 received, 0% packet loss, time 2056ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### What This Validates
@@ -637,8 +606,8 @@ The script produces a structured report at the end:
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-ovn-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-ovn-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
 
 ## 6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)
@@ -729,23 +698,18 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 === SUMMARY ===
 ========================================================================
 
-  Provider:         Kind + Podman
-  CNI:              kindnet (default)
-  Nodes:            katamaran-e2e-control-plane (source) → katamaran-e2e-worker (dest)
-  Pod IP:           10.244.0.5
-  Storage:          shared (skipped NBD)
-  Migration exit:   0
-  Ping result:      30 packets transmitted, 30 received, 0% packet loss
-
-  PASS: KIND+PODMAN ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  30 packets transmitted, 30 received, 0% packet loss, time 1450ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### Artifacts
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-kind-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-kind-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (inside worker container) |
 
 ## 7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
@@ -803,42 +767,19 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
   Migration status: completed
   Source cleanup complete. Migration succeeded.
 
-========================================================================
-=== NFS SHARED-STORAGE E2E MIGRATION RESULTS ===
-========================================================================
-
---- NFS Shared Storage Verification ---
-  Test data:        katamaran-nfs-migration-1708934523
-  Written to:       /mnt/shared/migration-proof.txt
-  PASS: NFS data survived migration
-
-========================================================================
-=== ZERO-DROP PING PROOF ===
-========================================================================
-
-  35 packets transmitted, 35 received, 0% packet loss, time 1700ms
-
-  PASS: ZERO PACKET LOSS: 35 transmitted, 35 received, 0% loss
-
-========================================================================
-=== SUMMARY ===
-========================================================================
-
-  CNI:              Calico
-  Storage:          NFS (shared, skipped NBD drive-mirror)
-  NFS Server:       10.244.0.3 (in-cluster pod)
-  NFS data intact:  true
-  Migration exit:   0
-
-  PASS: NFS SHARED-STORAGE ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  PASS: NFS data intact after migration
+  30 packets transmitted, 30 received, 0% packet loss, time 1450ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### Artifacts
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-nfs-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-nfs-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
 
 ## 8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)

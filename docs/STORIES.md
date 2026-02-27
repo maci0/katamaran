@@ -4,7 +4,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 
 ### TL;DR
 
-15 stories across 5 areas: **core migration** (local storage, shared storage, zero-drop network cutover), **IPv4/IPv6** support, **graceful shutdown** (SIGINT/SIGTERM cleanup, idempotent setup), **error handling** (storage/RAM failure detection, CLI validation), **destination ops** (packet buffering, GARP), and **testing** (smoke, single-node QMP, two-node E2E).
+15 stories across 6 areas: **core migration** (local storage, shared storage, zero-drop network cutover), **IPv4/IPv6** support, **graceful shutdown** (SIGINT/SIGTERM cleanup, idempotent setup), **error handling** (storage/RAM failure detection, CLI validation), **destination ops** (packet buffering, GARP), and **testing** (smoke, single-node QMP, two-node E2E).
 
 ---
 
@@ -56,7 +56,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** in-flight IPv4 packets are forwarded to the destination during CNI convergence.
 
 **Acceptance criteria:**
-- [x] `setupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
+- [x] `SetupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
 - [x] Host route uses `ip route add <vmIP> dev <tunnel>`
 - [x] Both `-dest-ip` and `-vm-ip` are validated with `netip.ParseAddr`
 
@@ -67,7 +67,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** IPv6-only workloads can be live-migrated with the same zero-drop guarantee.
 
 **Acceptance criteria:**
-- [x] `setupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
+- [x] `SetupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
 - [x] Host route uses `ip -6 route add <vmIP> dev <tunnel>`
 - [x] Mixed address families (IPv4 dest + IPv6 vm or vice versa) are rejected with a clear error
 - [x] IPv6 addresses are validated at the CLI level before migration begins
@@ -95,7 +95,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** stale resources from a previous run are cleaned up automatically before creating new ones.
 
 **Acceptance criteria:**
-- [x] `setupTunnel` deletes any existing tunnel with the same name before creation
+- [x] `SetupTunnel` deletes any existing tunnel with the same name before creation
 - [x] Destination qdisc setup removes any existing root qdisc before adding a new one
 - [x] NBD server setup stops any existing server before starting a new one
 
@@ -113,7 +113,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] If the block job disappears unexpectedly, report that it "disappeared unexpectedly"
 - [x] If the block job doesn't appear within 30s, report it "did not appear" (likely silent drive-mirror failure)
 - [x] If the block job enters a terminal state (`concluded`, `null`) without `ready`, report the state
-- [x] If storage sync exceeds `storageSyncTimeout` (2h), report a timeout with the job ID
+- [x] If storage sync exceeds `StorageSyncTimeout` (2h), report a timeout with the job ID
 - [x] Progress is logged as a percentage during sync
 
 ### US-9: Detect and report RAM migration failure
@@ -126,7 +126,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] Migration status is logged at each poll interval
 - [x] `failed` status includes QEMU's `error-desc` when available
 - [x] `cancelled` status returns a distinct sentinel error
-- [x] Migration polling is bounded by `migrationTimeout` (1h) to prevent infinite loops
+- [x] Migration polling is bounded by `MigrationTimeout` (1h) to prevent infinite loops
 - [x] On failure, `migrate_cancel` is sent to QEMU to resume the source VM
 
 ### US-10: Validate CLI inputs before migration begins
@@ -206,7 +206,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** I can verify all three phases (storage, compute, network) work together.
 
 **Acceptance criteria:**
-- [x] `minikube-e2e.sh` creates a two-node minikube cluster with Kata Containers
+- [x] `e2e.sh` creates a two-node minikube or kind cluster with Kata Containers
 - [x] Installs katamaran on both nodes
 - [x] Runs a full migration (dest first, then source)
 - [x] Validates the VM is running on the destination after migration
