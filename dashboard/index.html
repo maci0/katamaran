@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Katamaran Live Migration Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal text-gray-800">
+    <div class="container mx-auto p-8">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold text-blue-600">Katamaran Live Migration</h1>
+            <span id="status-badge" class="px-3 py-1 rounded-full text-sm font-semibold bg-gray-200 text-gray-700">Idle</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Form Section -->
+            <div class="bg-white rounded-lg shadow-md p-6 col-span-1">
+                <h2 class="text-xl font-semibold mb-4">Migration Parameters</h2>
+                <form id="migration-form" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium">Source Node</label>
+                        <input type="text" name="source_node" value="katamaran-e2e" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Dest Node</label>
+                        <input type="text" name="dest_node" value="katamaran-e2e-m02" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Dest Tap Interface</label>
+                        <input type="text" name="tap" value="tap0_kata" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Source QMP Socket</label>
+                        <input type="text" name="qmp_source" value="/run/vc/vm/.../qmp.sock" class="w-full border rounded px-3 py-2 text-xs">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Dest QMP Socket</label>
+                        <input type="text" name="qmp_dest" value="/run/vc/vm/.../qmp.sock" class="w-full border rounded px-3 py-2 text-xs">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Dest IP</label>
+                        <input type="text" name="dest_ip" value="192.168.x.x" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">VM IP (Target)</label>
+                        <input type="text" name="vm_ip" id="vm_ip" value="10.244.0.5" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">Image</label>
+                        <input type="text" name="image" value="localhost/katamaran:dev" class="w-full border rounded px-3 py-2">
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" name="shared_storage" value="true" class="mr-2">
+                        <label class="text-sm font-medium">Shared Storage (Skip NBD)</label>
+                    </div>
+                    
+                    <button type="submit" id="btn-migrate" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition">
+                        Start Migration
+                    </button>
+                </form>
+            </div>
+
+            <!-- Visualization Section -->
+            <div class="col-span-2 space-y-6">
+                <!-- Actions -->
+                <div class="bg-white rounded-lg shadow-md p-6 flex space-x-4 items-center">
+                    <button id="btn-ping" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition">
+                        Start Ping Load
+                    </button>
+                    <button id="btn-http" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded transition">
+                        Start HTTP Load
+                    </button>
+                    <button id="btn-stop-load" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition">
+                        Stop Loadgen
+                    </button>
+                </div>
+
+                <!-- Chart -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4">Continuity & Latency (Zero-Drop Proof)</h2>
+                    <canvas id="latencyChart" height="100"></canvas>
+                </div>
+
+                <!-- Logs -->
+                <div class="bg-gray-900 rounded-lg shadow-md p-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <h2 class="text-lg font-semibold text-gray-300">Migration Output</h2>
+                    </div>
+                    <div id="logs" class="bg-black text-green-400 font-mono text-xs p-4 h-64 overflow-y-auto rounded border border-gray-700">
+                        Awaiting migration start...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart.js Setup
+        const ctx = document.getElementById('latencyChart').getContext('2d');
+        const latencyChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Latency (ms)',
+                    data: [],
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    tension: 0.1,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                animation: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        suggestedMax: 10,
+                        title: { display: true, text: 'Milliseconds' }
+                    },
+                    x: {
+                        title: { display: true, text: 'Time' }
+                    }
+                }
+            }
+        });
+
+        // Form Submit
+        document.getElementById('migration-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            fetch('/api/migrate', {
+                method: 'POST',
+                body: new URLSearchParams(formData)
+            });
+        });
+
+        // Loadgen Buttons
+        document.getElementById('btn-ping').addEventListener('click', () => {
+            const target = document.getElementById('vm_ip').value;
+            fetch('/api/ping?target=' + target);
+        });
+        document.getElementById('btn-http').addEventListener('click', () => {
+            const target = document.getElementById('vm_ip').value;
+            fetch('/api/httpgen?target=' + target);
+        });
+        document.getElementById('btn-stop-load').addEventListener('click', () => {
+            fetch('/api/ping/stop');
+        });
+
+        // Status Polling
+        const logsDiv = document.getElementById('logs');
+        let lastLogCount = 0;
+
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                // Status Badge
+                const badge = document.getElementById('status-badge');
+                if (data.migrating) {
+                    badge.textContent = "Migration Running";
+                    badge.className = "px-3 py-1 rounded-full text-sm font-semibold bg-blue-100 text-blue-800 animate-pulse";
+                } else {
+                    badge.textContent = "Idle";
+                    badge.className = "px-3 py-1 rounded-full text-sm font-semibold bg-gray-200 text-gray-700";
+                }
+
+                // Logs
+                if (data.logs && data.logs.length > lastLogCount) {
+                    const newLogs = data.logs.slice(lastLogCount);
+                    newLogs.forEach(l => {
+                        const div = document.createElement('div');
+                        div.textContent = l;
+                        logsDiv.appendChild(div);
+                    });
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                    lastLogCount = data.logs.length;
+                }
+                if (!data.logs || data.logs.length === 0) {
+                    lastLogCount = 0;
+                }
+
+                // Chart
+                if (data.pings && data.pings.length > 0) {
+                    latencyChart.data.labels = data.pings.map(p => p.time);
+                    latencyChart.data.datasets[0].data = data.pings.map(p => p.error ? 1000 : p.latency); // Spike for errors
+                    latencyChart.update();
+                }
+
+            } catch (err) {
+                console.error("Status fetch error", err);
+            }
+        }, 1000);
+    </script>
+</body>
+</html>

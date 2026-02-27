@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: katamaran-dashboard
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: katamaran-dashboard-role
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "delete", "get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: katamaran-dashboard-binding
+subjects:
+- kind: ServiceAccount
+  name: katamaran-dashboard
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: katamaran-dashboard-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: katamaran-dashboard
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: katamaran-dashboard
+  template:
+    metadata:
+      labels:
+        app: katamaran-dashboard
+    spec:
+      serviceAccountName: katamaran-dashboard
+      containers:
+      - name: dashboard
+        image: localhost/katamaran-dashboard:dev
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-dashboard
+  namespace: kube-system
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+  selector:
+    app: katamaran-dashboard
