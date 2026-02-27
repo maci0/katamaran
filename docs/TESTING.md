@@ -1,6 +1,23 @@
 # Testing Guide
 
-All test environments use minikube with KVM. No manual QEMU VM provisioning is needed.
+### TL;DR
+
+```bash
+./scripts/test.sh                  # smoke tests — no VMs, no KVM, runs anywhere
+./scripts/e2e.sh --provider minikube --cni calico # two-node live migration (Calico)
+./scripts/e2e.sh --provider minikube --cni ovn    # two-node + zero-drop proof (OVN-Kubernetes)
+./scripts/e2e.sh --provider minikube --storage nfs # two-node + NFS shared storage + zero-drop proof
+./scripts/e2e.sh --provider kind                  # two-node + zero-drop proof (Kind + Podman)
+./scripts/e2e.sh --provider kind --method job     # two-node + zero-drop proof (Kind + Podman + Jobs)
+```
+
+All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
+
+> **Note:** E2E tests now build a container image and deploy the katamaran binary to nodes via a DaemonSet. A pre-built binary is no longer required for E2E tests; only `podman` and the Go source are needed.
+
+---
+
+E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM provisioning is needed.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -11,6 +28,8 @@ All test environments use minikube with KVM. No manual QEMU VM provisioning is n
 - [4. Zero-Packet-Drop Proof — Full Worked Example](#4-zero-packet-drop-proof--full-worked-example)
 - [5. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#5-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
 - [6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
+- [7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#7-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
+- [8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)](#8-job-based-e2e-migration-test-kind--podman-zero-drop-proof)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -34,7 +53,7 @@ cat /sys/module/kvm_amd/parameters/nested     # should print 1
 Validates Go source quality and CLI behavior without any VMs:
 
 ```bash
-./testenv/test.sh
+./scripts/test.sh
 ```
 
 This validates:
@@ -44,7 +63,7 @@ This validates:
 - Source mode missing-flags error mentions `-dest-ip` and `-vm-ip` specifically
 - Dest mode QMP error mentions the socket path for debuggability
 - Empty mode prints a "Usage" message
-- `-help` flag prints descriptions for all seven flags
+- `-help` flag prints descriptions for all eight flags
 - `-shared-storage` flag combinations work correctly
 - Invalid IP addresses for `-dest-ip` and `-vm-ip` are rejected with specific error messages
 - Valid IP addresses pass validation (fail later at QMP connect, not at validation)
@@ -59,13 +78,14 @@ Validates katamaran against a real Kata Containers QMP socket inside a single-no
 
 - `minikube`, `kubectl`, `helm` installed
 - ~20 GB free disk space, ~16 GB free RAM
-- katamaran binary built (`go build -o katamaran ./cmd/katamaran/`)
+- katamaran binary built (`go build -o bin/katamaran ./cmd/katamaran/`)
 
 ### Run
 
 ```bash
-./testenv/minikube-test.sh          # auto-cleans up after
-./testenv/minikube-test.sh --keep   # keep cluster for debugging
+./scripts/minikube-test.sh          # auto-cleans up after
+./scripts/minikube-test.sh --keep   # keep cluster for debugging
+./scripts/minikube-test.sh --env-only # stop after environment setup
 ```
 
 The script:
@@ -102,8 +122,9 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 ### Run
 
 ```bash
-./testenv/minikube-e2e.sh           # run full e2e, clean up on exit
-./testenv/minikube-e2e.sh teardown  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico           # run full e2e, clean up on exit
+./scripts/e2e.sh teardown --provider minikube --cni calico  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico --env-only # stop after environment setup
 ```
 
 The script:
@@ -131,24 +152,21 @@ This section documents a complete end-to-end live migration with continuous traf
 
 ### Topology
 
-```text
-                        25 Gbps link
-  ┌─────────────────┐ ───────────────── ┌─────────────────┐
-  │  Node 1 (source) │                   │  Node 2 (dest)   │
-  │  192.168.1.10    │                   │  192.168.1.20    │
-  │                  │                   │                   │
-  │  ┌──────────┐   │                   │  ┌──────────┐    │
-  │  │  Kata VM  │   │   ── migrates ──► │  │  Kata VM  │    │
-  │  │ 10.244.1.5│   │                   │  │ 10.244.1.5│    │
-  │  └────┬─────┘   │                   │  └────┬─────┘    │
-  │       │ tap0_kata│                   │       │ tap0_kata │
-  └───────┼─────────┘                   └───────┼──────────┘
-          │                                      │
-  ┌───────┴─────────┐
-  │  Client machine  │
-  │  192.168.1.99    │
-  │  (sends pings)   │
-  └─────────────────┘
+```mermaid
+graph TD
+    subgraph Node1["Node 1 — Source (192.168.1.10)"]
+        VM1["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
+    end
+
+    subgraph Node2["Node 2 — Destination (192.168.1.20)"]
+        VM2["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
+    end
+
+    Client["Client machine<br/>192.168.1.99<br/>(sends pings)"]
+
+    Node1 -- "25 Gbps link" --- Node2
+    VM1 -. "migrates" .-> VM2
+    Client --> VM1
 ```
 
 - **VM pod IP**: `10.244.1.5` (stays the same after migration)
@@ -279,44 +297,42 @@ Expected output (with `-shared-storage`, phases 1-2 are skipped):
 
 The critical zero-drop window is the ~50ms between `STOP` (source VM pauses) and `RESUME` (destination VM starts). Here is the exact sequence and what katamaran did at each moment:
 
-```text
-Timeline (not to scale)
-──────────────────────────────────────────────────────────────────────
+```mermaid
+sequenceDiagram
+    participant C as Client<br/>(192.168.1.99)
+    participant S as Source Node 1<br/>(192.168.1.10)
+    participant D as Dest Node 2<br/>(192.168.1.20)
 
-T=0ms    QEMU emits STOP on source
-         │  Source VM is now paused. No more replies to pings.
-         │  Pings from client still arrive at Node 1 (stale ARP/routes).
-         │
-T=1ms    katamaran source: ip tunnel add mig-tun mode ipip remote 192.168.1.20
-         │  Creates IPIP tunnel pointing at Node 2.
-         │
-T=2ms    katamaran source: ip link set mig-tun up
-         │
-T=3ms    katamaran source: ip route add 10.244.1.5 dev mig-tun
-         │  Host route installed. Packets for 10.244.1.5 now go through
-         │  the tunnel to 192.168.1.20 instead of to the local (dead) VM.
-         │
-         │  Meanwhile, destination qdisc is in "block" mode — packets
-         │  arriving via the tunnel are buffered in the kernel, not dropped.
-         │
-T=~50ms  QEMU finishes final dirty page transfer.
-         QEMU emits RESUME on destination.
-         │  Destination VM is now running.
-         │
-T=~51ms  katamaran dest: tc qdisc change dev tap0_kata root plug release_indefinite
-         │  FLUSH — all buffered packets (including those forwarded via tunnel)
-         │  are delivered to the now-running VM in order. It processes them
-         │  and replies.
-         │
-T=~52ms  katamaran dest: announce-self (GARP, 5 rounds)
-         │  Switches learn the VM's MAC is now on Node 2's port.
-         │  New packets from the client go directly to Node 2.
-         │
-T=5050ms katamaran source: ip link del mig-tun
-         │  Tunnel torn down. CNI has converged by now.
-         │  All traffic flows directly to Node 2.
+    Note over S: T=0ms — QEMU emits STOP
+    Note over S: VM paused. No more replies.
+    C->>S: Pings still arrive (stale ARP)
 
-──────────────────────────────────────────────────────────────────────
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: T=1–3ms — Tunnel setup
+    S->>S: ip tunnel add mig-tun mode ipip remote 192.168.1.20
+    S->>S: ip link set mig-tun up
+    S->>S: ip route add 10.244.1.5 dev mig-tun
+    Note over S: Packets for VM now forwarded via tunnel
+    end
+
+    C->>S: Pings arrive at source
+    S->>D: Forwarded through IPIP tunnel
+    Note over D: qdisc in "block" mode — packets buffered, not dropped
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over D: T≈50ms — QEMU emits RESUME
+    Note over D: Destination VM is now running
+    D->>D: tc qdisc change ... plug release_indefinite
+    Note over D: FLUSH — all buffered packets delivered in order
+    D->>C: Replies to buffered pings (~48ms RTT)
+    end
+
+    D->>D: announce-self (GARP × 5 rounds)
+    Note over D: Switches learn VM MAC on Node 2
+
+    Note over S: T≈5050ms — CNI converged
+    S->>S: ip link del mig-tun
+    C->>D: Traffic flows directly to Node 2
 ```
 
 Meanwhile, on the destination side, the output completes:
@@ -494,7 +510,7 @@ And the destination output includes the NBD server:
 2026/02/26 04:30:01 Preparing network queue on tap0_kata...
 2026/02/26 04:30:01 Network queue installed (pass-through, not plugged yet).
 2026/02/26 04:30:01 Starting NBD server for storage migration...
-2026/02/26 04:30:01 NBD server listening on 0.0.0.0:10809
+2026/02/26 04:30:01 NBD server listening on [::]:10809
 2026/02/26 04:30:01 Network queue plugged. Buffering in-flight packets...
 2026/02/26 04:30:01 Waiting for QEMU RESUME event...
 2026/02/26 04:30:26 VM resumed. Flushing buffered packets...
@@ -527,7 +543,7 @@ OVN-Kubernetes provides the best CNI integration for live migration: its central
 
 ### Why Test with OVN-Kubernetes?
 
-| Feature | OVN-Kubernetes | Calico (minikube-e2e.sh) |
+| Feature | OVN-Kubernetes | Calico (e2e.sh --cni calico) |
 |---------|---------------|------------------------|
 | Port rebinding | OVN southbound DB (atomic) | BGP route propagation (2-5s) |
 | MAC learning | OVS + GARP | Kernel bridge + GARP |
@@ -545,8 +561,8 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 ### Run
 
 ```bash
-./testenv/minikube-ovn-e2e.sh              # run full e2e, clean up on exit
-./testenv/minikube-ovn-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni ovn --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni ovn
 ```
 
 ### What the Script Does
@@ -571,42 +587,10 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 The script produces a structured report at the end:
 
 ```text
-========================================================================
-=== OVN-KUBERNETES E2E MIGRATION RESULTS ===
-========================================================================
-
---- Migration Status ---
-  PASS: Live migration completed successfully!
-
---- Destination Logs ---
-  ... (katamaran dest output showing qdisc, RESUME, flush, GARP) ...
-
-========================================================================
-=== ZERO-DROP PING PROOF ===
-========================================================================
-
-  40 packets transmitted, 40 received, 0% packet loss, time 1960ms
-
-  PASS: ZERO PACKET LOSS: 40 transmitted, 40 received, 0% loss
-  rtt min/avg/max/mdev = 0.312/2.847/48.712/8.431 ms
-
---- Packets with elevated RTT (>10ms, likely buffered during cutover) ---
-  64 bytes from 10.244.0.5: icmp_seq=22 ttl=64 time=48.712 ms
-  64 bytes from 10.244.0.5: icmp_seq=23 ttl=64 time=47.331 ms
-  64 bytes from 10.244.0.5: icmp_seq=24 ttl=64 time=46.019 ms
-
-========================================================================
-=== SUMMARY ===
-========================================================================
-
-  CNI:              OVN-Kubernetes
-  Nodes:            katamaran-ovn-e2e (source) → katamaran-ovn-e2e-m02 (dest)
-  Pod IP:           10.244.0.5
-  Storage:          shared (skipped NBD)
-  Migration exit:   0
-  Ping result:      40 packets transmitted, 40 received, 0% packet loss
-
-  PASS: OVN-KUBERNETES ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  40 packets transmitted, 40 received, 0% packet loss, time 2056ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### What This Validates
@@ -622,8 +606,8 @@ The script produces a structured report at the end:
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-ovn-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-ovn-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
 
 ## 6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)
@@ -653,8 +637,8 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 ### Running
 
 ```bash
-./testenv/kind-e2e.sh              # run full e2e, clean up on exit
-./testenv/kind-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider kind --ping-proof
+./scripts/e2e.sh teardown --provider kind
 ```
 
 ### What the Script Does
@@ -714,23 +698,18 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 === SUMMARY ===
 ========================================================================
 
-  Provider:         Kind + Podman
-  CNI:              kindnet (default)
-  Nodes:            katamaran-e2e-control-plane (source) → katamaran-e2e-worker (dest)
-  Pod IP:           10.244.0.5
-  Storage:          shared (skipped NBD)
-  Migration exit:   0
-  Ping result:      30 packets transmitted, 30 received, 0% packet loss
-
-  PASS: KIND+PODMAN ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  30 packets transmitted, 30 received, 0% packet loss, time 1450ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### Artifacts
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-kind-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-kind-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (inside worker container) |
 
 ## 7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
@@ -755,8 +734,8 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 ### Running
 
 ```bash
-./testenv/minikube-nfs-e2e.sh              # run full e2e, clean up on exit
-./testenv/minikube-nfs-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni calico --storage nfs
 ```
 
 ### What the Script Does
@@ -788,43 +767,80 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
   Migration status: completed
   Source cleanup complete. Migration succeeded.
 
-========================================================================
-=== NFS SHARED-STORAGE E2E MIGRATION RESULTS ===
-========================================================================
-
---- NFS Shared Storage Verification ---
-  Test data:        katamaran-nfs-migration-1708934523
-  Written to:       /mnt/shared/migration-proof.txt
-  PASS: NFS data survived migration
-
-========================================================================
-=== ZERO-DROP PING PROOF ===
-========================================================================
-
-  35 packets transmitted, 35 received, 0% packet loss, time 1700ms
-
-  PASS: ZERO PACKET LOSS: 35 transmitted, 35 received, 0% loss
-
-========================================================================
-=== SUMMARY ===
-========================================================================
-
-  CNI:              Calico
-  Storage:          NFS (shared, skipped NBD drive-mirror)
-  NFS Server:       10.244.0.3 (in-cluster pod)
-  NFS data intact:  true
-  Migration exit:   0
-
-  PASS: NFS SHARED-STORAGE ZERO-DROP MIGRATION: VERIFIED
+=== E2E MIGRATION RESULTS ===
+  PASS: Migration completed successfully!
+  PASS: NFS data intact after migration
+  30 packets transmitted, 30 received, 0% packet loss, time 1450ms
+  PASS: ZERO PACKET LOSS VERIFIED
 ```
 
 ### Artifacts
 
 | File | Contents |
 |------|----------|
-| `/tmp/katamaran-nfs-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-nfs-ping.log` | Complete ping output with timestamps |
+| `/tmp/katamaran-source.log` | Full source-side katamaran output |
+| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 | `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
+
+## 8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)
+
+Alternative to the SSH-based E2E tests. Uses Kubernetes Jobs to run the migration instead of `systemd-run` via SSH/`podman exec`. This is closer to the production deployment model where a controller creates Jobs.
+
+### Prerequisites
+
+Same as Kind + Podman test (Section 6).
+
+### Running
+
+```bash
+./scripts/e2e.sh --provider kind --method job --ping-proof
+./scripts/e2e.sh teardown --provider kind --method job
+```
+
+### Job Orchestration Topology
+
+```mermaid
+sequenceDiagram
+    participant T as scripts/e2e.sh
+    participant K as Kubernetes API
+    participant D as Job: katamaran-dest
+    participant S as Job: katamaran-source
+
+    T->>K: Apply destination VM pod
+    T->>T: Detect QMP sockets + destination tap
+    T->>K: Run deploy/migrate.sh
+    T->>K: Apply rendered job-dest.yaml
+    K-->>D: Start privileged dest job on dest node
+    T->>K: Wait dest readiness gate
+    T->>K: Apply rendered job-source.yaml
+    K-->>S: Start privileged source job on source node
+    S->>D: Execute live migration (storage/ram/network)
+    T->>K: Wait source job complete
+    T->>K: Collect logs/describe output
+```
+
+### What the Script Does
+
+1. Creates a 2-node Kind cluster (Podman provider, /dev/kvm mount)
+2. Installs Kata Containers via Helm
+3. Configures QMP sockets and loads kernel modules on both nodes
+4. Builds and loads container image into Kind cluster
+5. Deploys source pod & extracts QEMU state
+6. Installs state-matching QEMU wrapper on destination node
+7. Deploys destination pod
+8. Starts continuous ping for zero-drop proof
+9. Executes migration via `deploy/migrate.sh` (K8s Jobs)
+10. Collects results and reports zero-drop proof
+
+### Key Differences from SSH-Based Tests
+
+| Operation | SSH-Based (e2e.sh --method ssh) | Job-Based (e2e.sh --method job) |
+|-----------|------------------------|------------------------|
+| Dest execution | systemd-run via podman exec | K8s Job (deploy/job-dest.yaml) |
+| Source execution | Direct via podman exec | K8s Job (deploy/job-source.yaml) |
+| Orchestration | Script-inline | deploy/migrate.sh |
+| Binary deployment | DaemonSet | Not needed (Jobs use image) |
+| Log collection | journalctl | kubectl logs |
 
 ## Troubleshooting
 
@@ -833,11 +849,11 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `Failed to connect to QMP` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/qmp.sock` |
-| `Failed to add plug qdisc` | `sch_plug` module not loaded | `modprobe sch_plug` |
-| `NBD server start failed` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
-| `drive-mirror failed` | Destination NBD not ready | Ensure dest mode is running first |
-| `QEMU reported migration failed` | Insufficient resources or network issue | Check QEMU logs; verify dest is reachable on port 4444 |
+| `dialing QMP socket` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/qmp.sock` |
+| `failed to add plug qdisc` | `sch_plug` module not loaded | `modprobe sch_plug` |
+| `starting NBD server` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
+| `starting drive-mirror` | Destination NBD not ready | Ensure dest mode is running first |
+| `migration failed` | Insufficient resources or network issue | Check QEMU logs; verify dest is reachable on port 4444 |
 | `migration did not complete within` | Migration never converged (dirty page churn) | Reduce VM workload or increase `migrationTimeout` constant |
 | `storage sync for job.*did not complete` | Drive-mirror never converged (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
 | `timed out waiting for QMP response` | QEMU unresponsive mid-command | Check QEMU process health; may need restart |
@@ -845,4 +861,3 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 | minikube won't start | KVM not available or nested virt disabled | Check `/dev/kvm` exists and nested virt is enabled |
 | kata-deploy pod not starting | Image pull issues or resource constraints | Check pod events: `kubectl -n kube-system describe pod -l name=kata-deploy` |
 | No extra-monitor.sock found | extra_monitor_socket not configured | Verify `enable_debug = true` and `extra_monitor_socket = "qmp"` in Kata config |
-

@@ -1,0 +1,14 @@
+.git/
+.gitignore
+.opencode/
+.sisyphus/
+testenv/
+deploy/
+docs/
+*.qcow2
+*.img
+*.iso
+kata_test_rsa*
+logo.png
+README.md
+katamaran

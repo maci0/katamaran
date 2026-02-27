@@ -49,7 +49,7 @@ func RunSource(ctx context.Context, qmpSocket, destIP, vmIP, driveID string, sha
 	if !sharedStorage {
 		// Step 1: Initiate drive-mirror to the destination's NBD server.
 		log.Println("Initiating storage mirror (drive-mirror)...")
-		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", destIP, NBDPort, driveID)
+		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", FormatQEMUHost(destIP), NBDPort, driveID)
 		if _, err = client.Execute(ctx, "drive-mirror", qmp.DriveMirrorArgs{
 			Device: driveID,
 			Target: targetNBD,
@@ -107,7 +107,7 @@ func RunSource(ctx context.Context, qmpSocket, destIP, vmIP, driveID string, sha
 		return fmt.Errorf("setting migration parameters: %w", err)
 	}
 
-	uri := fmt.Sprintf("tcp:%s:%s", destIP, RAMMigrationPort)
+	uri := fmt.Sprintf("tcp:%s:%s", FormatQEMUHost(destIP), RAMMigrationPort)
 	if _, err = client.Execute(ctx, "migrate", qmp.MigrateArgs{URI: uri}); err != nil {
 		return fmt.Errorf("starting RAM migration to %s: %w", uri, err)
 	}

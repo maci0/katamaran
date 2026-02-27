@@ -85,7 +85,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 			Addr: qmp.NBDServerAddr{
 				Type: "inet",
 				Data: qmp.NBDServerAddrData{
-					Host: "0.0.0.0",
+					Host: "::",
 					Port: NBDPort,
 				},
 			},
@@ -112,7 +112,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 		}); err != nil {
 			return fmt.Errorf("adding NBD export for drive %q: %w", driveID, err)
 		}
-		log.Printf("NBD server listening on 0.0.0.0:%s", NBDPort)
+		log.Printf("NBD server listening on [::]:%s", NBDPort)
 	} else {
 		log.Println("Shared storage mode: skipping NBD server setup.")
 	}
@@ -178,7 +178,8 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// With OVN-based CNIs (OVN-Kubernetes, Kube-OVN), OVN handles port-chassis rebinding automatically.
 	// For other CNIs (Cilium, Calico, Flannel), GARP accelerates convergence.
 	log.Println("Broadcasting Gratuitous ARP via QEMU announce-self...")
-	if _, err := client.Execute(ctx, "announce-self", qmp.AnnounceSelfArgs{
+	garpCtx, garpCancel := CleanupCtx()
+	if _, err := client.Execute(garpCtx, "announce-self", qmp.AnnounceSelfArgs{
 		Initial: GARPInitialMS,
 		Max:     GARPMaxMS,
 		Rounds:  GARPRounds,
@@ -188,6 +189,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	} else {
 		log.Printf("GARP announce-self scheduled (%d rounds).", GARPRounds)
 	}
+	garpCancel()
 
 	log.Println("Destination setup complete.")
 	return nil

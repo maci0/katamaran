@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"time"
@@ -89,6 +90,22 @@ const (
 // block-job-cancel, tunnel teardown) run even after the main ctx is cancelled.
 func CleanupCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), CleanupTimeout)
+}
+
+// FormatQEMUHost returns the IP address formatted for use in QEMU's
+// colon-delimited URIs (e.g., nbd:host:port, tcp:host:port). IPv6 addresses
+// are wrapped in square brackets to avoid ambiguity with URI field separators.
+// IPv4 addresses are returned unchanged. If the address cannot be parsed
+// (validation happens elsewhere), it is returned as-is.
+func FormatQEMUHost(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr.Is6() && !addr.Is4In6() {
+		return "[" + ip + "]"
+	}
+	return ip
 }
 
 // RunCmd executes an external command. It captures combined stdout/stderr and

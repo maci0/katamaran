@@ -35,7 +35,7 @@ readonly GO_CMD
 
 PASS=0
 FAIL=0
-readonly BINARY="${PROJECT_ROOT}/katamaran"
+readonly BINARY="${PROJECT_ROOT}/bin/katamaran"
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -67,7 +67,7 @@ else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if (cd "${PROJECT_ROOT}" && GOOS=linux GOARCH=amd64 "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/) 2>/dev/null; then
+if (cd "${PROJECT_ROOT}" && GOOS=linux "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/) 2>/dev/null; then
     pass "go build succeeds"
 else
     fail "go build failed"
@@ -158,7 +158,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "empty mode should print Usage message"
     fi
 
-    # -help flag → should exit 0 and print flag descriptions for all seven flags
+    # -help flag → should exit 0 and print flag descriptions for all eight flags
     HELP_OUT=$("${BINARY}" -help 2>&1 || true)
     if echo "${HELP_OUT}" | grep -q "\-mode"; then
         pass "-help output includes -mode flag description"
@@ -311,25 +311,58 @@ else
     fail "binary not found or not executable"
 fi
 
+MIGRATE_SCRIPT="${PROJECT_ROOT}/deploy/migrate.sh"
+if [[ -x "${MIGRATE_SCRIPT}" ]]; then
+    if "${MIGRATE_SCRIPT}" --help >/dev/null 2>&1; then
+        pass "migrate.sh --help exits successfully"
+    else
+        fail "migrate.sh --help should exit successfully"
+    fi
+
+    MISSING_ERR=$("${MIGRATE_SCRIPT}" 2>&1 || true)
+    if echo "${MISSING_ERR}" | grep -q "Missing required arguments"; then
+        pass "migrate.sh rejects missing required arguments"
+    else
+        fail "migrate.sh should reject missing required arguments"
+    fi
+
+    BAD_TUN_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev --tunnel-mode bogus 2>&1 || true)
+    if echo "${BAD_TUN_ERR}" | grep -q -- "--tunnel-mode must be 'ipip' or 'gre'"; then
+        pass "migrate.sh rejects invalid --tunnel-mode"
+    else
+        fail "migrate.sh should reject invalid --tunnel-mode"
+    fi
+
+    BAD_TAP_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap "tap 0" --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev 2>&1 || true)
+    if echo "${BAD_TAP_ERR}" | grep -q -- "--tap must be a single interface name"; then
+        pass "migrate.sh validates --tap format"
+    else
+        fail "migrate.sh should validate --tap format"
+    fi
+else
+    fail "deploy/migrate.sh not found or not executable"
+fi
+
 # --- 3. Shell script syntax ---
 echo "--- Shell scripts ---"
 
-for script in test.sh minikube-test.sh minikube-e2e.sh minikube-ovn-e2e.sh minikube-nfs-e2e.sh kind-e2e.sh; do
-    if [[ -f "${script}" ]]; then
-        if bash -n "${script}" 2>/dev/null; then
-            pass "${script} has valid syntax"
-        else
-            fail "${script} has syntax errors"
-        fi
+for script in test.sh cleanup.sh minikube-test.sh e2e.sh; do
+    if bash -n "${SCRIPT_DIR}/$script"; then
+        pass "$script has valid syntax"
     else
-        fail "${script} not found"
+        fail "$script has valid syntax"
     fi
 done
+if bash -n "${PROJECT_ROOT}/deploy/migrate.sh" 2>/dev/null; then
+    pass "deploy/migrate.sh has valid syntax"
+else
+    fail "deploy/migrate.sh has syntax errors"
+fi
 
 # --- 4. Required files ---
 echo "--- Required files ---"
 
-for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md"; do
+for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/INSTALL.md" "${PROJECT_ROOT}/docs/USAGE.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md" "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}/deploy/daemonset.yaml" "${PROJECT_ROOT}/deploy/job-dest.yaml" "${PROJECT_ROOT}/deploy/job-source.yaml" "${PROJECT_ROOT}/deploy/migrate.sh"; do
     basename="$(basename "${file}")"
     if [[ -f "${file}" ]]; then
         pass "${basename} exists"

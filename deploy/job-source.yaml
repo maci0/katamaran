@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: katamaran-source
+  namespace: kube-system
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      nodeName: ${NODE_NAME}
+      hostNetwork: true
+      hostPID: true
+      restartPolicy: Never
+      initContainers:
+      - name: load-modules
+        image: ${IMAGE}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        command: ["/bin/sh", "-c"]
+        args:
+          - >-
+            modprobe sch_plug 2>/dev/null || true;
+            modprobe ipip 2>/dev/null || true;
+            modprobe ip6_tunnel 2>/dev/null || true;
+            modprobe ip_gre 2>/dev/null || true
+        volumeMounts:
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+      containers:
+      - name: katamaran
+        image: ${IMAGE}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        command: ["/bin/sh", "-c"]
+        args:
+          - /usr/local/bin/katamaran -mode source -qmp "${QMP_SOCKET}" -dest-ip "${DEST_IP}" -vm-ip "${VM_IP}" ${EXTRA_ARGS}
+        volumeMounts:
+        - name: run-vc
+          mountPath: /run/vc
+        - name: sys
+          mountPath: /sys
+      volumes:
+      - name: run-vc
+        hostPath:
+          path: /run/vc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules

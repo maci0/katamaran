@@ -1,10 +1,27 @@
 <div align="center">
-  <img src="logo.png" alt="katamaran logo" width="300" />
+  <img src="docs/logo.png" alt="katamaran logo" width="300" />
   <h1>katamaran</h1>
   <p><b>Zero-drop live migration for Kata Containers</b></p>
 </div>
 
 Zero-packet-drop live migration for [Kata Containers](https://katacontainers.io/).
+
+### TL;DR
+
+```bash
+go build -o bin/katamaran ./cmd/katamaran/
+
+# Destination node (run first)
+sudo ./bin/katamaran -mode dest -qmp /run/vc/vm/<id>/qmp.sock -tap tap0_kata
+
+# Source node
+sudo ./bin/katamaran -mode source -qmp /run/vc/vm/<id>/qmp.sock \
+  -dest-ip <dest-node-ip> -vm-ip <pod-ip>
+```
+
+Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume — zero drops. Add `-shared-storage` with Ceph/NFS to skip the storage phase entirely.
+
+---
 
 Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS — skip mirroring with `-shared-storage`).
 
@@ -21,6 +38,7 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
   - [Phase 3 — Zero-Drop Network Cutover](#phase-3--zero-drop-network-cutover-tc-sch_plug--ip-tunnel)
 - [Prerequisites](#prerequisites)
 - [Project Structure](#project-structure)
+- [Container Image](#container-image)
 - [Usage](#usage)
   - [Destination Node](#destination-node-run-first)
   - [Source Node](#source-node-run-after-destination-is-ready)
@@ -32,25 +50,38 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Kubernetes Integration](#kubernetes-integration)
 - [Testing](#testing)
 
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)**
+
 ---
 
 ## Architecture Overview
 
 Migration proceeds in three sequential phases:
 
-```
-Source Node                                    Destination Node
-┌──────────────────────┐                      ┌──────────────────────┐
-│  VM running           │   Phase 1: Storage   │  NBD server listening │
-│  drive-mirror ───────────── NBD ──────────►  │  (block device ready) │
-│  (background sync)    │                      │                       │
-│                       │   Phase 2: Compute   │                       │
-│  migrate ────────────────── TCP ──────────►  │  (RAM pre-copy)       │
-│  VM pauses (STOP)     │                      │  VM resumes (RESUME)  │
-│                       │   Phase 3: Network   │                       │
-│  IPIP/GRE tunnel ────────────────────────────►  │  sch_plug unplug      │
-│  (redirect traffic)   │                      │  (flush buffered pkts)│
-└──────────────────────┘                      └──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant D as Destination Node
+
+    rect rgb(59, 130, 246, 0.1)
+    Note over S,D: Phase 1 — Storage Mirroring
+    S->>D: NBD drive-mirror (background sync)
+    D-->>S: Block device ready
+    Note over S: VM keeps running
+    end
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over S,D: Phase 2 — Compute Migration
+    S->>D: RAM pre-copy (TCP)
+    Note over S: VM pauses (STOP)
+    Note over D: VM resumes (RESUME)
+    end
+
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: Phase 3 — Network Cutover
+    S->>D: IPIP/GRE tunnel (redirect traffic)
+    Note over D: sch_plug unplug (flush buffered pkts)
+    end
 ```
 
 ### Phase 1 — Storage Mirroring (NBD + drive-mirror)
@@ -100,7 +131,9 @@ The result: packets that arrive during the switchover are queued, not dropped. A
 ## Project Structure
 
 ```text
-go.mod                          # Go module declaration
+go.mod                          # Go module (github.com/maci0/katamaran)
+Dockerfile                      # Multi-stage container image build
+.dockerignore                   # Build context exclusions
 cmd/
   katamaran/
     main.go                     # CLI entry point — flag parsing and dispatch
@@ -113,17 +146,45 @@ internal/
   qmp/
     client.go                   # QMP client (connect, execute, wait for events)
     types.go                    # QMP protocol types and command argument structs
-README.md                       # This file
+deploy/
+  daemonset.yaml                # DaemonSet for binary installation on nodes
+  job-dest.yaml                 # Job template for destination-side migration
+  job-source.yaml               # Job template for source-side migration
+  migrate.sh                    # Orchestration wrapper for Job-based migration
 docs/
+  INSTALL.md                    # Installation guide (binary, container, DaemonSet)
+  USAGE.md                      # Usage guide (CLI and Kubernetes Jobs)
   TESTING.md                    # Test environment guide
   STORIES.md                    # User stories
-testenv/                        # Test infrastructure
+  logo.png                      # Project logo
+scripts/                        # Test and operational scripts
   test.sh                       # Smoke tests (no VMs required)
+  cleanup.sh                    # Cluster cleanup helper
   minikube-test.sh              # Single-node Kata QMP smoke test (requires KVM)
   minikube-e2e.sh               # Two-node live migration E2E test (Calico CNI)
   minikube-ovn-e2e.sh           # Two-node E2E with OVN-Kubernetes + zero-drop ping proof
   minikube-nfs-e2e.sh           # Two-node E2E with NFS shared storage + zero-drop ping proof
   kind-e2e.sh                   # Two-node E2E with Kind + Podman + zero-drop ping proof
+  job-e2e.sh                    # Two-node E2E with Kind + Podman + Jobs + zero-drop ping proof
+```
+
+---
+
+## Container Image
+
+Build the container image (required for Kubernetes deployment):
+
+```bash
+podman build -t localhost/katamaran:dev .
+```
+
+The multi-stage build produces a minimal Alpine image (~20 MB) with
+`iproute2` (for `ip` and `tc` commands), `kmod` (for `modprobe` in job init containers), and the katamaran binary.
+
+Run directly from the image:
+
+```bash
+podman run --rm localhost/katamaran:dev -help
 ```
 
 ---
@@ -133,7 +194,7 @@ testenv/                        # Test infrastructure
 Build the tool:
 
 ```bash
-go build -o katamaran ./cmd/katamaran/
+go build -o bin/katamaran ./cmd/katamaran/
 ```
 
 > [!TIP]
@@ -142,7 +203,7 @@ go build -o katamaran ./cmd/katamaran/
 ### Destination Node (run first)
 
 ```bash
-sudo ./katamaran \
+sudo ./bin/katamaran \
   -mode dest \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock \
   -tap tap0_kata \
@@ -161,7 +222,7 @@ This will:
 ### Source Node (run after destination is ready)
 
 ```bash
-sudo ./katamaran \
+sudo ./bin/katamaran \
   -mode source \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock \
   -dest-ip 10.0.1.42 \
@@ -175,7 +236,7 @@ This will:
 3. Configure and begin RAM pre-copy migration with auto-converge
 4. Wait for VM pause (`STOP` event — downtime window begins)
 5. Create an IP tunnel to redirect in-flight traffic to destination (IPIP or GRE, auto-selected by address family)
-6. Monitor migration until completion (bounded by `migrationTimeout`)
+6. Monitor migration until completion (bounded by `MigrationTimeout`)
 7. Cancel migration via `migrate_cancel` if it failed or timed out
 8. Abort the block mirror with `force:true` cancel (skipped with `-shared-storage`)
 9. Tear down the IP tunnel after CNI convergence delay
@@ -186,11 +247,11 @@ If both nodes share a storage backend (e.g., Ceph RBD, NFS), skip the NBD drive-
 
 ```bash
 # Destination
-sudo ./katamaran -mode dest -shared-storage \
+sudo ./bin/katamaran -mode dest -shared-storage \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock -tap tap0_kata
 
 # Source
-sudo ./katamaran -mode source -shared-storage \
+sudo ./bin/katamaran -mode source -shared-storage \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock \
   -dest-ip 10.0.1.42 -vm-ip 10.244.1.15
 ```
@@ -200,7 +261,7 @@ sudo ./katamaran -mode source -shared-storage \
 Both `-dest-ip` and `-vm-ip` accept IPv6 addresses. The tunnel type is selected automatically based on address family and `-tunnel-mode`: `ipip`/`ip6ip6` for the default mode, `gre`/`ip6gre` for GRE mode. Both addresses must be the same address family.
 
 ```bash
-sudo ./katamaran \
+sudo ./bin/katamaran \
   -mode source \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock \
   -dest-ip fd00::42 \
@@ -213,7 +274,7 @@ sudo ./katamaran \
 > On cloud VPCs (AWS, GCP, Azure), IPIP tunnels (IP protocol 4/41) are often blocked by security groups. Use `-tunnel-mode gre` to switch to GRE encapsulation (IP protocol 47), which is widely permitted by cloud middleboxes. GRE adds only 4 bytes of overhead compared to IPIP — negligible for the brief migration tunnel.
 
 ```bash
-sudo ./katamaran \
+sudo ./bin/katamaran \
   -mode source \
   -qmp /run/vc/vm/<sandbox-id>/qmp.sock \
   -dest-ip 10.0.1.42 \
@@ -255,6 +316,23 @@ The sequential approach — storage first, then RAM — minimizes total migratio
 
 This section explores which storage and networking stacks are compatible, what the ideal setup looks like, and the open integration points.
 
+### Current Deployment Flow (DaemonSet + Jobs)
+
+```mermaid
+flowchart LR
+    A[Build image localhost/katamaran:dev] --> B[Load image into cluster]
+    B --> C[Apply deploy/daemonset.yaml]
+    C --> D[/usr/local/bin/katamaran present on Kata nodes]
+    D --> E[Create destination VM pod]
+    E --> F[Detect QMP socket + tap iface]
+    F --> G[Run deploy/migrate.sh]
+    G --> H[Render job-dest.yaml via envsubst]
+    H --> I[Wait dest job ready]
+    I --> J[Render job-source.yaml via envsubst]
+    J --> K[Wait source job complete]
+    K --> L[Collect logs + migration result]
+```
+
 ### Storage: CSI Driver Compatibility
 
 The storage strategy depends on whether the cluster uses **shared storage** (both nodes see the same block device) or **local storage** (each node has its own disk).
@@ -273,13 +351,23 @@ The storage strategy depends on whether the cluster uses **shared storage** (bot
 
 With Ceph RBD, migration skips the most time-consuming phase entirely. The flow becomes:
 
-```text
-1. Destination QEMU opens the same RBD image (read-only initially)
-2. katamaran -mode dest -shared-storage   → installs qdisc, waits for RESUME
-3. katamaran -mode source -shared-storage  → RAM pre-copy only
-4. Source VM pauses (STOP), destination resumes (RESUME)
-5. RBD image ownership transfers (unmap source, promote dest to read-write)
-6. Network cutover via IPIP tunnel + sch_plug flush
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant RBD as Ceph RBD
+    participant D as Destination Node
+
+    D->>RBD: Open same RBD image (read-only)
+    Note over D: katamaran -mode dest -shared-storage
+    D->>D: Install qdisc, wait for RESUME
+
+    Note over S: katamaran -mode source -shared-storage
+    S->>D: RAM pre-copy only (no storage mirror)
+    Note over S: VM pauses (STOP)
+    Note over D: VM resumes (RESUME)
+    S-->>RBD: Unmap image
+    D->>RBD: Promote to read-write
+    S->>D: IPIP tunnel + sch_plug flush
 ```
 
 Total migration time is dominated by RAM pre-copy convergence — typically **seconds** for a 4 GB VM with moderate dirty page rate.
@@ -288,10 +376,26 @@ Total migration time is dominated by RAM pre-copy convergence — typically **se
 
 With Longhorn or local disks, all three phases run:
 
-```text
-1. NBD drive-mirror copies the entire block device (minutes to hours for large disks)
-2. RAM pre-copy runs after storage is synchronized
-3. Network cutover as above
+```mermaid
+sequenceDiagram
+    participant S as Source Node
+    participant D as Destination Node
+
+    rect rgb(59, 130, 246, 0.1)
+    Note over S,D: Phase 1 — minutes to hours (scales with disk size)
+    S->>D: NBD drive-mirror (entire block device)
+    Note over S: VM keeps running
+    end
+
+    rect rgb(16, 185, 129, 0.1)
+    Note over S,D: Phase 2 — seconds (after storage sync)
+    S->>D: RAM pre-copy
+    end
+
+    rect rgb(245, 158, 11, 0.1)
+    Note over S,D: Phase 3 — milliseconds
+    S->>D: Network cutover (tunnel + qdisc flush)
+    end
 ```
 
 The NBD mirror runs in the background while the VM stays live, but total wall-clock time scales with disk size and write rate.
@@ -364,14 +468,20 @@ spec:
 
 The operator's reconciliation loop:
 
-```text
-1. Validate: target node has capacity, Kata runtime, compatible kernel
-2. Prepare destination: create placeholder pod, get QMP socket path
-3. Start dest-side: invoke katamaran -mode dest on target node
-4. Start source-side: invoke katamaran -mode source on source node
-5. Wait for completion (or timeout/rollback)
-6. Update: patch pod's nodeName, update endpoint slices, clean up source
-7. If failed: cancel migration, resume source VM, clean up destination
+```mermaid
+flowchart TD
+    A[VMMigration CR created] --> B{Validate target node}
+    B -->|capacity, runtime, kernel| C[Prepare destination pod]
+    C --> D[Get QMP socket paths]
+    D --> E["katamaran -mode dest (target node)"]
+    E --> F["katamaran -mode source (source node)"]
+    F --> G{Migration result}
+    G -->|Success| H[Patch pod nodeName]
+    H --> I[Update endpoint slices]
+    I --> J[Clean up source]
+    G -->|Failure| K[migrate_cancel]
+    K --> L[Resume source VM]
+    L --> M[Clean up destination]
 ```
 
 ### Open Questions for Production
@@ -387,12 +497,12 @@ The operator's reconciliation loop:
 
 ## Testing
 
-All test environments use minikube with KVM. See [TESTING.md](docs/TESTING.md) for details.
+E2E environments use either minikube or Kind with KVM support. See [TESTING.md](docs/TESTING.md) for details.
 
 Quick smoke test (no VMs required):
 
 ```bash
-./testenv/test.sh
+./scripts/test.sh
 ```
 
 ### Minikube Smoke Test
@@ -400,8 +510,9 @@ Quick smoke test (no VMs required):
 Validates katamaran against a real Kata Containers QMP socket inside a single-node minikube cluster. Requires KVM with nested virtualization, minikube, kubectl, and helm:
 
 ```bash
-./testenv/minikube-test.sh          # auto-cleans up after
-./testenv/minikube-test.sh --keep   # keep cluster for debugging
+./scripts/minikube-test.sh              # auto-cleans up after
+./scripts/minikube-test.sh --keep       # keep cluster for debugging
+./scripts/minikube-test.sh --env-only   # stop after environment setup
 ```
 
 ### Two-Node E2E Migration Test (Calico)
@@ -409,8 +520,8 @@ Validates katamaran against a real Kata Containers QMP socket inside a single-no
 Creates a two-node minikube cluster with Calico CNI, installs Kata Containers on both nodes, and runs a full live migration:
 
 ```bash
-./testenv/minikube-e2e.sh           # run full e2e, clean up on exit
-./testenv/minikube-e2e.sh teardown  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico
+./scripts/e2e.sh teardown --provider minikube --cni calico
 ```
 
 ### OVN-Kubernetes E2E Migration Test (Zero-Drop Proof)
@@ -418,8 +529,8 @@ Creates a two-node minikube cluster with Calico CNI, installs Kata Containers on
 Creates a two-node minikube cluster with **OVN-Kubernetes** CNI, runs a full live migration, and **automatically verifies zero packet loss** by running a continuous ping throughout the migration:
 
 ```bash
-./testenv/minikube-ovn-e2e.sh           # run full e2e with zero-drop proof
-./testenv/minikube-ovn-e2e.sh teardown  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni ovn --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni ovn
 ```
 
 This test produces a structured report showing transmitted/received/lost packets, RTT statistics, and packets with elevated RTT that were buffered during the cutover window. OVN-Kubernetes is the recommended production CNI for live migration due to its near-instant port-chassis rebinding via the OVN southbound DB.
@@ -429,8 +540,8 @@ This test produces a structured report showing transmitted/received/lost packets
 Validates `-shared-storage` mode with a real NFS server running in-cluster. Deploys an NFS server pod, creates a PV/PVC, mounts it in both Kata pods, writes test data before migration, and verifies it survives the cutover. This is the only test that exercises actual shared storage:
 
 ```bash
-./testenv/minikube-nfs-e2e.sh           # run full e2e with NFS + zero-drop proof
-./testenv/minikube-nfs-e2e.sh teardown  # destroy cluster only
+./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni calico --storage nfs
 ```
 
 See [TESTING.md](docs/TESTING.md) Section 7 for details.
@@ -440,9 +551,19 @@ See [TESTING.md](docs/TESTING.md) Section 7 for details.
 Alternative to minikube for environments with Podman. Kind uses container "nodes" with `/dev/kvm` passed through for nested Kata Containers virtualization. Faster startup (~30s vs ~2–5min) and lower disk footprint (~5 GB vs ~20 GB), making it suitable for CI pipelines:
 
 ```bash
-./testenv/kind-e2e.sh              # run full e2e with zero-drop proof
-./testenv/kind-e2e.sh teardown     # destroy cluster only
+./scripts/e2e.sh --provider kind --ping-proof
+./scripts/e2e.sh teardown --provider kind
 ```
 
 Requires `kind`, `kubectl`, `helm`, and rootful `podman`. Uses kindnet CNI (default). See [TESTING.md](docs/TESTING.md) Section 6 for details.
 
+### Job-Based E2E Migration Test (Zero-Drop Proof)
+
+Uses Kubernetes Jobs instead of SSH for migration execution — closer to the production deployment model:
+
+```bash
+./scripts/e2e.sh --provider kind --method job --ping-proof
+./scripts/e2e.sh teardown --provider kind --method job
+```
+
+Requires `kind`, `kubectl`, `helm`, `podman`, and `/dev/kvm`. See [TESTING.md](docs/TESTING.md) Section 8 for details.

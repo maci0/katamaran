@@ -36,7 +36,6 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-readonly BINARY="${PROJECT_ROOT}/katamaran"
 readonly CLUSTER="katamaran-e2e"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 readonly KATA_CHART_VERSION="3.27.0"
@@ -94,10 +93,6 @@ for cmd in kind kubectl helm podman; do
 done
 if [[ ! -c /dev/kvm ]]; then
     error "/dev/kvm not found. KVM is required for Kata Containers."
-    exit 1
-fi
-if [[ ! -x "${BINARY}" ]]; then
-    error "katamaran binary not found at ${BINARY}. Build it first."
     exit 1
 fi
 
@@ -212,13 +207,12 @@ for node in "${NODE1}" "${NODE2}"; do
 done
 success "Kernel modules loaded"
 
-# ─── 6. Copy Binary ─────────────────────────────────────────────────────────
-
-log "Copying katamaran binary to both nodes..."
-for node in "${NODE1}" "${NODE2}"; do
-    podman cp "${BINARY}" "${node}:/tmp/katamaran"
-    node_exec "$node" "chmod +x /tmp/katamaran"
-done
+# ─── 6. Deploy katamaran Binary ──────────────────────────────────
+log "Building and deploying katamaran container image..."
+podman build -t katamaran:dev "${PROJECT_ROOT}"
+kind load docker-image katamaran:dev --name "${CLUSTER}"
+kubectl --context "kind-${CLUSTER}" apply -f "${PROJECT_ROOT}/deploy/daemonset.yaml"
+kubectl --context "kind-${CLUSTER}" -n kube-system rollout status daemonset/katamaran-deploy --timeout=120s
 
 log "Cleaning up old pods..."
 kubectl --context "kind-${CLUSTER}" delete pod kata-src kata-dst --force --grace-period=0 2>/dev/null || true
@@ -370,7 +364,7 @@ log "Starting katamaran DESTINATION on worker node..."
 node_exec "${NODE2}" "
     systemctl reset-failed katamaran-dest.service 2>/dev/null || true
     systemctl stop katamaran-dest.service 2>/dev/null || true
-    systemd-run --unit=katamaran-dest.service --remain-after-exit /tmp/katamaran -mode dest -qmp '${DST_SOCK}' -shared-storage
+    systemd-run --unit=katamaran-dest.service --remain-after-exit /usr/local/bin/katamaran -mode dest -qmp '${DST_SOCK}' -shared-storage
 "
 
 sleep 3  # Wait for dest to be ready.
@@ -378,7 +372,7 @@ sleep 3  # Wait for dest to be ready.
 log "Starting katamaran SOURCE on control-plane (migrating to ${NODE2_IP})..."
 set +e
 node_exec "${NODE1}" \
-    "/tmp/katamaran -mode source -qmp '${SRC_SOCK}' -dest-ip '${NODE2_IP}' -vm-ip '${POD_IP}' -shared-storage" \
+    "/usr/local/bin/katamaran -mode source -qmp '${SRC_SOCK}' -dest-ip '${NODE2_IP}' -vm-ip '${POD_IP}' -shared-storage" \
     2>&1 | tee /tmp/katamaran-kind-source.log
 MIG_STATUS=${PIPESTATUS[0]}
 set -e

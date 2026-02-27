@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nfs-server
+  labels:
+    role: nfs-server
+spec:
+  nodeName: ${NODE_NAME}
+  containers:
+  - name: nfs-server
+    image: itsthenetwork/nfs-server-alpine:12
+    securityContext:
+      privileged: true
+    ports:
+    - containerPort: 2049
+      name: nfs
+    env:
+    - name: SHARED_DIRECTORY
+      value: "${NFS_EXPORT_PATH}"
+    volumeMounts:
+    - name: nfs-data
+      mountPath: ${NFS_EXPORT_PATH}
+  volumes:
+  - name: nfs-data
+    emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-service
+spec:
+  selector:
+    role: nfs-server
+  ports:
+  - port: 2049
+    targetPort: 2049
+    protocol: TCP
+  clusterIP: None
