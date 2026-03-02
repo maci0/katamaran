@@ -197,6 +197,11 @@ set +e
 wait_rc=$?
 set -e
 
+# Wait for dest job to complete too (it finishes shortly after source).
+if [[ "$wait_rc" -eq 0 ]]; then
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete job/katamaran-dest --timeout=60s 2>/dev/null || true
+fi
+
 dump_debug
 
 if [[ "$wait_rc" -ne 0 ]]; then
