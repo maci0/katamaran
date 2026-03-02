@@ -7,140 +7,83 @@ import (
 	"testing"
 )
 
-func TestIPFamily_IPv4(t *testing.T) {
+func TestIPFamily(t *testing.T) {
 	t.Parallel()
-	addr := netip.MustParseAddr("10.0.0.1")
-	if got := IPFamily(addr); got != "IPv4" {
-		t.Fatalf("IPFamily(10.0.0.1) = %q, want IPv4", got)
+	if got := IPFamily(netip.MustParseAddr("10.0.0.1")); got != "IPv4" {
+		t.Fatalf("got %q, want IPv4", got)
+	}
+	if got := IPFamily(netip.MustParseAddr("fd00::1")); got != "IPv6" {
+		t.Fatalf("got %q, want IPv6", got)
 	}
 }
 
-func TestIPFamily_IPv6(t *testing.T) {
-	t.Parallel()
-	addr := netip.MustParseAddr("fd00::1")
-	if got := IPFamily(addr); got != "IPv6" {
-		t.Fatalf("IPFamily(fd00::1) = %q, want IPv6", got)
-	}
-}
-
-func TestSetupTunnel_InvalidDestIP(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "not-an-ip", "10.0.0.1", "ipip")
-	if err == nil {
-		t.Fatal("expected error for invalid destIP")
-	}
-	if !strings.Contains(err.Error(), "invalid destIP") {
-		t.Fatalf("expected 'invalid destIP' in error, got: %v", err)
-	}
-}
-
-func TestSetupTunnel_InvalidVmIP(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "10.0.0.1", "bad-ip", "ipip")
-	if err == nil {
-		t.Fatal("expected error for invalid vmIP")
-	}
-	if !strings.Contains(err.Error(), "invalid vmIP") {
-		t.Fatalf("expected 'invalid vmIP' in error, got: %v", err)
-	}
-}
-
-func TestSetupTunnel_AddressFamilyMismatch(t *testing.T) {
+func TestSetupTunnel_Validation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		destIP string
-		vmIP   string
+		name    string
+		dest    netip.Addr
+		vm      netip.Addr
+		wantErr string
 	}{
-		{"IPv4_dest_IPv6_vm", "10.0.0.1", "fd00::1"},
-		{"IPv6_dest_IPv4_vm", "fd00::1", "10.0.0.1"},
+		{"InvalidDest", netip.Addr{}, netip.MustParseAddr("10.0.0.1"), "invalid destination"},
+		{"InvalidVM", netip.MustParseAddr("10.0.0.1"), netip.Addr{}, "invalid destination"},
+		{"FamilyMismatch_v4v6", netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fd00::1"), "families must match"},
+		{"FamilyMismatch_v6v4", netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.1"), "families must match"},
+		{"MappedV4", netip.MustParseAddr("::ffff:192.168.1.1"), netip.MustParseAddr("192.168.1.2"), ""},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := SetupTunnel(context.Background(), tc.destIP, tc.vmIP, "ipip")
-			if err == nil {
-				t.Fatal("expected error for address family mismatch")
-			}
-			if !strings.Contains(err.Error(), "address family mismatch") {
-				t.Fatalf("expected 'address family mismatch' in error, got: %v", err)
+			err := SetupTunnel(context.Background(), tt.dest, tt.vm, "ipip")
+			if tt.wantErr == "" {
+				if err != nil && (strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") || strings.Contains(err.Error(), "must match")) {
+					t.Fatalf("expected no validation error, got: %v", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
 			}
 		})
 	}
 }
 
-func TestSetupTunnel_IPv4MappedNormalization(t *testing.T) {
+func TestSetupTunnel_WithoutRoot(t *testing.T) {
 	t.Parallel()
-	// ::ffff:10.0.0.1 paired with 10.244.1.15 should NOT produce a family mismatch,
-	// because ::ffff:10.0.0.1 should be unmapped to 10.0.0.1 (IPv4).
-	// The tunnel creation itself will fail (no root), but we should get past validation.
-	err := SetupTunnel(context.Background(), "::ffff:10.0.0.1", "10.244.1.15", "ipip")
-	if err == nil {
-		// If we're running as root somehow and ip commands succeed, that's fine too.
-		return
+	tests := []struct {
+		name string
+		dest string
+		vm   string
+		mode string
+	}{
+		{"IPv4_IPIP", "10.0.0.1", "10.244.1.15", "ipip"},
+		{"IPv4_GRE", "10.0.0.1", "10.244.1.15", "gre"},
+		{"IPv6_IPIP", "fd00::1", "fd00::2", "ipip"},
+		{"IPv6_GRE", "fd00::1", "fd00::2", "gre"},
 	}
-	if strings.Contains(err.Error(), "address family mismatch") {
-		t.Fatal("IPv4-mapped address should be normalized, not rejected as cross-family")
-	}
-	if strings.Contains(err.Error(), "invalid") {
-		t.Fatal("IPv4-mapped address should be valid")
-	}
-}
 
-func TestSetupTunnel_IPv4_IPIP_FailsWithoutRoot(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "10.0.0.1", "10.244.1.15", "ipip")
-	if err == nil {
-		return // running as root — tunnel was actually created
-	}
-	// Should fail at the ip command level, not at validation.
-	if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("should pass validation and fail at ip command, got: %v", err)
-	}
-}
-
-func TestSetupTunnel_IPv4_GRE_FailsWithoutRoot(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "10.0.0.1", "10.244.1.15", "gre")
-	if err == nil {
-		return
-	}
-	if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("should pass validation and fail at ip command, got: %v", err)
-	}
-}
-
-func TestSetupTunnel_IPv6_IPIP_FailsWithoutRoot(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "fd00::1", "fd00::2", "ipip")
-	if err == nil {
-		return
-	}
-	if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("should pass validation and fail at ip command, got: %v", err)
-	}
-}
-
-func TestSetupTunnel_IPv6_GRE_FailsWithoutRoot(t *testing.T) {
-	t.Parallel()
-	err := SetupTunnel(context.Background(), "fd00::1", "fd00::2", "gre")
-	if err == nil {
-		return
-	}
-	if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") {
-		t.Fatalf("should pass validation and fail at ip command, got: %v", err)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := SetupTunnel(context.Background(),
+				netip.MustParseAddr(tt.dest),
+				netip.MustParseAddr(tt.vm),
+				tt.mode,
+			)
+			if err != nil && (strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch")) {
+				t.Fatalf("should pass validation and fail at ip command, got: %v", err)
+			}
+		})
 	}
 }
 
 func TestTeardownTunnel_NoTunnel(t *testing.T) {
 	t.Parallel()
 	err := TeardownTunnel(context.Background())
-	if err == nil {
-		return // tunnel somehow existed
-	}
-	// Should fail at ip command level.
-	if strings.Contains(err.Error(), "invalid") {
+	if err != nil && strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
@@ -150,8 +93,9 @@ func TestSetupTunnel_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := SetupTunnel(ctx, "10.0.0.1", "10.244.1.15", "ipip")
-	if err == nil {
-		return // should not happen with cancelled context
-	}
+	_ = SetupTunnel(ctx,
+		netip.MustParseAddr("10.0.0.1"),
+		netip.MustParseAddr("10.244.1.15"),
+		"ipip",
+	)
 }

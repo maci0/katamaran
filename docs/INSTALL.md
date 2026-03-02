@@ -1,0 +1,167 @@
+# Installation Guide
+
+This guide covers three install paths:
+
+1. Local binary build (single host or manual node copy)
+2. Container image build
+3. Kubernetes node install via DaemonSet
+
+## Prerequisites
+
+- Linux host
+- Go 1.22+
+- Root privileges on nodes where migration runs (`sudo`)
+- `iproute2` tools (`ip`, `tc`)
+- Kernel modules available on migration nodes:
+  - `sch_plug`
+  - `ipip`
+  - `ip6_tunnel`
+  - `ip_gre`
+  - `ip6_gre`
+
+For Kubernetes install paths:
+
+- Kubernetes cluster
+- Kata Containers runtime installed on target nodes
+- `kubectl`
+- `podman` (or Docker-compatible workflow)
+
+## Option 1: Build Local Binary
+
+From repository root:
+
+```bash
+make
+```
+
+Or manually:
+
+```bash
+go build -o bin/katamaran ./cmd/katamaran/
+```
+
+Install globally on a host:
+
+```bash
+sudo install -m 0755 ./bin/katamaran /usr/local/bin/katamaran
+```
+
+Quick sanity check:
+
+```bash
+katamaran -help
+```
+
+## Option 2: Build Container Image
+
+Build image:
+
+```bash
+make image
+```
+
+Or manually using podman/docker directly:
+
+```bash
+podman build -t localhost/katamaran:dev .
+```
+
+Sanity check:
+
+```bash
+podman run --rm localhost/katamaran:dev -help
+```
+
+## Option 3: Install on Kubernetes Nodes (DaemonSet)
+
+This installs `katamaran` onto `/usr/local/bin/katamaran` on nodes labeled for Kata runtime. The DaemonSet also configures the Kata QMP extra-monitor socket (required for migration) and loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `sch_plug`) on each node via an init container.
+
+### Step 1: Build image
+
+```bash
+make image
+```
+
+### Step 2: Load image into cluster
+
+(The `make image` command automatically exports `katamaran.tar`)
+
+Minikube example:
+
+```bash
+minikube -p <profile> image load katamaran.tar
+```
+
+Kind example:
+
+```bash
+kind load image-archive katamaran.tar --name <cluster-name>
+```
+
+### Step 3: Apply DaemonSet
+
+```bash
+kubectl apply -f deploy/daemonset.yaml
+kubectl -n kube-system rollout status daemonset/katamaran-deploy --timeout=120s
+```
+
+### Step 4: Verify install
+
+```bash
+kubectl -n kube-system get pods -l app=katamaran
+```
+
+Then on a target node:
+
+```bash
+ls -l /usr/local/bin/katamaran
+/usr/local/bin/katamaran -help
+```
+
+## Job-Based Migration Install (Optional)
+
+If you plan to run migrations through Kubernetes Jobs, these assets are included:
+
+- `deploy/job-dest.yaml`
+- `deploy/job-source.yaml`
+- `deploy/migrate.sh`
+
+`deploy/migrate.sh` renders Job templates with `envsubst` and orchestrates migration.
+
+Show required flags:
+
+```bash
+deploy/migrate.sh --help
+```
+
+## Uninstall
+
+### Remove DaemonSet install
+
+```bash
+kubectl -n kube-system delete daemonset katamaran-deploy
+```
+
+The DaemonSet preStop hook removes `/usr/local/bin/katamaran` from host nodes.
+
+### Remove local binary
+
+```bash
+sudo rm -f /usr/local/bin/katamaran
+rm -rf ./bin
+```
+
+### Remove local image
+
+```bash
+podman rmi localhost/katamaran:dev
+```
+
+## Troubleshooting
+
+- `modprobe: not found` in job init container
+  - Ensure runtime image includes `kmod` and node has required modules.
+- DaemonSet not scheduling
+  - Check node label `katacontainers.io/kata-runtime=true`.
+
+For runtime errors (`dialing QMP socket`, `failed to add plug qdisc`, etc.), see the full [Troubleshooting](../docs/TESTING.md#troubleshooting) table in the Testing Guide.

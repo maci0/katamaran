@@ -1,5 +1,12 @@
-# Compiled binary
-katamaran
+# Build output
+bin/
+dashboard/main
+test_signal
+*.tar
+
+# Generated artifacts
+coverage.out
+godoc_all.txt
 
 # Merge/patch artifacts
 *.orig
@@ -12,6 +19,6 @@ query_qmp.py
 *.qcow2
 *.img
 *.iso
-testenv/kata_test_rsa
-testenv/kata_test_rsa.pub
+scripts/kata_test_rsa
+scripts/kata_test_rsa.pub
 

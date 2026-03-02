@@ -13,15 +13,16 @@
 #   - ~20 GB free disk space, ~16 GB free RAM (nested Kata VMs need headroom)
 #
 # Usage:
-#   ./testenv/minikube-test.sh [--keep]
+#   ./scripts/minikube-test.sh [--keep] [--env-only]
 #
-#   --keep    Don't delete the minikube cluster on exit (for debugging)
+#   --keep      Don't delete the minikube cluster on exit (for debugging)
+#   --env-only  Stop after environment setup (don't run tests)
 
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-readonly BINARY="${PROJECT_ROOT}/katamaran"
+readonly BINARY="${PROJECT_ROOT}/bin/katamaran"
 readonly PROFILE="katamaran-test"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 readonly KATA_CHART_VERSION="3.27.0"
@@ -31,10 +32,16 @@ cd "${SCRIPT_DIR}"
 PASS=0
 FAIL=0
 KEEP=false
+ENV_ONLY=false
 
 for arg in "$@"; do
     case "${arg}" in
         --keep) KEEP=true ;;
+        --env-only) ENV_ONLY=true ;;
+        --help)
+            echo "Usage: ./scripts/minikube-test.sh [--keep] [--env-only]"
+            exit 0
+            ;;
         *) echo "Unknown argument: ${arg}"; exit 1 ;;
     esac
 done
@@ -51,6 +58,10 @@ fail() {
 }
 
 cleanup() {
+    if [[ "${ENV_ONLY}" == "true" ]]; then
+        echo ">>> --env-only specified, leaving minikube profile '${PROFILE}' intact"
+        return
+    fi
     if [[ "${KEEP}" == "true" ]]; then
         echo ">>> --keep specified, leaving minikube profile '${PROFILE}' intact"
         return
@@ -221,6 +232,11 @@ else
     echo "WARNING: QMP handshake tests may fail."
 fi
 
+if [[ "${ENV_ONLY}" == "true" ]]; then
+    echo ">>> Environment setup complete (--env-only)."
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Deploy test pod
 # ---------------------------------------------------------------------------
@@ -261,7 +277,7 @@ minikube -p "${PROFILE}" ssh -- sudo chmod +x /tmp/katamaran
 
 echo ">>> Locating extra QMP monitor socket..."
 # The primary qmp.sock is owned 1:1 by kata-shim. We use the extra-monitor.sock
-# that we configured via extra_monitor_socket = "qmp" in the Kata config.
+# that we configured via extra_monitor_socket = "katamaran" in the Kata config.
 QMP_SOCK="$(minikube -p "${PROFILE}" ssh -- 'sudo find /run/vc -name "extra-monitor.sock" 2>/dev/null | head -1')"
 QMP_SOCK="$(echo "${QMP_SOCK}" | tr -d '[:space:]')"
 

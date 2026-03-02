@@ -17,7 +17,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** the VM continues running on the destination with its local block device intact and zero downtime perceived by the workload.
 
 **Acceptance criteria:**
-- [x] Source VM pauses for no more than 50ms (QEMU downtime limit)
+- [x] Source VM pauses for no more than 25ms (QEMU downtime limit)
 - [x] The entire block device is replicated to the destination via NBD before RAM migration begins
 - [x] The source VM's block job is cancelled with `force:true` after migration completes
 - [x] The destination VM resumes and is fully operational
@@ -167,7 +167,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 **Acceptance criteria:**
 - [x] GARP is sent via QEMU's `announce-self` (not host-side `arping`)
 - [x] Uses the guest's actual MAC address on all NICs
-- [x] Sends 5 rounds with exponential backoff (50ms initial, 100ms step, 550ms max)
+- [x] Sends 5 rounds with exponential backoff (20ms initial, 100ms step, 550ms max)
 - [x] GARP failure is logged as a warning, not a fatal error
 
 ---

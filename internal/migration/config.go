@@ -21,11 +21,6 @@ const (
 	// RAMMigrationPort is the TCP port used for QEMU RAM migration.
 	RAMMigrationPort = "4444"
 
-	// MaxDowntimeMS is the maximum allowed VM pause duration in milliseconds.
-	// QEMU will keep iterating RAM pre-copy rounds until the remaining dirty
-	// pages can be transferred within this budget.
-	MaxDowntimeMS = 50
-
 	// MaxBandwidth is the maximum migration bandwidth in bytes/second (10 GB/s).
 	// Set high to ensure the final dirty page flush completes as fast as possible.
 	MaxBandwidth = 10_000_000_000
@@ -48,7 +43,7 @@ const (
 	PlugQdiscLimit = "32768"
 
 	// GARPInitialMS is the initial delay before the first GARP announcement.
-	GARPInitialMS = 50
+	GARPInitialMS = 20
 
 	// GARPMaxMS is the maximum delay between GARP announcements.
 	GARPMaxMS = 550
@@ -81,31 +76,33 @@ const (
 
 	// CleanupTimeout is the deadline for deferred cleanup operations
 	// (qdisc removal, NBD server stop, block-job-cancel, tunnel teardown).
-	// Cleanup uses context.Background so it runs even after main ctx cancel.
+	// Cleanup uses context.WithoutCancel to run even after main ctx cancel.
 	CleanupTimeout = 10 * time.Second
 )
 
 // CleanupCtx returns a context with CleanupTimeout that is independent of the
-// parent context. This ensures cleanup operations (qdisc removal, NBD stop,
-// block-job-cancel, tunnel teardown) run even after the main ctx is cancelled.
-func CleanupCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), CleanupTimeout)
+// parent's cancellation state but inherits all its values.
+//
+// ARCHITECTURE UPDATE (Phase 1/2): Trade-off in cleanup routines
+// We use context.WithoutCancel(baseCtx) instead of context.Background().
+// This prevents deferred cleanups (qdisc removal, NBD stop, block-job-cancel,
+// tunnel teardown) from being aborted if the main context is cancelled
+// (e.g. by SIGINT or early error), while preserving logging traces, metrics,
+// and other values attached to the parent context.
+func CleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(baseCtx), CleanupTimeout)
 }
 
 // FormatQEMUHost returns the IP address formatted for use in QEMU's
 // colon-delimited URIs (e.g., nbd:host:port, tcp:host:port). IPv6 addresses
 // are wrapped in square brackets to avoid ambiguity with URI field separators.
-// IPv4 addresses are returned unchanged. If the address cannot be parsed
-// (validation happens elsewhere), it is returned as-is.
-func FormatQEMUHost(ip string) string {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return ip
-	}
+// IPv4 addresses are returned unchanged.
+func FormatQEMUHost(addr netip.Addr) string {
+	s := addr.String()
 	if addr.Is6() && !addr.Is4In6() {
-		return "[" + ip + "]"
+		return "[" + s + "]"
 	}
-	return ip
+	return s
 }
 
 // RunCmd executes an external command. It captures combined stdout/stderr and
@@ -124,9 +121,9 @@ func RunCmd(ctx context.Context, name string, args ...string) error {
 		}
 		errMsg := strings.TrimSpace(out.String())
 		if errMsg == "" {
-			errMsg = err.Error()
+			return fmt.Errorf("executing %s %v: %w", name, args, err)
 		}
-		return fmt.Errorf("executing %s %v: %s", name, args, errMsg)
+		return fmt.Errorf("executing %s %v: %s: %w", name, args, errMsg, err)
 	}
 	return nil
 }

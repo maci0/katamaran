@@ -2,11 +2,12 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 
-	"katamaran/internal/qmp"
+	"github.com/maci0/katamaran/internal/qmp"
 )
 
 // RunDestination prepares the destination node for incoming live migration.
@@ -37,17 +38,21 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 			log.Printf("Warning: TAP interface %q not found (%v). Skipping network queue setup.", tapIface, err)
 		} else {
 			// Idempotency: clear any existing qdisc on this interface before adding.
-			cctx, ccancel := CleanupCtx()
-			_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+			cctx, ccancel := CleanupCtx(ctx)
+			if err := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
+				// We don't care if this fails, as the qdisc might not exist.
+				// But we log it instead of completely ignoring it.
+				log.Printf("Cleared existing qdisc on %s (error ignored: %v)", tapIface, err)
+			}
 			ccancel()
 
 			if err := RunCmd(ctx, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", PlugQdiscLimit); err != nil {
-				log.Printf("Warning: failed to add plug qdisc on %s (is sch_plug available?): %v", tapIface, err)
+				return fmt.Errorf("failed to add plug qdisc on %s (is sch_plug available?): %w", tapIface, err)
 			} else if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
-				log.Printf("Warning: failed to release plug qdisc on %s, removing it: %v", tapIface, err)
-				cctx, ccancel := CleanupCtx()
-				_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+				cctx, ccancel := CleanupCtx(ctx)
+				cleanupErr := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
 				ccancel()
+				return errors.Join(fmt.Errorf("failed to release plug qdisc on %s, removing it: %w", tapIface, err), cleanupErr)
 			} else {
 				qdiscInstalled = true
 				log.Println("Network queue installed (pass-through, not plugged yet).")
@@ -59,12 +64,16 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 
 	// Deferred cleanup: remove qdisc on any early return to prevent leaking it.
 	// Disarmed on the success path by setting qdiscInstalled = false.
-	// Uses CleanupCtx() so cleanup runs even if the main ctx is cancelled.
+	// ARCHITECTURE UPDATE (Phase 1/2): Context Safety
+	// Uses CleanupCtx(ctx) so cleanup succeeds even if the main ctx is cancelled,
+	// while avoiding the previous loss of parent context values.
 	defer func() {
-		if qdiscInstalled && tapIface != "" {
-			cctx, ccancel := CleanupCtx()
+		if qdiscInstalled {
+			cctx, ccancel := CleanupCtx(ctx)
 			defer ccancel()
-			_ = RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+			if err := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
+				log.Printf("Warning: failed to remove qdisc: %v", err)
+			}
 		}
 	}()
 
@@ -72,7 +81,11 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	if err != nil {
 		return fmt.Errorf("connecting to destination QMP: %w", err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			log.Printf("warning: closing QMP client: %v", err)
+		}
+	}()
 
 	nbdStarted := false
 	if !sharedStorage {
@@ -96,9 +109,11 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 
 		// Deferred cleanup: stop NBD server on any early return to prevent
 		// leaking it. Disarmed on the success path by setting nbdStarted = false.
+		// Uses CleanupCtx(ctx) to preserve context values (tracing, etc.) while
+		// detaching from the cancellation tree.
 		defer func() {
 			if nbdStarted {
-				cctx, ccancel := CleanupCtx()
+				cctx, ccancel := CleanupCtx(ctx)
 				defer ccancel()
 				if _, stopErr := client.Execute(cctx, "nbd-server-stop", nil); stopErr != nil {
 					log.Printf("Warning: deferred NBD server stop failed: %v", stopErr)
@@ -124,7 +139,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// proactively before waiting for RESUME.
 	if qdiscInstalled {
 		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
-			log.Printf("Warning: failed to plug network queue on %s: %v", tapIface, err)
+			return fmt.Errorf("failed to plug network queue on %s: %w", tapIface, err)
 		} else {
 			log.Println("Network queue plugged. Buffering in-flight packets...")
 		}
@@ -147,7 +162,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// remove it so the VM's network isn't left permanently blocked.
 	if qdiscInstalled {
 		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
-			log.Printf("Warning: failed to unplug network queue on %s: %v", tapIface, err)
+			return fmt.Errorf("failed to unplug network queue on %s: %w", tapIface, err)
 		} else {
 			log.Println("Queue unplugged. Buffered packets delivered. Zero drops achieved.")
 			// Disarm qdisc deferred cleanup — we've successfully flushed and the
@@ -162,7 +177,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 		// Uses CleanupCtx() so the stop succeeds even if the main ctx was
 		// cancelled (e.g., SIGINT received after RESUME).
 		nbdStarted = false
-		cctx, ccancel := CleanupCtx()
+		cctx, ccancel := CleanupCtx(ctx)
 		if _, err := client.Execute(cctx, "nbd-server-stop", nil); err != nil {
 			log.Printf("Warning: failed to stop NBD server: %v", err)
 		} else {
@@ -178,18 +193,18 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// With OVN-based CNIs (OVN-Kubernetes, Kube-OVN), OVN handles port-chassis rebinding automatically.
 	// For other CNIs (Cilium, Calico, Flannel), GARP accelerates convergence.
 	log.Println("Broadcasting Gratuitous ARP via QEMU announce-self...")
-	garpCtx, garpCancel := CleanupCtx()
+	garpCtx, garpCancel := CleanupCtx(ctx)
+	defer garpCancel()
 	if _, err := client.Execute(garpCtx, "announce-self", qmp.AnnounceSelfArgs{
 		Initial: GARPInitialMS,
 		Max:     GARPMaxMS,
 		Rounds:  GARPRounds,
 		Step:    GARPStepMS,
 	}); err != nil {
-		log.Printf("Warning: GARP announce-self failed: %v", err)
+		return fmt.Errorf("GARP announce-self failed: %w", err)
 	} else {
 		log.Printf("GARP announce-self scheduled (%d rounds).", GARPRounds)
 	}
-	garpCancel()
 
 	log.Println("Destination setup complete.")
 	return nil

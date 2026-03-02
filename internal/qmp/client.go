@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -177,16 +178,29 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}
 	defer func() { _ = conn.SetDeadline(time.Time{}) }()
 
-	// Monitor context cancellation. Instead of closing the connection
-	// (which would break deferred cleanup commands that run after cancel),
-	// shorten the deadline to unblock any in-progress reads immediately.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.SetDeadline(time.Now())
-		case <-done:
+	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
+	// We no longer close the connection immediately on context cancellation.
+	// Trade-off: Closing the connection immediately would break deferred cleanup
+	// commands (like `migrate_cancel` or `block-job-cancel`) that must execute
+	// after the main context is cancelled (e.g., via SIGINT).
+	// Instead, we shorten the deadline to unblock any in-progress reads.
+	//
+	// We use context.AfterFunc (Go 1.21+) because it is race-free: its stop()
+	// method guarantees the callback will NOT fire if it returns true. This fixes
+	// the non-deterministic data races of the old goroutine+select pattern.
+	//
+	// callbackDone acts as a synchronization barrier. If the context is cancelled
+	// and the callback runs, we wait for it to finish calling SetDeadline(time.Now()).
+	// This prevents the deferred SetDeadline(time.Time{}) from executing too early
+	// and accidentally clearing the deadline we just set to interrupt the read.
+	callbackDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = conn.SetDeadline(time.Now())
+		close(callbackDone)
+	})
+	defer func() {
+		if !stopCancel() {
+			<-callbackDone
 		}
 	}()
 
@@ -205,7 +219,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v", cmd, ExecuteTimeout)
+				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, ExecuteTimeout, err)
 			}
 			return nil, fmt.Errorf("reading QMP response for %q: %w", cmd, err)
 		}
@@ -234,8 +248,9 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 }
 
 // WaitForEvent blocks until the named QMP event is received or the timeout
-// elapses. Non-matching events are silently discarded. The buffered event
-// queue is checked first to find events that arrived during prior Execute calls.
+// elapses. Non-matching events are buffered for later retrieval. The buffered
+// event queue is checked first to find events that arrived during prior
+// Execute or WaitForEvent calls.
 //
 // On context cancellation, the read deadline is shortened to unblock without
 // destroying the connection.
@@ -249,10 +264,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	for i, ev := range c.events {
 		if ev.Event == eventName {
 			// Remove the matched event from the buffer.
-			// Copy elements and zero the last slot to prevent memory leaks.
-			copy(c.events[i:], c.events[i+1:])
-			c.events[len(c.events)-1] = response{}
-			c.events = c.events[:len(c.events)-1]
+			c.events = slices.Delete(c.events, i, i+1)
 			c.mu.Unlock()
 			return nil
 		}
@@ -274,15 +286,20 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	}
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	// Monitor context cancellation: shorten the deadline to unblock reads
-	// without closing the connection.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.SetReadDeadline(time.Now())
-		case <-done:
+	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
+	// Like in Execute(), we shorten the read deadline on context cancellation
+	// instead of closing the connection. This preserves the socket for any
+	// deferred cleanup commands that use a separate context.
+	// We synchronize via callbackDone so the context.AfterFunc finishes
+	// before the deferred SetReadDeadline(time.Time{}) clears it.
+	callbackDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		_ = conn.SetReadDeadline(time.Now())
+		close(callbackDone)
+	})
+	defer func() {
+		if !stopCancel() {
+			<-callbackDone
 		}
 	}()
 
@@ -294,7 +311,10 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return fmt.Errorf("timed out waiting for QMP event %q after %v", eventName, timeout)
+				return err
+			}
+			if err.Error() == "EOF" {
+				return fmt.Errorf("QEMU closed the QMP connection unexpectedly while waiting for %q (did QEMU crash?)", eventName)
 			}
 			return fmt.Errorf("reading QMP event stream: %w", err)
 		}
@@ -306,6 +326,15 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 
 		if resp.Event == eventName {
 			return nil
+		}
+
+		// Buffer non-matching events so they aren't lost. Without this,
+		// events arriving between WaitForEvent calls would be silently
+		// dropped, causing subsequent WaitForEvent calls to hang.
+		if resp.Event != "" {
+			c.mu.Lock()
+			c.events = append(c.events, resp)
+			c.mu.Unlock()
 		}
 	}
 }

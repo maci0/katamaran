@@ -7,10 +7,10 @@ metadata:
 spec:
   runtimeClassName: kata-qemu
   nodeName: ${NODE_NAME}
-  hostNetwork: ${HOST_NETWORK}
+  ${HOST_NETWORK}
   containers:
   - name: nginx
-    image: nginx:alpine
+    image: registry.k8s.io/pause:3.10.1
     ports:
     - containerPort: 80
 ${VOLUME_MOUNTS_SECTION}

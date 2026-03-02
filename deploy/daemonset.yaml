@@ -16,18 +16,58 @@ spec:
     spec:
       nodeSelector:
         katacontainers.io/kata-runtime: "true"
-      containers:
-      - name: installer
-        image: katamaran:dev
+      hostPID: true
+      initContainers:
+      - name: node-setup
+        image: localhost/katamaran:dev
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
         command: ["/bin/sh", "-c"]
         args:
           - |
+            set -e
+
+            # --- 1. Install katamaran binary ---
+            mkdir -p /host/usr/local/bin
             cp /usr/local/bin/katamaran /host/usr/local/bin/katamaran
             chmod 0755 /host/usr/local/bin/katamaran
             echo "katamaran binary installed"
+
+            # --- 2. Load required kernel modules ---
+            for mod in ipip ip6_tunnel ip_gre sch_plug; do
+              nsenter --target 1 --mount -- modprobe "$mod" 2>/dev/null \
+                && echo "loaded $mod" \
+                || echo "skipped $mod (not available)"
+            done
+
+            # --- 3. Configure Kata QMP extra-monitor socket ---
+            KATA_CFG="/host/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
+            if [ -f "${KATA_CFG}" ]; then
+              if grep -q 'extra_monitor_socket = ""' "${KATA_CFG}" 2>/dev/null; then
+                sed -i '/^\[hypervisor\.qemu\]/,/^\[/{
+                  s/^enable_debug = false/enable_debug = true/
+                  s/^extra_monitor_socket = ""/extra_monitor_socket = "qmp"/
+                }' "${KATA_CFG}"
+                echo "Kata QMP extra-monitor socket enabled"
+              else
+                echo "Kata QMP extra-monitor socket already configured"
+              fi
+            else
+              echo "Kata config not found at ${KATA_CFG} — skipping QMP setup"
+            fi
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+          mountPropagation: HostToContainer
+      containers:
+      - name: keepalive
+        image: localhost/katamaran:dev
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "katamaran node setup complete"
             trap 'rm -f /host/usr/local/bin/katamaran; echo "katamaran binary removed"' TERM
             sleep infinity &
             wait $!
@@ -36,11 +76,11 @@ spec:
             exec:
               command: ["/bin/sh", "-c", "rm -f /host/usr/local/bin/katamaran"]
         volumeMounts:
-        - name: host-bin
-          mountPath: /host/usr/local/bin
+        - name: host-root
+          mountPath: /host
       terminationGracePeriodSeconds: 30
       volumes:
-      - name: host-bin
+      - name: host-root
         hostPath:
-          path: /usr/local/bin
-          type: DirectoryOrCreate
+          path: /
+          type: Directory
