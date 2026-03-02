@@ -5,6 +5,8 @@ metadata:
   namespace: kube-system
 spec:
   backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       nodeName: ${NODE_NAME}
@@ -34,9 +36,7 @@ spec:
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
-        command: ["/bin/sh", "-c"]
-        args:
-          - /usr/local/bin/katamaran -mode dest -qmp "${QMP_SOCKET}" ${EXTRA_ARGS}
+        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran -mode dest -qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc

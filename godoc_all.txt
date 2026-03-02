@@ -1,0 +1,340 @@
+
+katamaran orchestrates zero-packet-drop live migration for Kata Containers with
+support for both shared and non-shared (NBD drive-mirror) storage.
+
+
+TYPES
+
+type PingData struct {
+	Time    string  `json:"time"`
+	Latency float64 `json:"latency"`
+	Error   string  `json:"error,omitempty"`
+}
+
+package migration // import "github.com/maci0/katamaran/internal/migration"
+
+Package migration orchestrates zero-packet-drop live migration for Kata
+Containers with support for both shared and non-shared (NBD drive-mirror)
+storage.
+
+CONSTANTS
+
+const (
+	// NBDPort is the TCP port used for NBD storage mirroring.
+	NBDPort = "10809"
+
+	// RAMMigrationPort is the TCP port used for QEMU RAM migration.
+	RAMMigrationPort = "4444"
+
+	// MaxBandwidth is the maximum migration bandwidth in bytes/second (10 GB/s).
+	// Set high to ensure the final dirty page flush completes as fast as possible.
+	MaxBandwidth = 10_000_000_000
+
+	// EventWaitTimeout is the maximum time to wait for a single QMP event
+	// before assuming the migration has stalled.
+	EventWaitTimeout = 30 * time.Minute
+
+	// StoragePollInterval is how often to check drive-mirror sync progress.
+	StoragePollInterval = 2 * time.Second
+
+	// MigrationPollInterval is how often to check RAM migration status.
+	MigrationPollInterval = 1 * time.Second
+
+	// PostMigrationTunnelDelay is how long to keep the IP tunnel alive
+	// after migration completes, allowing the CNI control plane to converge.
+	PostMigrationTunnelDelay = 5 * time.Second
+
+	// PlugQdiscLimit is the packet buffer size for the tc sch_plug qdisc.
+	PlugQdiscLimit = "32768"
+
+	// GARPInitialMS is the initial delay before the first GARP announcement.
+	GARPInitialMS = 20
+
+	// GARPMaxMS is the maximum delay between GARP announcements.
+	GARPMaxMS = 550
+
+	// GARPRounds is the number of GARP/RARP announcement packets to send.
+	GARPRounds = 5
+
+	// GARPStepMS is the delay increase added after each announcement.
+	GARPStepMS = 100
+
+	// TunnelName is the name of the IP tunnel interface created during
+	// migration to forward in-flight traffic from source to destination.
+	TunnelName = "mig-tun"
+
+	// MigrationTimeout is the maximum wall-clock time allowed for the entire
+	// RAM migration polling loop (query-migrate). Prevents infinite polling
+	// if migration never converges (e.g., perpetual dirty page churn with
+	// auto-converge unable to catch up).
+	MigrationTimeout = 1 * time.Hour
+
+	// StorageSyncTimeout is the maximum wall-clock time allowed for the
+	// drive-mirror synchronization loop. Prevents infinite polling if the
+	// mirror never converges (e.g., VM write rate exceeds mirror bandwidth).
+	StorageSyncTimeout = 2 * time.Hour
+
+	// JobAppearTimeout is the maximum time to wait for a block job to appear
+	// in query-block-jobs after being submitted. If it doesn't appear within
+	// this window, the drive-mirror command likely failed silently.
+	JobAppearTimeout = 30 * time.Second
+
+	// CleanupTimeout is the deadline for deferred cleanup operations
+	// (qdisc removal, NBD server stop, block-job-cancel, tunnel teardown).
+	// Cleanup uses context.Background so it runs even after main ctx cancel.
+	CleanupTimeout = 10 * time.Second
+)
+    Migration tuning constants.
+
+
+VARIABLES
+
+var (
+	ErrMigrationFailed    = errors.New("migration failed")
+	ErrMigrationCancelled = errors.New("migration cancelled")
+)
+    Sentinel errors for migration terminal states.
+
+
+FUNCTIONS
+
+func CleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc)
+    CleanupCtx returns a context with CleanupTimeout that is independent of the
+    parent context. This ensures cleanup operations (qdisc removal, NBD stop,
+    block-job-cancel, tunnel teardown) run even after the main ctx is cancelled.
+
+func FormatQEMUHost(addr netip.Addr) string
+    FormatQEMUHost returns the IP address formatted for use in QEMU's
+    colon-delimited URIs (e.g., nbd:host:port, tcp:host:port). IPv6 addresses
+    are wrapped in square brackets to avoid ambiguity with URI field separators.
+    IPv4 addresses are returned unchanged.
+
+func IPFamily(addr netip.Addr) string
+    IPFamily returns a human-readable label for the IP address family.
+
+func RunCmd(ctx context.Context, name string, args ...string) error
+    RunCmd executes an external command. It captures combined stdout/stderr
+    and returns a wrapped error including the full command line and output
+    on failure. If the context was cancelled, the returned error wraps
+    context.Canceled so callers can detect graceful shutdown with errors.Is(err,
+    context.Canceled).
+
+func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sharedStorage bool) error
+    RunDestination prepares the destination node for incoming live migration.
+
+    Deferred cleanups ensure the qdisc and NBD server are released on any early
+    return, preventing resource leaks. They are disarmed on the success path by
+    setting the corresponding guard bool to false.
+
+    Sequentially it:
+     1. Installs a tc sch_plug qdisc on the tap interface in pass-through mode
+        (sch_plug defaults to buffering, so we immediately release_indefinite;
+        non-fatal if sch_plug is unavailable or tapIface is empty)
+     2. Starts an NBD server for storage mirroring (unless shared-storage mode)
+     3. Plugs the network queue to catch in-flight packets (skipped if step 1
+        failed)
+     4. Waits for the RESUME event (unconditional)
+     5. Flushes all buffered packets via release_indefinite (skipped if step 1
+        failed)
+     6. Stops the NBD server (unless shared-storage mode)
+     7. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
+
+func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, driveID string, sharedStorage bool, tunnelMode string, downtimeLimitMS int) error
+    RunSource initiates live migration from the source node to the destination.
+
+func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) error
+    SetupTunnel creates an IP tunnel to the destination node and installs a
+    host route for the VM IP through it. This ensures packets arriving at the
+    (now-stale) source during CNI convergence are forwarded to the destination.
+
+    tunnelMode selects the encapsulation protocol:
+      - "ipip": IPIP for IPv4 (mode ipip), ip6tnl for IPv6 (mode ip6ip6).
+        Minimal overhead but may be blocked by cloud VPC security groups.
+      - "gre": GRE for IPv4 (mode gre), ip6gre for IPv6. Widely supported by
+        cloud middleboxes (AWS, GCP, Azure) at +4 bytes overhead.
+
+    Both addresses must be the same family and already Unmap'd by the caller.
+
+    The function is idempotent: any pre-existing tunnel with the same name is
+    removed before creation to handle restarts or repeated invocations cleanly.
+
+    On partial failure (e.g., route add fails after tunnel is created), the
+    tunnel is cleaned up before returning the error to prevent resource leaks.
+
+func TeardownTunnel(ctx context.Context) error
+    TeardownTunnel removes the IP tunnel created during migration. Uses "ip
+    link del" which works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
+    Deleting the tunnel implicitly removes the associated host route.
+
+package qmp // import "github.com/maci0/katamaran/internal/qmp"
+
+Package qmp implements a minimal synchronous client for the QEMU Machine
+Protocol.
+
+QMP is a JSON-based protocol for programmatic control of a QEMU instance. This
+client supports synchronous command execution and asynchronous event waiting.
+It is NOT safe for concurrent use — callers must serialize calls to Execute and
+WaitForEvent externally. The internal mutex only protects the connection state
+(nil check) and the buffered event queue.
+
+CONSTANTS
+
+const (
+	// DialTimeout is the maximum time to wait for a QMP socket connection.
+	DialTimeout = 10 * time.Second
+
+	// GreetingTimeout is the maximum time to wait for the QMP greeting banner
+	// during initial connection. If QEMU was started with -qmp wait=off, no
+	// greeting is sent and we proceed after this timeout elapses.
+	GreetingTimeout = 1 * time.Second
+
+	// ExecuteTimeout is the maximum time to wait for a synchronous QMP
+	// command response. If QEMU becomes unresponsive mid-command, Execute()
+	// returns a timeout error instead of blocking forever.
+	ExecuteTimeout = 2 * time.Minute
+)
+    Client timeouts.
+
+
+TYPES
+
+type AnnounceSelfArgs struct {
+	Initial int `json:"initial"`
+	Max     int `json:"max"`
+	Rounds  int `json:"rounds"`
+	Step    int `json:"step"`
+}
+    AnnounceSelfArgs are the arguments for the announce-self command.
+
+type Args interface {
+	// Has unexported methods.
+}
+    Args is a sealed marker interface for QMP command arguments. Only types
+    in this package can implement it (via the unexported method), preventing
+    arbitrary values from being passed to Execute().
+
+type BlockJobCancelArgs struct {
+	Device string `json:"device"`
+	Force  bool   `json:"force"`
+}
+    BlockJobCancelArgs are the arguments for the block-job-cancel command.
+
+type BlockJobInfo struct {
+	Device string `json:"device"`
+	Len    int64  `json:"len"`
+	Offset int64  `json:"offset"`
+	Ready  bool   `json:"ready"`
+	Status string `json:"status"`
+	Type   string `json:"type"`
+}
+    BlockJobInfo represents a single entry returned by query-block-jobs.
+
+type Client struct {
+	// Has unexported fields.
+}
+    Client is a minimal synchronous client for the QEMU Machine Protocol.
+
+func NewClient(ctx context.Context, socketPath string) (*Client, error)
+    NewClient connects to a QEMU QMP unix socket, performs the capability
+    negotiation handshake, and returns a ready-to-use client.
+
+func (c *Client) Close() error
+    Close releases the underlying socket connection. It is safe to call multiple
+    times; subsequent calls after the first return nil. It is thread-safe.
+
+func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMessage, error)
+    Execute sends a synchronous QMP command and returns the raw JSON response.
+    Asynchronous events received while waiting for the reply are buffered so
+    WaitForEvent can find them later.
+
+    A read deadline of ExecuteTimeout (or the context deadline, whichever is
+    sooner) is enforced. On context cancellation, the deadline is shortened to
+    unblock reads without destroying the connection, preserving it for deferred
+    cleanup commands.
+
+    Returns an error if the connection has already been closed.
+
+func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout time.Duration) error
+    WaitForEvent blocks until the named QMP event is received or the timeout
+    elapses. Non-matching events are buffered for later retrieval. The buffered
+    event queue is checked first to find events that arrived during prior
+    Execute or WaitForEvent calls.
+
+    On context cancellation, the read deadline is shortened to unblock without
+    destroying the connection.
+
+    Returns an error if the connection has already been closed.
+
+type DriveMirrorArgs struct {
+	Device string `json:"device"`
+	Target string `json:"target"`
+	Sync   string `json:"sync"`
+	Mode   string `json:"mode"`
+	JobID  string `json:"job-id"`
+}
+    DriveMirrorArgs are the arguments for the drive-mirror command.
+
+type Error struct {
+	Class string `json:"class"`
+	Desc  string `json:"desc"`
+}
+    Error represents a QMP protocol-level error.
+
+func (e *Error) Error() string
+
+type MigrateArgs struct {
+	URI string `json:"uri"`
+}
+    MigrateArgs are the arguments for the migrate command.
+
+type MigrateInfo struct {
+	Status    string `json:"status"`
+	ErrorDesc string `json:"error-desc,omitempty"`
+	RAM       struct {
+		Total       int64 `json:"total"`
+		Transferred int64 `json:"transferred"`
+		Remaining   int64 `json:"remaining"`
+	} `json:"ram,omitempty"`
+}
+    MigrateInfo represents the response from query-migrate.
+
+type MigrateSetCapabilitiesArgs struct {
+	Capabilities []MigrationCapability `json:"capabilities"`
+}
+    MigrateSetCapabilitiesArgs are the arguments for migrate-set-capabilities.
+
+type MigrateSetParametersArgs struct {
+	DowntimeLimit int64 `json:"downtime-limit"`
+	MaxBandwidth  int64 `json:"max-bandwidth"`
+}
+    MigrateSetParametersArgs are the arguments for migrate-set-parameters.
+
+type MigrationCapability struct {
+	Capability string `json:"capability"`
+	State      bool   `json:"state"`
+}
+    MigrationCapability describes a single migration capability toggle.
+
+type NBDServerAddArgs struct {
+	Device   string `json:"device"`
+	Writable bool   `json:"writable"`
+}
+    NBDServerAddArgs are the arguments for the nbd-server-add command.
+
+type NBDServerAddr struct {
+	Type string            `json:"type"`
+	Data NBDServerAddrData `json:"data"`
+}
+    NBDServerAddr describes the listen address for the NBD server.
+
+type NBDServerAddrData struct {
+	Host string `json:"host"`
+	Port string `json:"port"`
+}
+    NBDServerAddrData contains the host and port for the NBD server address.
+
+type NBDServerStartArgs struct {
+	Addr NBDServerAddr `json:"addr"`
+}
+    NBDServerStartArgs are the arguments for the nbd-server-start command.
+

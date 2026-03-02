@@ -3,12 +3,12 @@
 ### TL;DR
 
 ```bash
-./scripts/test.sh                  # smoke tests — no VMs, no KVM, runs anywhere
-./scripts/e2e.sh --provider minikube --cni calico # two-node live migration (Calico)
-./scripts/e2e.sh --provider minikube --cni ovn    # two-node + zero-drop proof (OVN-Kubernetes)
-./scripts/e2e.sh --provider minikube --storage nfs # two-node + NFS shared storage + zero-drop proof
-./scripts/e2e.sh --provider kind                  # two-node + zero-drop proof (Kind + Podman)
-./scripts/e2e.sh --provider kind --method job     # two-node + zero-drop proof (Kind + Podman + Jobs)
+./scripts/test.sh                                               # smoke tests — no VMs, no KVM, runs anywhere
+./scripts/e2e.sh --provider minikube --cni calico --ping-proof  # two-node + zero-drop proof (Calico)
+./scripts/e2e.sh --provider minikube --cni ovn --ping-proof     # two-node + zero-drop proof (OVN-Kubernetes)
+./scripts/e2e.sh --provider minikube --cni cilium --ping-proof  # two-node + zero-drop proof (Cilium)
+./scripts/e2e.sh --provider minikube --cni flannel --ping-proof # two-node + zero-drop proof (Flannel)
+./scripts/e2e.sh --provider kind --ping-proof                   # two-node + zero-drop proof (Kind + Podman)
 ```
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
@@ -23,13 +23,16 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 - [Prerequisites](#prerequisites)
   - [Verify Nested Virtualization](#verify-nested-virtualization)
 - [1. Smoke Tests (No VMs Required)](#1-smoke-tests-no-vms-required)
-- [2. Minikube Smoke Test (Single-Node, Real QMP)](#2-minikube-smoke-test-single-node-real-qmp)
-- [3. Two-Node E2E Migration Test](#3-two-node-e2e-migration-test)
-- [4. Zero-Packet-Drop Proof — Full Worked Example](#4-zero-packet-drop-proof--full-worked-example)
-- [5. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#5-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
-- [6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
-- [7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#7-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
-- [8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)](#8-job-based-e2e-migration-test-kind--podman-zero-drop-proof)
+- [2. Fuzz Tests (Go Native Fuzzing)](#2-fuzz-tests-go-native-fuzzing)
+- [3. Minikube Smoke Test (Single-Node, Real QMP)](#3-minikube-smoke-test-single-node-real-qmp)
+- [4. Two-Node E2E Migration Test](#4-two-node-e2e-migration-test)
+- [5. Zero-Packet-Drop Proof — Full Worked Example](#5-zero-packet-drop-proof--full-worked-example)
+- [6. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
+- [7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)](#7-cilium-e2e-migration-test-two-node-zero-drop-proof)
+- [8. Flannel E2E Migration Test (Two-Node, Zero-Drop Proof)](#8-flannel-e2e-migration-test-two-node-zero-drop-proof)
+- [9. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#9-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
+- [10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#10-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
+- [11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)](#11-job-based-orchestration-details-kind--podman-zero-drop-proof)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -70,15 +73,56 @@ This validates:
 - Shell scripts have valid syntax
 - Required project files exist
 
-## 2. Minikube Smoke Test (Single-Node, Real QMP)
+## 2. Fuzz Tests (Go Native Fuzzing)
+
+Go native fuzz tests (Go 1.18+) cover the QMP protocol parsing layer and configuration formatting — the primary attack surface for untrusted input from QEMU sockets.
+
+### Run Seed Corpus (Unit Test Mode)
+
+The seed corpus runs as standard unit tests — instant, no randomization:
+
+```bash
+go test ./internal/qmp/ -run "^Fuzz" -count=1
+go test ./internal/migration/ -run "^Fuzz" -count=1
+```
+
+### Run Actual Fuzzing
+
+To exercise the fuzzer with random mutations, specify a target and duration:
+
+```bash
+go test ./internal/qmp/ -fuzz=FuzzResponseUnmarshal -fuzztime=30s
+go test ./internal/qmp/ -fuzz=FuzzClientProtocol -fuzztime=30s
+go test ./internal/qmp/ -fuzz=FuzzBlockJobInfoUnmarshal -fuzztime=30s
+go test ./internal/qmp/ -fuzz=FuzzMigrateInfoUnmarshal -fuzztime=30s
+go test ./internal/qmp/ -fuzz=FuzzErrorFormat -fuzztime=30s
+go test ./internal/qmp/ -fuzz=FuzzArgsSerialization -fuzztime=30s
+go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
+```
+
+> **Note:** Go fuzzing runs one fuzz target at a time. Each command above fuzzes a single target. Crashing inputs are saved to `testdata/fuzz/<FuzzTargetName>/` and replayed automatically on subsequent `go test` runs.
+
+### Fuzz Targets
+
+| Target | Package | What It Tests |
+|--------|---------|---------------|
+| `FuzzResponseUnmarshal` | `internal/qmp` | QMP JSON response parsing — the primary wire protocol attack surface |
+| `FuzzBlockJobInfoUnmarshal` | `internal/qmp` | `query-block-jobs` output parsing (storage sync polling) |
+| `FuzzMigrateInfoUnmarshal` | `internal/qmp` | `query-migrate` output parsing (RAM migration polling) |
+| `FuzzErrorFormat` | `internal/qmp` | `Error.Error()` formatting with arbitrary class/desc strings |
+| `FuzzClientProtocol` | `internal/qmp` | Full QMP wire protocol: handshake + command execution with arbitrary socket data |
+| `FuzzArgsSerialization` | `internal/qmp` | JSON marshaling round-trip for all QMP argument types |
+| `FuzzFormatQEMUHost` | `internal/migration` | `FormatQEMUHost` with arbitrary IP addresses (IPv4/IPv6 bracket formatting) |
+
+## 3. Minikube Smoke Test (Single-Node, Real QMP)
 
 Validates katamaran against a real Kata Containers QMP socket inside a single-node minikube cluster.
 
-### Additional Prerequisites
+### Additional Requirements
 
 - `minikube`, `kubectl`, `helm` installed
 - ~20 GB free disk space, ~16 GB free RAM
-- katamaran binary built (`go build -o bin/katamaran ./cmd/katamaran/`)
+- katamaran binary built (`make` or `go build -o bin/katamaran ./cmd/katamaran/`)
 
 ### Run
 
@@ -101,7 +145,7 @@ The script:
 
 - katamaran binary runs correctly on a real Kubernetes node
 - QMP socket discovery works with Kata's runtime directory layout
-- QMP handshake succeeds with a live Kata VM (proves `NewQMPClient` + `qmp_capabilities` work end-to-end)
+- QMP handshake succeeds with a live Kata VM (proves `qmp.NewClient` + `qmp_capabilities` work end-to-end)
 - CLI error handling works in-situ
 
 ### What This Does NOT Test
@@ -110,11 +154,11 @@ The script:
 - Network cutover (IPIP tunnel, sch_plug qdisc)
 - Storage mirroring (NBD drive-mirror)
 
-## 3. Two-Node E2E Migration Test
+## 4. Two-Node E2E Migration Test
 
 Creates a two-node minikube cluster, installs Kata Containers on both nodes, and runs a full live migration using katamaran.
 
-### Additional Prerequisites
+### Additional Requirements
 
 - Same as the single-node smoke test
 - ~30 GB free disk space, ~20 GB free RAM (two KVM nodes)
@@ -130,8 +174,8 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 The script:
 1. Creates a 2-node minikube cluster (KVM2 driver, Calico CNI)
 2. Installs Kata Containers via Helm on both nodes
-3. Enables the extra QMP monitor socket on both nodes
-4. Copies the katamaran binary to both nodes
+3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
+4. Applies E2E-specific Kata timeout settings on both nodes
 5. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
 6. Extracts QEMU state (UUID, vsock, chardev) from the source VM
 7. Installs a state-matching QEMU wrapper on Node 2 (so the destination VM accepts the incoming migration)
@@ -146,7 +190,7 @@ The script:
 - Migration state matching between source and destination QEMU instances
 - Graceful cleanup on success and failure
 
-## 4. Zero-Packet-Drop Proof — Full Worked Example
+## 5. Zero-Packet-Drop Proof — Full Worked Example
 
 This section documents a complete end-to-end live migration with continuous traffic, proving that **zero packets are dropped** during the VM cutover. Every command, its expected output, and the verification steps are shown.
 
@@ -174,7 +218,7 @@ graph TD
 - **Destination node**: `192.168.1.20` (Node 2)
 - **Client**: `192.168.1.99` (any machine that can reach the pod IP)
 
-### Prerequisites
+### Requirements
 
 - Two-node Kubernetes cluster with Kata Containers installed
 - `sch_plug` kernel module loaded on Node 2 (`modprobe sch_plug`)
@@ -289,13 +333,13 @@ Expected output (with `-shared-storage`, phases 1-2 are skipped):
 2026/02/26 04:30:08 Waiting for migration to complete...
 2026/02/26 04:30:08 Migration status: active
 2026/02/26 04:30:09 Migration status: completed
-2026/02/26 04:30:09 Waiting 5s for CNI convergence before removing tunnel...
+2026/02/26 04:30:09 Waiting 5s for CNI convergence...
 2026/02/26 04:30:14 Source cleanup complete. Migration succeeded.
 ```
 
 ### Step 5: What Happened During the Critical Window
 
-The critical zero-drop window is the ~50ms between `STOP` (source VM pauses) and `RESUME` (destination VM starts). Here is the exact sequence and what katamaran did at each moment:
+The critical zero-drop window is the ~25ms between `STOP` (source VM pauses) and `RESUME` (destination VM starts). Here is the exact sequence and what katamaran did at each moment:
 
 ```mermaid
 sequenceDiagram
@@ -320,11 +364,11 @@ sequenceDiagram
     Note over D: qdisc in "block" mode — packets buffered, not dropped
 
     rect rgb(16, 185, 129, 0.1)
-    Note over D: T≈50ms — QEMU emits RESUME
+    Note over D: T≈25ms — QEMU emits RESUME
     Note over D: Destination VM is now running
     D->>D: tc qdisc change ... plug release_indefinite
     Note over D: FLUSH — all buffered packets delivered in order
-    D->>C: Replies to buffered pings (~48ms RTT)
+    D->>C: Replies to buffered pings (~24ms RTT)
     end
 
     D->>D: announce-self (GARP × 5 rounds)
@@ -360,10 +404,10 @@ Expected final output:
 [1708886400.010002] 64 bytes from 10.244.1.5: icmp_seq=2 ttl=64 time=0.389 ms
 ...
 [1708886403.070999] 64 bytes from 10.244.1.5: icmp_seq=308 ttl=64 time=0.401 ms  ← last pre-migration reply
-[1708886403.081000] 64 bytes from 10.244.1.5: icmp_seq=309 ttl=64 time=48.712 ms ← during cutover (buffered, then flushed)
-[1708886403.091001] 64 bytes from 10.244.1.5: icmp_seq=310 ttl=64 time=47.331 ms ← also buffered, flushed together
-[1708886403.101002] 64 bytes from 10.244.1.5: icmp_seq=311 ttl=64 time=46.019 ms ← also buffered
-[1708886403.111003] 64 bytes from 10.244.1.5: icmp_seq=312 ttl=64 time=44.705 ms ← also buffered
+[1708886403.081000] 64 bytes from 10.244.1.5: icmp_seq=309 ttl=64 time=24.712 ms ← during cutover (buffered, then flushed)
+[1708886403.091001] 64 bytes from 10.244.1.5: icmp_seq=310 ttl=64 time=23.331 ms ← also buffered, flushed together
+[1708886403.101002] 64 bytes from 10.244.1.5: icmp_seq=311 ttl=64 time=22.019 ms ← also buffered
+[1708886403.111003] 64 bytes from 10.244.1.5: icmp_seq=312 ttl=64 time=21.705 ms ← also buffered
 [1708886403.121004] 64 bytes from 10.244.1.5: icmp_seq=313 ttl=64 time=0.523 ms  ← first direct reply from Node 2
 [1708886403.131005] 64 bytes from 10.244.1.5: icmp_seq=314 ttl=64 time=0.498 ms
 ...
@@ -380,7 +424,7 @@ rtt min/avg/max/mdev = 0.312/0.847/48.712/2.431 ms
 | **Packets transmitted** | 10000 | Client sent 10,000 pings |
 | **Packets received** | 10000 | All 10,000 were answered |
 | **Packet loss** | **0%** | **Zero drops** |
-| **Max RTT** | ~48ms | Packets buffered during cutover window had higher RTT |
+| **Max RTT** | ~24ms | Packets buffered during cutover window had higher RTT |
 | **Normal RTT** | ~0.4ms | Pre- and post-migration latency |
 
 The packets with elevated RTT (icmp_seq 309-312 in the example) are the ones that arrived during the STOP→RESUME window. They were:
@@ -388,7 +432,7 @@ The packets with elevated RTT (icmp_seq 309-312 in the example) are the ones tha
 2. Buffered by the `sch_plug` qdisc on Node 2's tap interface
 3. Flushed into the VM when `release_indefinite` was issued after RESUME
 
-They were **not dropped** — they just had higher latency because they spent ~50ms in the buffer.
+They were **not dropped** — they just had higher latency because they spent ~25ms in the buffer.
 
 ### Step 7: Verify the Tunnel Was Used (Optional)
 
@@ -459,7 +503,7 @@ The proof rests on three mechanisms working together:
 
 2. **sch_plug qdisc (destination side)**: The destination tap interface buffers all arriving packets (both direct and tunnel-forwarded) in the kernel while the VM is paused. No packet enters the VM until RESUME, and no packet is dropped — they are held in a 32 KB kernel buffer.
 
-3. **Ordered flush (release_indefinite)**: After RESUME, all buffered packets are delivered to the VM in the exact order they arrived. The VM processes them and replies normally. The elevated RTT on these packets (~48ms) is the time spent in the buffer, not retransmission.
+3. **Ordered flush (release_indefinite)**: After RESUME, all buffered packets are delivered to the VM in the exact order they arrived. The VM processes them and replies normally. The elevated RTT on these packets (~24ms) is the time spent in the buffer, not retransmission.
 
 The `0% packet loss` in the ping summary is the definitive proof. Without katamaran's tunnel + qdisc, the same migration would show packet loss during the STOP→RESUME window because:
 - Packets arriving at the source have no VM to receive them (it's paused)
@@ -491,7 +535,7 @@ node1$ sudo katamaran \
 2026/02/26 04:30:19 Storage sync progress: 75.00%
 2026/02/26 04:30:21 Storage sync progress: 87.50%
 2026/02/26 04:30:23 Storage sync progress: 100.00%
-2026/02/26 04:30:23 Storage mirror synchronized (BLOCK_JOB_READY).
+2026/02/26 04:30:23 Storage mirror synchronized.
 2026/02/26 04:30:23 Configuring RAM migration...
 2026/02/26 04:30:23 RAM migration started. Waiting for VM to pause (STOP event)...
 2026/02/26 04:30:26 VM paused. Redirecting in-flight packets to destination...
@@ -500,7 +544,7 @@ node1$ sudo katamaran \
 2026/02/26 04:30:26 Migration status: active
 2026/02/26 04:30:27 Migration status: completed
 2026/02/26 04:30:27 Storage mirror cancelled.
-2026/02/26 04:30:27 Waiting 5s for CNI convergence before removing tunnel...
+2026/02/26 04:30:27 Waiting 5s for CNI convergence...
 2026/02/26 04:30:32 Source cleanup complete. Migration succeeded.
 ```
 
@@ -528,14 +572,14 @@ The zero-drop behavior is identical — the tunnel and qdisc protect the network
 | Artifact | Location | What It Proves |
 |----------|----------|----------------|
 | Ping summary | Client terminal | `0% packet loss` — no drops |
-| Ping RTT spike | `icmp_seq` 309-312 | Packets were buffered (~48ms), not dropped |
+| Ping RTT spike | `icmp_seq` 309-312 | Packets were buffered (~24ms), not dropped |
 | tcpdump on mig-tun | `/tmp/tunnel-capture.log` | Packets were forwarded via IPIP tunnel |
 | tc qdisc stats | `tc -s qdisc show` | `dropped 0`, `backlog 0` — buffer worked |
 | katamaran dest log | `Queue unplugged. Buffered packets delivered.` | Flush succeeded |
 | katamaran source log | `IP tunnel established. Traffic redirected.` | Tunnel was created |
 | Host route cleanup | `ip tunnel show` / `ip route show` | No leaked state |
 
-## 5. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)
+## 6. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)
 
 Creates a two-node minikube cluster with **OVN-Kubernetes** as the CNI, runs a full live migration, and **automatically verifies zero packet loss** by running a continuous ping throughout the migration.
 
@@ -552,7 +596,7 @@ OVN-Kubernetes provides the best CNI integration for live migration: its central
 
 The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kubernetes is the recommended production CNI for the shortest possible convergence window.
 
-### Additional Prerequisites
+### Additional Requirements
 
 - Same as the Calico E2E test (minikube, kubectl, helm, KVM)
 - `git` (to clone the OVN-Kubernetes Helm chart)
@@ -567,16 +611,16 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 
 ### What the Script Does
 
-1. Creates a 2-node minikube cluster with **no built-in CNI** (`--cni=false`)
-2. Loads the `openvswitch` kernel module on both nodes
-3. Clones OVN-Kubernetes and deploys it via Helm (OVN DB, ovnkube-master, ovnkube-node)
-4. Waits for OVN-K pods and CoreDNS to be ready (proves CNI is functional)
-5. Installs Kata Containers via Helm on both nodes
-6. Enables extra QMP monitor sockets + loads `ipip` and `sch_plug` kernel modules
+1. Creates a 2-node minikube cluster with **bridge CNI** (`--cni=bridge`), which is replaced by OVN-Kubernetes
+2. Clones OVN-Kubernetes and deploys it via Helm (OVN DB, ovnkube-master, ovnkube-node)
+3. Waits for OVN-K pods and CoreDNS to be ready (proves CNI is functional)
+4. Installs Kata Containers via Helm on both nodes
+5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
+6. Applies E2E-specific Kata timeout settings on both nodes
 7. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
 8. Extracts QEMU state (UUID, vsock, chardev) and installs the state-matching wrapper on Node 2
 9. Deploys a destination pod on Node 2
-10. **Starts a continuous ping** (20 pings/sec) to the pod IP before migration begins
+10. **Starts a continuous ping** (10 pings/sec) to the pod IP before migration begins
 11. Runs katamaran dest on Node 2, then source on Node 1
 12. **Stops the ping and analyzes results** — reports transmitted, received, loss %, and RTT statistics
 13. Shows packets with elevated RTT (buffered during cutover)
@@ -604,13 +648,76 @@ The script produces a structured report at the end:
 
 ### Artifacts
 
-| File | Contents |
-|------|----------|
-| `/tmp/katamaran-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
-| `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
+| Artifact | How to Collect | Contents |
+|----------|----------------|----------|
+| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
+| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 
-## 6. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)
+## 7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)
+
+Creates a two-node cluster with **Cilium** as the CNI (eBPF datapath), runs a full live migration, and verifies zero packet loss. Works with both minikube and Kind.
+
+Cilium's eBPF datapath reconverges after the destination endpoint is registered. The IPIP tunnel and sch_plug qdisc cover the 1–3s gap until Cilium's agent installs the new eBPF maps.
+
+### Requirements
+
+- Same as the Calico E2E test (minikube or kind, kubectl, helm, KVM)
+- `helm` (Cilium is installed via Helm from `oci://quay.io/cilium/charts/cilium`)
+
+### Run
+
+```bash
+./scripts/e2e.sh --provider minikube --cni cilium --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni cilium
+
+./scripts/e2e.sh --provider kind --cni cilium --ping-proof
+./scripts/e2e.sh teardown --provider kind --cni cilium
+```
+
+### What the Script Does
+
+1. Creates a 2-node cluster with **no built-in CNI** (`--cni=bridge` for minikube, `disableDefaultCNI: true` for Kind)
+2. Installs Cilium via Helm (`oci://quay.io/cilium/charts/cilium`) with `ipam.mode=kubernetes`
+3. Waits for the `cilium` DaemonSet and all nodes to be Ready
+4. Installs Kata Containers via Helm on both nodes
+5. Deploys katamaran via DaemonSet (binary + QMP config + kernel modules)
+6. Deploys source pod, extracts QEMU state, installs wrapper, deploys destination pod
+7. Starts continuous ping and runs migration
+8. Reports zero-drop proof
+
+## 8. Flannel E2E Migration Test (Two-Node, Zero-Drop Proof)
+
+Creates a two-node cluster with **Flannel** as the CNI (VXLAN overlay), runs a full live migration, and verifies zero packet loss. Works with both minikube and Kind.
+
+Flannel's VXLAN FDB entries are updated via GARP after migration. The IPIP tunnel covers the 2–5s convergence window while `flanneld` updates FDB entries on all nodes.
+
+### Requirements
+
+- Same as the Calico E2E test (minikube or kind, kubectl, helm, KVM)
+
+### Run
+
+```bash
+./scripts/e2e.sh --provider minikube --cni flannel --ping-proof
+./scripts/e2e.sh teardown --provider minikube --cni flannel
+
+./scripts/e2e.sh --provider kind --cni flannel --ping-proof
+./scripts/e2e.sh teardown --provider kind --cni flannel
+```
+
+### What the Script Does
+
+1. Creates a 2-node cluster with **no built-in CNI** (`--cni=bridge` for minikube, `disableDefaultCNI: true` for Kind)
+2. Installs Flannel via `kubectl apply` from the upstream release manifest
+3. Waits for the `kube-flannel-ds` DaemonSet in `kube-flannel` namespace and all nodes to be Ready
+4. Installs Kata Containers via Helm on both nodes
+5. Deploys katamaran via DaemonSet (binary + QMP config + kernel modules)
+6. Deploys source pod, extracts QEMU state, installs wrapper, deploys destination pod
+7. Starts continuous ping and runs migration
+8. Reports zero-drop proof
+
+## 9. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)
 
 Alternative to the minikube-based tests for environments that have Podman instead of (or in addition to) KVM-based minikube. Kind uses container "nodes" with `/dev/kvm` passed through for nested Kata Containers virtualization.
 
@@ -627,7 +734,7 @@ Alternative to the minikube-based tests for environments that have Podman instea
 
 Kind is faster to spin up and tear down, making it useful for CI pipelines. The trade-off is that Kind's container-based "nodes" share the host kernel, so kernel module loading (ipip, sch_plug, ip_gre) affects the host.
 
-### Prerequisites
+### Requirements
 
 - Linux host with KVM (`/dev/kvm` accessible)
 - `kind`, `kubectl`, `helm`, `podman` installed
@@ -646,15 +753,14 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 1. Creates a 2-node Kind cluster with Podman provider and `/dev/kvm` mounted
 2. Verifies `/dev/kvm` is accessible inside both node containers
 3. Installs Kata Containers via Helm (qemu shim only)
-4. Enables the extra QMP monitor socket on both nodes
-5. Loads kernel modules (ipip, ip6_tunnel, ip_gre, sch_plug) inside nodes
-6. Copies the katamaran binary into both node containers via `podman cp`
-7. Deploys source pod on control-plane, extracts QEMU state (UUID, vsock, CID)
-8. Installs state-matching QEMU wrapper on worker node
-9. Deploys destination pod on worker node
-10. Starts continuous ping (20/sec) for zero-drop proof
-11. Runs katamaran migration (shared-storage mode)
-12. Reports migration result and ping statistics
+4. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
+5. Applies E2E-specific Kata timeout settings on both nodes
+6. Deploys source pod on control-plane, extracts QEMU state (UUID, vsock, CID)
+7. Installs state-matching QEMU wrapper on worker node
+8. Deploys destination pod on worker node
+9. Starts continuous ping (10/sec) for zero-drop proof
+10. Runs katamaran migration (shared-storage mode)
+11. Reports migration result and ping statistics
 
 ### Key Differences from Minikube Scripts
 
@@ -706,13 +812,15 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 
 ### Artifacts
 
-| File | Contents |
-|------|----------|
-| `/tmp/katamaran-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
-| `journalctl -u katamaran-dest.service` | Destination-side katamaran output (inside worker container) |
+| Artifact | How to Collect | Contents |
+|----------|----------------|----------|
+| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
+| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 
-## 7. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
+## 10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
+
+> **Status: Not yet implemented.** The NFS manifests (`scripts/manifests/nfs-pv.yaml`, `scripts/manifests/nfs-server.yaml`) exist, but `e2e.sh` does not yet deploy or configure them. Running `--storage nfs` will exit with an error. This section describes the planned behavior.
 
 Validates katamaran's `-shared-storage` mode with a real NFS server running in-cluster. This is the only E2E test that exercises shared storage backed by an actual network filesystem, proving the production workflow for Ceph RBD / NFS backends where NBD drive-mirror is skipped entirely.
 
@@ -725,7 +833,7 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 - katamaran correctly skips the NBD drive-mirror phase
 - The full RAM + network cutover pipeline works with real shared storage
 
-### Prerequisites
+### Requirements
 
 - Linux host with KVM and nested virtualization enabled
 - `minikube`, `kubectl`, `helm` installed
@@ -744,15 +852,16 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 2. Deploys an NFS server pod on Node 1 with `itsthenetwork/nfs-server-alpine`
 3. Creates a PersistentVolume and PersistentVolumeClaim backed by the NFS server
 4. Installs Kata Containers via Helm (qemu shim only)
-5. Enables the extra QMP monitor socket on both nodes
-6. Deploys source Kata pod on Node 1 with the NFS PVC mounted at `/mnt/shared`
-7. Writes test data to NFS from inside the source VM
-8. Extracts QEMU state, installs state-matching wrapper on Node 2
-9. Deploys destination Kata pod on Node 2 with the same NFS PVC
-10. Starts continuous ping (20/sec) for zero-drop proof
-11. Runs katamaran migration with `-shared-storage` (skips NBD)
-12. Verifies test data is intact on the NFS server after migration
-13. Reports migration result, NFS verification, and ping statistics
+5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
+6. Applies E2E-specific Kata timeout settings and loads NFS kernel modules on both nodes
+7. Deploys source Kata pod on Node 1 with the NFS PVC mounted at `/mnt/shared`
+8. Writes test data to NFS from inside the source VM
+9. Extracts QEMU state, installs state-matching wrapper on Node 2
+10. Deploys destination Kata pod on Node 2 with the same NFS PVC
+11. Starts continuous ping (10/sec) for zero-drop proof
+12. Runs katamaran migration with `-shared-storage` (skips NBD)
+13. Verifies test data is intact on the NFS server after migration
+14. Reports migration result, NFS verification, and ping statistics
 
 ### Expected Output
 
@@ -776,25 +885,25 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 
 ### Artifacts
 
-| File | Contents |
-|------|----------|
-| `/tmp/katamaran-source.log` | Full source-side katamaran output |
-| `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
-| `journalctl -u katamaran-dest.service` | Destination-side katamaran output (on Node 2) |
+| Artifact | How to Collect | Contents |
+|----------|----------------|----------|
+| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
+| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
 
-## 8. Job-Based E2E Migration Test (Kind + Podman, Zero-Drop Proof)
+## 11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)
 
-Alternative to the SSH-based E2E tests. Uses Kubernetes Jobs to run the migration instead of `systemd-run` via SSH/`podman exec`. This is closer to the production deployment model where a controller creates Jobs.
+This section details the Job-based orchestration used by all E2E tests. Kubernetes Jobs (via `deploy/migrate.sh`) execute the migration on each node, which mirrors the production deployment model where a controller creates Jobs.
 
-### Prerequisites
+### Requirements
 
-Same as Kind + Podman test (Section 6).
+Same as Kind + Podman test (Section 9).
 
 ### Running
 
 ```bash
-./scripts/e2e.sh --provider kind --method job --ping-proof
-./scripts/e2e.sh teardown --provider kind --method job
+./scripts/e2e.sh --provider kind --ping-proof
+./scripts/e2e.sh teardown --provider kind
 ```
 
 ### Job Orchestration Topology
@@ -823,8 +932,8 @@ sequenceDiagram
 
 1. Creates a 2-node Kind cluster (Podman provider, /dev/kvm mount)
 2. Installs Kata Containers via Helm
-3. Configures QMP sockets and loads kernel modules on both nodes
-4. Builds and loads container image into Kind cluster
+3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
+4. Applies E2E-specific Kata timeout settings on both nodes
 5. Deploys source pod & extracts QEMU state
 6. Installs state-matching QEMU wrapper on destination node
 7. Deploys destination pod
@@ -832,15 +941,15 @@ sequenceDiagram
 9. Executes migration via `deploy/migrate.sh` (K8s Jobs)
 10. Collects results and reports zero-drop proof
 
-### Key Differences from SSH-Based Tests
+### Job Orchestration Details
 
-| Operation | SSH-Based (e2e.sh --method ssh) | Job-Based (e2e.sh --method job) |
-|-----------|------------------------|------------------------|
-| Dest execution | systemd-run via podman exec | K8s Job (deploy/job-dest.yaml) |
-| Source execution | Direct via podman exec | K8s Job (deploy/job-source.yaml) |
-| Orchestration | Script-inline | deploy/migrate.sh |
-| Binary deployment | DaemonSet | Not needed (Jobs use image) |
-| Log collection | journalctl | kubectl logs |
+| Component | Description |
+|-----------|-------------|
+| Dest execution | K8s Job (`deploy/job-dest.yaml`) — privileged pod on destination node |
+| Source execution | K8s Job (`deploy/job-source.yaml`) — privileged pod on source node |
+| Orchestration | `deploy/migrate.sh` — renders templates via `envsubst`, applies jobs, waits for completion |
+| Binary deployment | DaemonSet installs binary; Jobs use the container image |
+| Log collection | `kubectl logs job/katamaran-source`, `kubectl logs job/katamaran-dest` |
 
 ## Troubleshooting
 
@@ -849,7 +958,7 @@ sequenceDiagram
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `dialing QMP socket` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/qmp.sock` |
+| `dialing QMP socket` | Wrong socket path or VM not running | Verify `ls /run/vc/vm/*/extra-monitor.sock` |
 | `failed to add plug qdisc` | `sch_plug` module not loaded | `modprobe sch_plug` |
 | `starting NBD server` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
 | `starting drive-mirror` | Destination NBD not ready | Ensure dest mode is running first |

@@ -147,12 +147,12 @@ func TestExecute_Success(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	var result map[string]string
+	var result MigrateInfo
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if result["status"] != "completed" {
-		t.Fatalf("expected status=completed, got %s", result["status"])
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %s", result.Status)
 	}
 }
 
@@ -352,7 +352,7 @@ func TestWaitForEvent_FromWire(t *testing.T) {
 	}
 }
 
-func TestWaitForEvent_DiscardsNonMatching(t *testing.T) {
+func TestWaitForEvent_BuffersNonMatchingFromWire(t *testing.T) {
 	t.Parallel()
 	sock := startFakeQMP(t, func(conn net.Conn) {
 		qmpHandshake(conn)
@@ -371,6 +371,18 @@ func TestWaitForEvent_DiscardsNonMatching(t *testing.T) {
 	err = c.WaitForEvent(ctx, "STOP", 5*time.Second)
 	if err != nil {
 		t.Fatalf("WaitForEvent: %v", err)
+	}
+
+	c.mu.Lock()
+	count := len(c.events)
+	c.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected 1 buffered event (BLOCK_JOB_READY), got %d", count)
+	}
+
+	err = c.WaitForEvent(ctx, "BLOCK_JOB_READY", time.Second)
+	if err != nil {
+		t.Fatalf("WaitForEvent(BLOCK_JOB_READY) from buffer: %v", err)
 	}
 }
 
@@ -392,8 +404,8 @@ func TestWaitForEvent_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("expected 'timed out' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("expected 'timeout' in error, got: %v", err)
 	}
 }
 
@@ -503,7 +515,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 	tests := []struct {
 		name string
 		args Args
-		want map[string]interface{}
+		want map[string]any
 	}{
 		{
 			name: "NBDServerStartArgs",
@@ -513,10 +525,10 @@ func TestArgs_JSONSerialization(t *testing.T) {
 					Data: NBDServerAddrData{Host: "0.0.0.0", Port: "10809"},
 				},
 			},
-			want: map[string]interface{}{
-				"addr": map[string]interface{}{
+			want: map[string]any{
+				"addr": map[string]any{
 					"type": "inet",
-					"data": map[string]interface{}{
+					"data": map[string]any{
 						"host": "0.0.0.0",
 						"port": "10809",
 					},
@@ -526,7 +538,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 		{
 			name: "NBDServerAddArgs",
 			args: NBDServerAddArgs{Device: "virtio0", Writable: true},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"device":   "virtio0",
 				"writable": true,
 			},
@@ -540,7 +552,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 				Mode:   "existing",
 				JobID:  "mirror-virtio0",
 			},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"device": "virtio0",
 				"target": "nbd:10.0.0.1:10809:exportname=virtio0",
 				"sync":   "full",
@@ -551,7 +563,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 		{
 			name: "BlockJobCancelArgs",
 			args: BlockJobCancelArgs{Device: "mirror-virtio0", Force: true},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"device": "mirror-virtio0",
 				"force":  true,
 			},
@@ -563,9 +575,9 @@ func TestArgs_JSONSerialization(t *testing.T) {
 					{Capability: "auto-converge", State: true},
 				},
 			},
-			want: map[string]interface{}{
-				"capabilities": []interface{}{
-					map[string]interface{}{
+			want: map[string]any{
+				"capabilities": []any{
+					map[string]any{
 						"capability": "auto-converge",
 						"state":      true,
 					},
@@ -575,7 +587,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 		{
 			name: "MigrateSetParametersArgs",
 			args: MigrateSetParametersArgs{DowntimeLimit: 50, MaxBandwidth: 10_000_000_000},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"downtime-limit": float64(50),
 				"max-bandwidth":  float64(10_000_000_000),
 			},
@@ -583,14 +595,14 @@ func TestArgs_JSONSerialization(t *testing.T) {
 		{
 			name: "MigrateArgs",
 			args: MigrateArgs{URI: "tcp:10.0.0.1:4444"},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"uri": "tcp:10.0.0.1:4444",
 			},
 		},
 		{
 			name: "AnnounceSelfArgs",
 			args: AnnounceSelfArgs{Initial: 50, Max: 550, Rounds: 5, Step: 100},
-			want: map[string]interface{}{
+			want: map[string]any{
 				"initial": float64(50),
 				"max":     float64(550),
 				"rounds":  float64(5),
@@ -607,7 +619,7 @@ func TestArgs_JSONSerialization(t *testing.T) {
 				t.Fatalf("Marshal: %v", err)
 			}
 
-			var got map[string]interface{}
+			var got map[string]any
 			if err := json.Unmarshal(b, &got); err != nil {
 				t.Fatalf("Unmarshal: %v", err)
 			}

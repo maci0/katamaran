@@ -6,48 +6,36 @@ import (
 	"testing"
 )
 
-func TestRunDestination_BadQMPSocket(t *testing.T) {
+func TestRunDestination_Failures(t *testing.T) {
 	t.Parallel()
-	err := RunDestination(
-		context.Background(),
-		"/nonexistent/qmp.sock",
-		"", // no tap — skip qdisc
-		"drive-virtio-disk0",
-		false,
-	)
-	if err == nil {
-		t.Fatal("expected error for nonexistent QMP socket")
+	tests := []struct {
+		name          string
+		tap           string
+		sharedStorage bool
+	}{
+		{"BadQMPSocket", "", false},
+		{"SharedStorage_BadQMPSocket", "", true},
+		{"WithTap_BadQMPSocket", "nonexistent-tap0", false},
 	}
-	if !strings.Contains(err.Error(), "QMP") {
-		t.Fatalf("expected QMP-related error, got: %v", err)
-	}
-}
 
-func TestRunDestination_SharedStorage_BadQMPSocket(t *testing.T) {
-	t.Parallel()
-	err := RunDestination(
-		context.Background(),
-		"/nonexistent/qmp.sock",
-		"",
-		"drive-virtio-disk0",
-		true,
-	)
-	if err == nil {
-		t.Fatal("expected error for nonexistent QMP socket")
-	}
-}
-
-func TestRunDestination_WithTap_BadQMPSocket(t *testing.T) {
-	t.Parallel()
-	err := RunDestination(
-		context.Background(),
-		"/nonexistent/qmp.sock",
-		"nonexistent-tap0",
-		"drive-virtio-disk0",
-		false,
-	)
-	if err == nil {
-		t.Fatal("expected error for nonexistent QMP socket")
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := RunDestination(
+				context.Background(),
+				"/nonexistent/qmp.sock",
+				tt.tap,
+				"drive-virtio-disk0",
+				tt.sharedStorage,
+			)
+			if err == nil {
+				t.Fatal("expected error for nonexistent QMP socket")
+			}
+			if !strings.Contains(err.Error(), "QMP") {
+				t.Fatalf("expected QMP-related error, got: %v", err)
+			}
+		})
 	}
 }
 

@@ -166,7 +166,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "-help output should include -mode flag description"
     fi
 
-    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode; do
+    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode downtime; do
         if echo "${HELP_OUT}" | grep -q "\-${flag_name}"; then
             pass "-help output includes -${flag_name} flag"
         else
@@ -277,6 +277,20 @@ if [[ -x "${BINARY}" ]]; then
         fail "invalid -tunnel-mode error should mention the flag name"
     fi
 
+    # Invalid -downtime (negative) → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -downtime -1 2>/dev/null; then
+        fail "source mode should reject negative -downtime"
+    else
+        pass "source mode rejects negative -downtime"
+    fi
+
+    # Invalid -downtime (zero) → should exit non-zero
+    if "${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -downtime 0 2>/dev/null; then
+        fail "source mode should reject zero -downtime"
+    else
+        pass "source mode rejects zero -downtime"
+    fi
+
     # Cross-family: IPv4 dest + IPv6 vm → should exit non-zero
     if "${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip fd00::1 2>/dev/null; then
         fail "source mode should reject cross-family IPs (IPv4 dest + IPv6 vm)"
@@ -362,7 +376,7 @@ fi
 # --- 4. Required files ---
 echo "--- Required files ---"
 
-for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/INSTALL.md" "${PROJECT_ROOT}/docs/USAGE.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md" "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}/deploy/daemonset.yaml" "${PROJECT_ROOT}/deploy/job-dest.yaml" "${PROJECT_ROOT}/deploy/job-source.yaml" "${PROJECT_ROOT}/deploy/migrate.sh"; do
+for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/Makefile" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/INSTALL.md" "${PROJECT_ROOT}/docs/USAGE.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md" "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}/deploy/daemonset.yaml" "${PROJECT_ROOT}/deploy/job-dest.yaml" "${PROJECT_ROOT}/deploy/job-source.yaml" "${PROJECT_ROOT}/deploy/migrate.sh" "${PROJECT_ROOT}/scripts/manifests/kind-config-nocni.yaml"; do
     basename="$(basename "${file}")"
     if [[ -f "${file}" ]]; then
         pass "${basename} exists"

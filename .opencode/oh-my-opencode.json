@@ -1,0 +1,72 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
+  "agents": {
+    "sisyphus": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "max"
+    },
+    "hephaestus": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "medium"
+    },
+    "oracle": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "high"
+    },
+    "librarian": {
+      "model": "google/antigravity-gemini-3.1-pro"
+    },
+    "explore": {
+      "model": "google/antigravity-gemini-3-flash"
+    },
+    "multimodal-looker": {
+      "model": "google/antigravity-gemini-3-flash"
+    },
+    "prometheus": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "max"
+    },
+    "metis": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "max"
+    },
+    "momus": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "medium"
+    },
+    "atlas": {
+      "model": "google/antigravity-gemini-3.1-pro"
+    }
+  },
+  "categories": {
+    "visual-engineering": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "high"
+    },
+    "ultrabrain": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "xhigh"
+    },
+    "deep": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "medium"
+    },
+    "artistry": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "high"
+    },
+    "quick": {
+      "model": "google/antigravity-gemini-3-flash"
+    },
+    "unspecified-low": {
+      "model": "google/antigravity-gemini-3.1-pro"
+    },
+    "unspecified-high": {
+      "model": "google/antigravity-gemini-3.1-pro",
+      "variant": "max"
+    },
+    "writing": {
+      "model": "google/antigravity-gemini-3-flash"
+    }
+  }
+}

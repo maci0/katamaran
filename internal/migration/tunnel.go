@@ -2,9 +2,11 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/netip"
+	"strings"
 )
 
 // SetupTunnel creates an IP tunnel to the destination node and installs
@@ -17,47 +19,35 @@ import (
 //   - "gre": GRE for IPv4 (mode gre), ip6gre for IPv6. Widely supported
 //     by cloud middleboxes (AWS, GCP, Azure) at +4 bytes overhead.
 //
-// Mixed address families (e.g., IPv4 destIP with IPv6 vmIP) are rejected.
+// Both addresses must be the same family and already Unmap'd by the caller.
 //
 // The function is idempotent: any pre-existing tunnel with the same name is
 // removed before creation to handle restarts or repeated invocations cleanly.
 //
 // On partial failure (e.g., route add fails after tunnel is created), the
 // tunnel is cleaned up before returning the error to prevent resource leaks.
-func SetupTunnel(ctx context.Context, destIP, vmIP, tunnelMode string) error {
-	// Strictly validate IPs to prevent shell injection or invalid route configs.
-	dest, err := netip.ParseAddr(destIP)
-	if err != nil {
-		return fmt.Errorf("invalid destIP %q: %w", destIP, err)
-	}
-	vm, err := netip.ParseAddr(vmIP)
-	if err != nil {
-		return fmt.Errorf("invalid vmIP %q: %w", vmIP, err)
-	}
-
-	// Normalize IPv4-mapped IPv6 addresses (e.g., ::ffff:10.0.0.1 → 10.0.0.1).
-	// Without this, an IPv4-mapped address would be misclassified as IPv6,
-	// creating a broken ip6ip6/ip6gre tunnel to what is actually an IPv4 host.
+func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) error {
 	dest = dest.Unmap()
 	vm = vm.Unmap()
 
-	// Use the normalized string representations for ip commands, since
-	// Unmap() may have changed the textual form.
+	if !dest.IsValid() || !vm.IsValid() {
+		return fmt.Errorf("invalid destination or VM address")
+	}
+
+	if dest.Is4() != vm.Is4() {
+		return fmt.Errorf("destination (%s) and VM (%s) address families must match", dest, vm)
+	}
+
 	destStr := dest.String()
 	vmStr := vm.String()
 
-	// Both addresses must be the same IP family. Cross-family tunnels
-	// (e.g., IPv4-in-IPv6 via ip4ip6) are not supported.
-	if dest.Is4() != vm.Is4() {
-		return fmt.Errorf("address family mismatch: destIP %q is %s but vmIP %q is %s",
-			destIP, IPFamily(dest), vmIP, IPFamily(vm))
-	}
-
 	// Remove any stale tunnel from a previous run. Errors are ignored
 	// because the tunnel may not exist, which is the common case.
-	cctx, ccancel := CleanupCtx()
+	cctx, ccancel := CleanupCtx(ctx)
 	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
+	} else if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
+		log.Printf("Warning: failed to remove stale tunnel %s: %v", TunnelName, err)
 	}
 	ccancel()
 
@@ -76,6 +66,7 @@ func SetupTunnel(ctx context.Context, destIP, vmIP, tunnelMode string) error {
 		mode = "ipip"
 	}
 
+	var err error
 	if dest.Is6() {
 		err = RunCmd(ctx, "ip", "-6", "tunnel", "add", TunnelName,
 			"mode", mode, "remote", destStr, "local", "::")
@@ -88,10 +79,13 @@ func SetupTunnel(ctx context.Context, destIP, vmIP, tunnelMode string) error {
 	}
 
 	if err := RunCmd(ctx, "ip", "link", "set", TunnelName, "up"); err != nil {
-		cctx, ccancel := CleanupCtx()
-		_ = RunCmd(cctx, "ip", "link", "del", TunnelName)
+		cctx, ccancel := CleanupCtx(ctx)
+		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
-		return fmt.Errorf("bringing up tunnel: %w", err)
+		if cleanupErr != nil {
+			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+		}
+		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), cleanupErr)
 	}
 
 	// Add host route: "ip route add" for IPv4, "ip -6 route add" for IPv6.
@@ -101,10 +95,13 @@ func SetupTunnel(ctx context.Context, destIP, vmIP, tunnelMode string) error {
 		err = RunCmd(ctx, "ip", "route", "add", vmStr, "dev", TunnelName)
 	}
 	if err != nil {
-		cctx, ccancel := CleanupCtx()
-		_ = RunCmd(cctx, "ip", "link", "del", TunnelName)
+		cctx, ccancel := CleanupCtx(ctx)
+		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
-		return fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err)
+		if cleanupErr != nil {
+			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+		}
+		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), cleanupErr)
 	}
 	return nil
 }
@@ -121,7 +118,8 @@ func IPFamily(addr netip.Addr) string {
 // Uses "ip link del" which works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
 // Deleting the tunnel implicitly removes the associated host route.
 func TeardownTunnel(ctx context.Context) error {
-	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err != nil {
+	err := RunCmd(ctx, "ip", "link", "del", TunnelName)
+	if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
 		return fmt.Errorf("deleting tunnel %s: %w", TunnelName, err)
 	}
 	return nil

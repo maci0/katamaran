@@ -49,6 +49,11 @@ type BlockJobInfo struct {
 type MigrateInfo struct {
 	Status    string `json:"status"`
 	ErrorDesc string `json:"error-desc,omitempty"`
+	RAM       struct {
+		Total       int64 `json:"total"`
+		Transferred int64 `json:"transferred"`
+		Remaining   int64 `json:"remaining"`
+	} `json:"ram,omitempty"`
 }
 
 // QMP command argument types — strictly typed to prevent typos and ensure
