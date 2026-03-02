@@ -117,6 +117,10 @@ SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS -tunnel-mode $TUNNEL_MODE -downtime $DOWNTIME"
 
 # Cleanup trap
 cleanup() {
+    if [[ "${KATAMARAN_KEEP_JOBS:-}" == "true" ]]; then
+        echo ">>> KATAMARAN_KEEP_JOBS set, keeping migration jobs."
+        return
+    fi
     if [[ "$MIG_SUCCESS" == "true" ]]; then
         echo ">>> Cleaning up migration jobs..."
         "${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found 2>/dev/null || true
