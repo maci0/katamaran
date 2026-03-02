@@ -200,6 +200,14 @@ elif [[ "${CNI}" == "flannel" ]]; then
     kubectl --context "${CTX}" -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=300s
 fi
 
+# After deploying a non-default CNI, wait for all nodes to become Ready.
+# Without this, kata-deploy pods may fail to start because the CNI hasn't
+# finished configuring networking on all nodes.
+if [[ "${CNI}" != "kindnet" && "${CNI}" != "calico" ]]; then
+    log "Waiting for all nodes to become Ready after CNI deployment..."
+    kubectl --context "${CTX}" wait --for=condition=Ready node --all --timeout=300s
+fi
+
 log "Installing Kata Containers via Helm..."
 helm upgrade --install kata-deploy "${KATA_CHART}" \
     --kube-context "${CTX}" --namespace kube-system \
@@ -215,6 +223,10 @@ for node in "${NODE1}" "${NODE2}"; do
         if node_exec "${node}" "[ -f ${KATA_CFG} ]"; then break; fi
         sleep 2
     done
+    if ! node_exec "${node}" "[ -f ${KATA_CFG} ]"; then
+        error "Kata configuration not found on ${node} after waiting."
+        exit 1
+    fi
     node_exec "$node" "${SUDO} sed -i 's|^#*enable_debug = .*|enable_debug = true|' '${KATA_CFG}'"
     node_exec "$node" "${SUDO} sed -i 's|^#*extra_monitor_socket = .*|extra_monitor_socket = \"qmp\"|' '${KATA_CFG}'"
     node_exec "$node" "${SUDO} sed -i 's|^#*create_container_timeout = .*|create_container_timeout = 600|' '${KATA_CFG}'"
