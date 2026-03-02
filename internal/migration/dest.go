@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 
 	"github.com/maci0/katamaran/internal/qmp"
 )
@@ -15,6 +14,11 @@ import (
 // Deferred cleanups ensure the qdisc and NBD server are released on any early
 // return, preventing resource leaks. They are disarmed on the success path by
 // setting the corresponding guard bool to false.
+//
+// If tapNetns is non-empty, all tc commands are executed inside the given
+// network namespace via nsenter (e.g. "/proc/PID/ns/net"). This supports
+// scenarios where the tap interface lives in a different namespace than
+// the katamaran process (e.g. helper pod approach for manual destination QEMU).
 //
 // Sequentially it:
 //  1. Installs a tc sch_plug qdisc on the tap interface in pass-through mode
@@ -26,7 +30,7 @@ import (
 //  5. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
 //  6. Stops the NBD server (unless shared-storage mode)
 //  7. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
-func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sharedStorage bool) error {
+func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool) error {
 	log.Println("Setting up destination node...")
 
 	// Step 1: Install sch_plug qdisc in pass-through mode.
@@ -34,23 +38,25 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	if tapIface != "" {
 		log.Printf("Preparing network queue on %s...", tapIface)
 
-		if _, err := net.InterfaceByName(tapIface); err != nil {
-			log.Printf("Warning: TAP interface %q not found (%v). Skipping network queue setup.", tapIface, err)
+		// Check interface exists (in netns if specified, else locally).
+		ifaceErr := RunCmdInNetns(ctx, tapNetns, "ip", "link", "show", tapIface)
+		if ifaceErr != nil {
+			log.Printf("Warning: TAP interface %q not found (%v). Skipping network queue setup.", tapIface, ifaceErr)
 		} else {
 			// Idempotency: clear any existing qdisc on this interface before adding.
 			cctx, ccancel := CleanupCtx(ctx)
-			if err := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
+			if err := RunCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
 				// We don't care if this fails, as the qdisc might not exist.
 				// But we log it instead of completely ignoring it.
 				log.Printf("Cleared existing qdisc on %s (error ignored: %v)", tapIface, err)
 			}
 			ccancel()
 
-			if err := RunCmd(ctx, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", PlugQdiscLimit); err != nil {
+			if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", PlugQdiscLimit); err != nil {
 				return fmt.Errorf("failed to add plug qdisc on %s (is sch_plug available?): %w", tapIface, err)
-			} else if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
+			} else if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 				cctx, ccancel := CleanupCtx(ctx)
-				cleanupErr := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root")
+				cleanupErr := RunCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root")
 				ccancel()
 				return errors.Join(fmt.Errorf("failed to release plug qdisc on %s, removing it: %w", tapIface, err), cleanupErr)
 			} else {
@@ -71,7 +77,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 		if qdiscInstalled {
 			cctx, ccancel := CleanupCtx(ctx)
 			defer ccancel()
-			if err := RunCmd(cctx, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
+			if err := RunCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
 				log.Printf("Warning: failed to remove qdisc: %v", err)
 			}
 		}
@@ -148,7 +154,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// when the source emits its STOP event. In this standalone tool, we plug
 	// proactively before waiting for RESUME.
 	if qdiscInstalled {
-		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
+		if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
 			return fmt.Errorf("failed to plug network queue on %s: %w", tapIface, err)
 		} else {
 			log.Println("Network queue plugged. Buffering in-flight packets...")
@@ -171,7 +177,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 	// the qdisc is still in "plugged" state and the deferred cleanup must
 	// remove it so the VM's network isn't left permanently blocked.
 	if qdiscInstalled {
-		if err := RunCmd(ctx, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
+		if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 			return fmt.Errorf("failed to unplug network queue on %s: %w", tapIface, err)
 		} else {
 			log.Println("Queue unplugged. Buffered packets delivered. Zero drops achieved.")

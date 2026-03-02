@@ -423,10 +423,10 @@ fi
 success "Destination QEMU started. QMP: ${DST_SOCK}"
 
 # The destination QEMU runs inside the helper pod's network namespace.
-# The tap interface (tap0_kata) is in that namespace, not in the host
-# namespace where the katamaran dest job runs. Until katamaran supports
-# netns-aware qdisc management, skip tap buffering.
-DST_TAP="none"
+# The tap interface (tap0_kata) is in that namespace. Pass the netns path
+# so katamaran can run tc commands via nsenter.
+DST_TAP="tap0_kata"
+DST_TAP_NETNS="/proc/${MIG_HELPER_PID}/ns/net"
 
 PING_PID=""
 if [[ "${PING_PROOF}" == "true" ]]; then
@@ -444,7 +444,8 @@ if [[ "${METHOD}" == "job" ]]; then
     log "Executing Live Migration (job mode)..."
     "${PROJECT_ROOT}/deploy/migrate.sh" \
         --context "${CTX}" --source-node "${NODE1}" --dest-node "${NODE2}" \
-        --tap "${DST_TAP}" --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
+        --tap "${DST_TAP}" --tap-netns "${DST_TAP_NETNS}" \
+        --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
         --dest-ip "${DST_POD_IP}" --vm-ip "${SRC_POD_IP}" \
         --image "localhost/katamaran:dev" --shared-storage --downtime 25 || {
             error "Migration failed!"
