@@ -86,8 +86,8 @@ if [[ "$TAP_IFACE" == "none" ]]; then
     TAP_IFACE=""
 fi
 
-if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" ]]; then
-    echo "Error: --tunnel-mode must be 'ipip' or 'gre'."
+if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
+    echo "Error: --tunnel-mode must be 'ipip', 'gre', or 'none'."
     exit 1
 fi
 

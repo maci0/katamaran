@@ -27,7 +27,7 @@ func main() {
 	vmIP := flag.String("vm-ip", "", "VM pod IP for traffic redirection (source mode only)")
 	driveID := flag.String("drive-id", "drive-virtio-disk0", "QEMU block device ID to migrate")
 	sharedStorage := flag.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
-	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip' or 'gre'")
+	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := flag.Int("downtime", 25, "Max allowed downtime (ms)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 
@@ -79,7 +79,7 @@ func main() {
 				migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
 			os.Exit(1)
 		}
-		if *tunnelMode != "ipip" && *tunnelMode != "gre" {
+		if *tunnelMode != "ipip" && *tunnelMode != "gre" && *tunnelMode != "none" {
 			fmt.Fprintf(os.Stderr, "Error: invalid -tunnel-mode: %q\n", *tunnelMode)
 			os.Exit(1)
 		}
