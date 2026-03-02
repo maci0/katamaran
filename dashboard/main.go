@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -102,6 +103,42 @@ func migrateScriptPath() string {
 	return "migrate.sh"
 }
 
+// validTarget checks that the target is a plausible IP or hostname for
+// ping/HTTP probing. Rejects loopback, link-local, and cloud metadata
+// addresses to prevent SSRF against internal services.
+func validTarget(target string) bool {
+	host := target
+	if h, _, err := net.SplitHostPort(target); err == nil {
+		host = h
+	}
+	if host == "" {
+		return false
+	}
+	// Reject shell metacharacters that could escape into arguments.
+	if strings.ContainsAny(host, ";|&$`\\\"'<>(){}!\n\r\t ") {
+		return false
+	}
+	ip, err := net.ResolveIPAddr("ip", host)
+	if err != nil {
+		// Unresolvable hostname — allow it through; ping will fail gracefully.
+		return true
+	}
+	if ip.IP.IsLoopback() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsLinkLocalMulticast() {
+		return false
+	}
+	// Block cloud metadata endpoint (169.254.169.254).
+	if ip.IP.Equal(net.ParseIP("169.254.169.254")) {
+		return false
+	}
+	return true
+}
+
+// validFormValue checks that a form value contains no shell metacharacters
+// or control characters that could be misinterpreted by migrate.sh.
+func validFormValue(v string) bool {
+	return !strings.ContainsAny(v, " ;|&$`\\\"'<>(){}!\n\r\t")
+}
+
 func handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -112,6 +149,15 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate all form values against shell metacharacters.
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "dest_ip", "vm_ip", "image"}
+	for _, key := range formKeys {
+		if v := r.FormValue(key); v != "" && !validFormValue(v) {
+			http.Error(w, fmt.Sprintf("Invalid value for %s", key), http.StatusBadRequest)
+			return
+		}
+	}
+
 	migrationMutex.Lock()
 	if isMigrating {
 		migrationMutex.Unlock()
@@ -120,7 +166,9 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 	isMigrating = true
 	migrationOutput = migrationOutput[:0]
-	ctx, cancel := context.WithCancel(r.Context())
+	// Use context.Background() so the migration process survives after
+	// the HTTP response is sent (r.Context() cancels on response write).
+	ctx, cancel := context.WithCancel(context.Background())
 	migrationCancel = cancel
 	migrationMutex.Unlock()
 
@@ -146,6 +194,7 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 			isMigrating = false
 			migrationCancel = nil
 			migrationMutex.Unlock()
+			cancel()
 			http.Error(w, "Invalid downtime value (must be a positive integer)", http.StatusBadRequest)
 			return
 		}
@@ -161,6 +210,10 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMigrateStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	migrationMutex.Lock()
 	if migrationCancel != nil {
 		migrationCancel()
@@ -248,9 +301,18 @@ func stopLoadgen() {
 }
 
 func handlePingStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	target := r.URL.Query().Get("target")
 	if target == "" {
 		http.Error(w, "Target required", http.StatusBadRequest)
+		return
+	}
+	if !validTarget(target) {
+		http.Error(w, "Invalid target", http.StatusBadRequest)
 		return
 	}
 
@@ -262,7 +324,9 @@ func handlePingStart(w http.ResponseWriter, r *http.Request) {
 	}
 	loadgenRunning = true
 	pingLog = pingLog[:0]
-	ctx, cancel := context.WithCancel(r.Context())
+	// Use context.Background() so the ping process survives after
+	// the HTTP response is sent.
+	ctx, cancel := context.WithCancel(context.Background())
 	loadgenCancel = cancel
 	loadgenMutex.Unlock()
 
@@ -305,6 +369,10 @@ func handlePingStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePingStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	stopLoadgen()
 	w.WriteHeader(http.StatusOK)
 }
@@ -323,9 +391,18 @@ func addPing(lat float64, errStr string) {
 }
 
 func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	target := r.URL.Query().Get("target")
 	if target == "" {
 		http.Error(w, "Target required", http.StatusBadRequest)
+		return
+	}
+	if !validTarget(target) {
+		http.Error(w, "Invalid target", http.StatusBadRequest)
 		return
 	}
 
@@ -337,7 +414,9 @@ func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	loadgenRunning = true
 	pingLog = pingLog[:0]
-	ctx, cancel := context.WithCancel(r.Context())
+	// Use context.Background() so the HTTP load generator survives after
+	// the HTTP response is sent.
+	ctx, cancel := context.WithCancel(context.Background())
 	loadgenCancel = cancel
 	loadgenMutex.Unlock()
 
@@ -349,6 +428,9 @@ func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		client := &http.Client{Timeout: 2 * time.Second}
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -372,7 +454,7 @@ func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(200 * time.Millisecond):
+			case <-ticker.C:
 			}
 		}
 	}()

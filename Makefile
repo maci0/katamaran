@@ -60,7 +60,7 @@ help:
 	@echo "Targets:"
 	@echo "  build       Build bin/katamaran (default)"
 	@echo "  test        Run unit tests with race detector"
-	@echo "  smoke       Run 64 smoke tests (no VMs required)"
+	@echo "  smoke       Run smoke tests (no VMs required)"
 	@echo "  fuzz        Run fuzz test seed corpus (instant)"
 	@echo "  fuzz-long   Run actual fuzzing for 30s per target"
 	@echo "  vet         Run go vet and gofmt checks"

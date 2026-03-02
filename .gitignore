@@ -1,5 +1,12 @@
 # Build output
 bin/
+dashboard/main
+test_signal
+*.tar
+
+# Generated artifacts
+coverage.out
+godoc_all.txt
 
 # Merge/patch artifacts
 *.orig
