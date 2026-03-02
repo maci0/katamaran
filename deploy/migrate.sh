@@ -27,6 +27,7 @@ MIG_SUCCESS=false
 SOURCE_NODE=""
 DEST_NODE=""
 TAP_IFACE=""
+TAP_NETNS=""
 QMP_SOURCE=""
 QMP_DEST=""
 DEST_IP=""
@@ -40,6 +41,7 @@ usage() {
     echo "  --source-node <name>    Name of the source K8s node"
     echo "  --dest-node <name>      Name of the destination K8s node"
     echo "  --tap <iface>           Destination tap interface (required for zero-drop buffering)"
+    echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
     echo "  --qmp-source <path>     Path to QMP socket on source node"
     echo "  --qmp-dest <path>       Path to QMP socket on destination node"
     echo "  --dest-ip <ip>          IP address of the destination node"
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --source-node) SOURCE_NODE="$2"; shift 2 ;;
         --dest-node) DEST_NODE="$2"; shift 2 ;;
         --tap) TAP_IFACE="$2"; shift 2 ;;
+        --tap-netns) TAP_NETNS="$2"; shift 2 ;;
         --qmp-source) QMP_SOURCE="$2"; shift 2 ;;
         --qmp-dest) QMP_DEST="$2"; shift 2 ;;
         --dest-ip) DEST_IP="$2"; shift 2 ;;
@@ -83,8 +86,8 @@ if [[ "$TAP_IFACE" == "none" ]]; then
     TAP_IFACE=""
 fi
 
-if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" ]]; then
-    echo "Error: --tunnel-mode must be 'ipip' or 'gre'."
+if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
+    echo "Error: --tunnel-mode must be 'ipip', 'gre', or 'none'."
     exit 1
 fi
 
@@ -147,6 +150,9 @@ export QMP_SOCKET="$QMP_DEST"
 export IMAGE="$IMAGE_REF"
 if [[ -n "${TAP_IFACE}" ]]; then
     export EXTRA_ARGS="${DEST_EXTRA_ARGS} -tap ${TAP_IFACE}"
+    if [[ -n "${TAP_NETNS}" ]]; then
+        export EXTRA_ARGS="${EXTRA_ARGS} -tap-netns ${TAP_NETNS}"
+    fi
 else
     export EXTRA_ARGS="${DEST_EXTRA_ARGS}"
 fi

@@ -138,11 +138,14 @@ stopLoop:
 	log.Println("VM paused. Redirecting in-flight packets to destination...")
 
 	tunnelCreated := false
-	if err := SetupTunnel(ctx, destIP, vmIP, tunnelMode); err != nil {
+	if tunnelMode == "none" {
+		log.Println("Tunnel mode 'none': skipping IP tunnel setup.")
+	} else if err := SetupTunnel(ctx, destIP, vmIP, tunnelMode); err != nil {
 		return fmt.Errorf("failed to create IP tunnel: %w", err)
+	} else {
+		tunnelCreated = true
+		log.Println("IP tunnel established. Traffic redirected.")
 	}
-	tunnelCreated = true
-	log.Println("IP tunnel established. Traffic redirected.")
 	log.Println("Waiting for migration to complete...")
 
 	migrationErr := waitForMigrationComplete(ctx, client)

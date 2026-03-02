@@ -22,11 +22,12 @@ func main() {
 	mode := flag.String("mode", "", "Migration role: 'source' or 'dest'")
 	qmpSocket := flag.String("qmp", "/run/vc/vm/extra-monitor.sock", "Path to QEMU QMP unix socket")
 	tapIface := flag.String("tap", "", "Tap interface name (dest mode only, leave empty to skip tc sch_plug)")
+	tapNetns := flag.String("tap-netns", "", "Network namespace path for tap interface (e.g. /proc/PID/ns/net)")
 	destIP := flag.String("dest-ip", "", "Destination node IP address (source mode only)")
 	vmIP := flag.String("vm-ip", "", "VM pod IP for traffic redirection (source mode only)")
 	driveID := flag.String("drive-id", "drive-virtio-disk0", "QEMU block device ID to migrate")
 	sharedStorage := flag.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
-	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip' or 'gre'")
+	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := flag.Int("downtime", 25, "Max allowed downtime (ms)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 
@@ -54,7 +55,7 @@ func main() {
 	var err error
 	switch *mode {
 	case "dest":
-		err = migration.RunDestination(ctx, *qmpSocket, *tapIface, *driveID, *sharedStorage)
+		err = migration.RunDestination(ctx, *qmpSocket, *tapIface, *tapNetns, *driveID, *sharedStorage)
 	case "source":
 		if *destIP == "" || *vmIP == "" {
 			fmt.Fprintln(os.Stderr, "Error: -dest-ip and -vm-ip are required for source mode")
@@ -78,7 +79,7 @@ func main() {
 				migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
 			os.Exit(1)
 		}
-		if *tunnelMode != "ipip" && *tunnelMode != "gre" {
+		if *tunnelMode != "ipip" && *tunnelMode != "gre" && *tunnelMode != "none" {
 			fmt.Fprintf(os.Stderr, "Error: invalid -tunnel-mode: %q\n", *tunnelMode)
 			os.Exit(1)
 		}

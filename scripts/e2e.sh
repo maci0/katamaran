@@ -7,7 +7,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
-readonly KATA_CHART_VERSION="3.27.0"
+readonly KATA_CHART_VERSION="3.24.0"
 
 log() { echo -e "\n\033[1;34m>>> $1\033[0m"; }
 success() { echo -e "\033[1;32m  PASS: $1\033[0m"; }
@@ -142,6 +142,12 @@ else
     NODE1="${PROFILE}-control-plane"
     NODE2="${PROFILE}-worker"
     CTX="kind-${PROFILE}"
+
+    # Kata QEMU backs VM memory with /dev/shm.  Podman defaults to 63 MB,
+    # which is far too small.  Remount with enough room (4 GB).
+    for n in "${NODE1}" "${NODE2}"; do
+        podman exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
+    done
 fi
 
 log "Untainting nodes..."
@@ -198,11 +204,11 @@ log "Installing Kata Containers via Helm..."
 helm upgrade --install kata-deploy "${KATA_CHART}" \
     --kube-context "${CTX}" --namespace kube-system \
     --version "${KATA_CHART_VERSION}" \
-    --set shims.disableAll=true --set shims.qemu.enabled=true --wait=false
+    --set shims.qemu.enabled=true --wait=false
 kubectl --context "${CTX}" -n kube-system rollout status daemonset/kata-deploy --timeout=300s
 
 log "Applying Kata configuration overrides (QMP socket + high timeout)..."
-KATA_CFG="/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
+KATA_CFG="/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
 for node in "${NODE1}" "${NODE2}"; do
     log "Waiting for Kata configuration on node ${node}..."
     for i in $(seq 1 60); do
@@ -270,60 +276,157 @@ if [[ -z "${SRC_SOCK}" ]]; then
     exit 1
 fi
 
-log "Installing state-matching QEMU wrapper on Node 2..."
-WRAPPER_TMP="/tmp/qemu-wrapper-${PROFILE}.sh"
-printf '#!/bin/bash\nexec /opt/kata/bin/qemu-system-x86_64 "$@" -incoming tcp:0.0.0.0:4444\n' > "${WRAPPER_TMP}"
-node_cp_to "${NODE2}" "${WRAPPER_TMP}" "/tmp/qemu-wrapper.sh"
-node_exec "${NODE2}" "${SUDO} mv /tmp/qemu-wrapper.sh /usr/local/bin/qemu-wrapper.sh && ${SUDO} chmod +x /usr/local/bin/qemu-wrapper.sh"
-rm -f "${WRAPPER_TMP}"
+# Extract the source sandbox ID from the QMP socket path.
+SRC_SANDBOX_DIR=$(dirname "${SRC_SOCK}")
+SRC_SANDBOX_ID=$(basename "${SRC_SANDBOX_DIR}")
 
-# Point Kata to the wrapper on Node 2
-node_exec "${NODE2}" "${SUDO} sed -i 's|^#*path = .*|path = \"/usr/local/bin/qemu-wrapper.sh\"|' '${KATA_CFG}'"
+log "Extracting source QEMU configuration..."
+# Parse the running source QEMU's command line to get device IDs that
+# the destination must match exactly for live migration to succeed.
+SRC_QEMU_PID=$(node_exec "${NODE1}" "${SUDO} cat ${SRC_SANDBOX_DIR}/pid")
+SRC_CMDLINE=$(node_exec "${NODE1}" "${SUDO} cat /proc/${SRC_QEMU_PID}/cmdline | tr '\0' '\n'")
+SRC_UUID=$(echo "${SRC_CMDLINE}" | grep -A1 '^-uuid$' | tail -1)
+SRC_VSOCK_ID=$(echo "${SRC_CMDLINE}" | grep 'vhost-vsock-pci' | grep -oP 'id=\Kvsock-[0-9]+')
+SRC_CHARDEV_FS=$(echo "${SRC_CMDLINE}" | grep 'vhost-user-fs-pci' | grep -oP 'chardev=\K[^,]+')
+SRC_MAC=$(echo "${SRC_CMDLINE}" | grep 'virtio-net-pci' | grep -oP 'mac=\K[^,]+')
+SRC_APPEND=$(echo "${SRC_CMDLINE}" | grep '^tsc=reliable')
+success "Source UUID: ${SRC_UUID}, MAC: ${SRC_MAC}"
 
-log "Deploying destination pod on Node 2..."
-kubectl --context "${CTX}" delete pod kata-dst --ignore-not-found --force --grace-period=0
-cat <<EOFPOD2 | kubectl --context "${CTX}" apply -f -
+log "Removing tc mirred redirect on source pod's eth0..."
+# Kata installs a tc filter that redirects ALL ingress on eth0 to tap0_kata.
+# This prevents the QEMU process from making outbound TCP connections (the
+# migration stream). We remove it so QEMU can reach the destination.
+node_exec "${NODE1}" "${SUDO} nsenter --net=/proc/${SRC_QEMU_PID}/ns/net tc filter del dev eth0 ingress" 2>/dev/null || true
+success "Source tc redirect removed."
+
+log "Deploying helper pod on Node 2 for destination network namespace..."
+# We cannot start a Kata VM with -incoming defer because Kata's containerd
+# shim kills VMs that don't connect via vsock within the dial_timeout.
+# Instead, deploy a lightweight non-Kata pod on Node 2 to provide a clean
+# network namespace with a routable pod IP, then run the destination QEMU
+# inside that namespace.
+kubectl --context "${CTX}" delete pod mig-helper --ignore-not-found --force --grace-period=0 2>/dev/null || true
+cat <<EOFPOD | kubectl --context "${CTX}" apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: kata-dst
+  name: mig-helper
 spec:
-  runtimeClassName: kata-qemu
   nodeSelector:
     katamaran-role: dest
   containers:
   - name: pause
     image: registry.k8s.io/pause:3.9
-EOFPOD2
+EOFPOD
+if ! kubectl --context "${CTX}" wait --for=condition=Ready pod/mig-helper --timeout=120s; then
+    error "Helper pod failed to become Ready."
+    exit 1
+fi
+DST_POD_IP=$(kubectl --context "${CTX}" get pod mig-helper -o jsonpath='{.status.podIP}')
+success "Helper pod IP: ${DST_POD_IP}"
 
-log "Waiting for destination QEMU QMP socket to appear..."
-DST_SOCK=""
-for i in $(seq 1 60); do
-    DST_SOCK=$(node_exec "${NODE2}" "${SUDO} find /run/vc 2>/dev/null -name extra-monitor.sock | head -n 1")
-    if [[ -n "${DST_SOCK}" ]]; then break; fi
-    sleep 2
+# Get the helper container's PID for nsenter.
+MIG_HELPER_PID=""
+for i in $(seq 1 15); do
+    MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect {} 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin)['info']['pid'])\"" 2>/dev/null || true)
+    if [[ -n "${MIG_HELPER_PID}" && "${MIG_HELPER_PID}" =~ ^[0-9]+$ ]]; then break; fi
+    sleep 1
 done
+if [[ -z "${MIG_HELPER_PID}" || ! "${MIG_HELPER_PID}" =~ ^[0-9]+$ ]]; then
+    error "Could not determine mig-helper container PID."
+    exit 1
+fi
+success "Helper container PID: ${MIG_HELPER_PID}"
 
-if [[ -z "${DST_SOCK}" ]]; then
-    error "Destination QMP socket never appeared. Collecting diagnostics..."
-    kubectl --context "${CTX}" --request-timeout=20s describe pod kata-dst 2>&1 | tail -30
-    node_exec "${NODE2}" "${SUDO} journalctl --no-pager -u containerd --since '5 minutes ago' 2>&1 | grep -iE 'kata|qemu|kvm|error|fail' | tail -20" || true
+log "Setting up destination QEMU (manual, with -incoming defer)..."
+# Start a standalone QEMU on Node 2 that matches the source VM's device
+# topology. This bypasses Kata's sandbox lifecycle, which kills VMs that
+# don't boot within its vsock timeout (incompatible with -incoming mode).
+#
+# Key fixes for live migration:
+#   1. nvdimm uses a writable copy (source is readonly=on, but QEMU sends
+#      nvdimm pages during migration; writing to readonly mmap = SIGSEGV)
+#   2. virtiofsd started with --migration-on-error=guest-error so that
+#      inode state mismatches between source/dest don't abort migration
+#   3. Device IDs, UUID, and MAC extracted from the source QEMU to ensure
+#      the destination has an identical device topology
+DST_SANDBOX="manual-dst-$$"
+DST_VM_DIR="/run/vc/vm/${DST_SANDBOX}"
+DST_SOCK="${DST_VM_DIR}/extra-monitor.sock"
+node_exec "${NODE2}" "${SUDO} mkdir -p ${DST_VM_DIR}"
+node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared"
+
+# Create a writable copy of the nvdimm image.
+node_exec "${NODE2}" "${SUDO} cp /opt/kata/share/kata-containers/kata-ubuntu-noble.image /tmp/kata-dst-nvdimm-$$.img"
+
+# Start virtiofsd for the vhost-user-fs device.
+node_exec "${NODE2}" "${SUDO} /opt/kata/libexec/virtiofsd \
+    --socket-path=${DST_VM_DIR}/vhost-fs.sock \
+    --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared \
+    --cache=auto --thread-pool-size=1 --announce-submounts \
+    --sandbox=none --migration-on-error=guest-error &"
+sleep 2
+if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
+    error "virtiofsd socket not found."
     exit 1
 fi
 
-log "Detecting destination tap interface..."
-DST_TAP=""
+# Create tap interface in the helper pod's network namespace.
+node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip tuntap add dev tap0_kata mode tap" 2>/dev/null || true
+node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip link set tap0_kata up"
+
+# Start destination QEMU with matching device topology.
+node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net \
+    /opt/kata/bin/qemu-system-x86_64 \
+    -name sandbox-${DST_SANDBOX},debug-threads=on \
+    -uuid ${SRC_UUID} \
+    -machine q35,accel=kvm,nvdimm=on \
+    -cpu host,pmu=off \
+    -qmp unix:path=${DST_VM_DIR}/qmp-primary.sock,server=on,wait=off \
+    -qmp unix:path=${DST_SOCK},server=on,wait=off \
+    -m 2048M,slots=10,maxmem=127437M \
+    -device pci-bridge,bus=pcie.0,id=pci-bridge-0,chassis_nr=1,shpc=off,addr=2,io-reserve=4k,mem-reserve=1m,pref64-reserve=1m \
+    -device virtio-serial-pci,disable-modern=false,id=serial0 \
+    -device virtconsole,chardev=charconsole0,id=console0 \
+    -chardev socket,id=charconsole0,path=${DST_VM_DIR}/console.sock,server=on,wait=off \
+    -device nvdimm,id=nv0,memdev=mem0,unarmed=on \
+    -object memory-backend-file,id=mem0,mem-path=/tmp/kata-dst-nvdimm-$$.img,size=268435456 \
+    -device virtio-scsi-pci,id=scsi0,disable-modern=false \
+    -object rng-random,id=rng0,filename=/dev/urandom \
+    -device virtio-rng-pci,rng=rng0 \
+    -device vhost-vsock-pci,disable-modern=false,id=${SRC_VSOCK_ID},guest-cid=88888888 \
+    -chardev socket,id=${SRC_CHARDEV_FS},path=${DST_VM_DIR}/vhost-fs.sock \
+    -device vhost-user-fs-pci,chardev=${SRC_CHARDEV_FS},tag=kataShared,queue-size=1024 \
+    -netdev tap,id=network-0,vhost=on,ifname=tap0_kata,script=no,downscript=no \
+    -device driver=virtio-net-pci,netdev=network-0,mac=${SRC_MAC},disable-modern=false,mq=on,vectors=4 \
+    -rtc base=utc,driftfix=slew,clock=host \
+    -global kvm-pit.lost_tick_policy=discard \
+    -vga none -no-user-config -nodefaults -nographic --no-reboot \
+    -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on \
+    -numa node,memdev=dimm1 \
+    -kernel /opt/kata/share/kata-containers/vmlinux-6.12.47-173 \
+    -append '${SRC_APPEND}' \
+    -pidfile ${DST_VM_DIR}/pid \
+    -smp 1,cores=1,threads=1,sockets=32,maxcpus=32 \
+    -incoming defer \
+    -daemonize"
+
+# Wait for QMP socket to appear
 for i in $(seq 1 15); do
-    DST_TAP=$(node_exec "${NODE2}" "${SUDO} ip -br link 2>/dev/null | grep -oE 'tap[^ ]+' | head -n 1" || true)
-    if [[ -n "${DST_TAP}" ]]; then break; fi
-    sleep 2
+    if node_exec "${NODE2}" "[ -S ${DST_SOCK} ]" 2>/dev/null; then break; fi
+    sleep 1
 done
-if [[ -n "${DST_TAP}" ]]; then
-    success "Destination tap interface: ${DST_TAP}"
-else
-    warn "No tap interface found on destination; zero-drop qdisc buffering will be skipped."
-    DST_TAP="none"
+if ! node_exec "${NODE2}" "[ -S ${DST_SOCK} ]" 2>/dev/null; then
+    error "Destination QMP socket not found at ${DST_SOCK}"
+    exit 1
 fi
+success "Destination QEMU started. QMP: ${DST_SOCK}"
+
+# The destination QEMU runs inside the helper pod's network namespace.
+# The tap interface (tap0_kata) is in that namespace. Pass the netns path
+# so katamaran can run tc commands via nsenter.
+DST_TAP="tap0_kata"
+DST_TAP_NETNS="/proc/${MIG_HELPER_PID}/ns/net"
 
 PING_PID=""
 if [[ "${PING_PROOF}" == "true" ]]; then
@@ -341,8 +444,9 @@ if [[ "${METHOD}" == "job" ]]; then
     log "Executing Live Migration (job mode)..."
     "${PROJECT_ROOT}/deploy/migrate.sh" \
         --context "${CTX}" --source-node "${NODE1}" --dest-node "${NODE2}" \
-        --tap "${DST_TAP}" --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
-        --dest-ip "${NODE2_IP}" --vm-ip "${SRC_POD_IP}" \
+        --tap "${DST_TAP}" --tap-netns "${DST_TAP_NETNS}" \
+        --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
+        --dest-ip "${DST_POD_IP}" --vm-ip "${SRC_POD_IP}" \
         --image "localhost/katamaran:dev" --shared-storage --downtime 25 || {
             error "Migration failed!"
             exit 1

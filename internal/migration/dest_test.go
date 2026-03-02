@@ -26,6 +26,7 @@ func TestRunDestination_Failures(t *testing.T) {
 				context.Background(),
 				"/nonexistent/qmp.sock",
 				tt.tap,
+				"",
 				"drive-virtio-disk0",
 				tt.sharedStorage,
 			)
@@ -44,7 +45,7 @@ func TestRunDestination_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := RunDestination(ctx, "/nonexistent/qmp.sock", "", "drive-virtio-disk0", false)
+	err := RunDestination(ctx, "/nonexistent/qmp.sock", "", "", "drive-virtio-disk0", false)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
