@@ -105,6 +105,16 @@ func FormatQEMUHost(addr netip.Addr) string {
 	return s
 }
 
+// RunCmdInNetns executes a command inside the given network namespace.
+// If netnsPath is empty, it runs the command in the current namespace.
+func RunCmdInNetns(ctx context.Context, netnsPath string, name string, args ...string) error {
+	if netnsPath == "" {
+		return RunCmd(ctx, name, args...)
+	}
+	nsArgs := append([]string{"--net=" + netnsPath, name}, args...)
+	return RunCmd(ctx, "nsenter", nsArgs...)
+}
+
 // RunCmd executes an external command. It captures combined stdout/stderr and
 // returns a wrapped error including the full command line and output on failure.
 // If the context was cancelled, the returned error wraps context.Canceled so
