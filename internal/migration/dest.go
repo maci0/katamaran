@@ -87,6 +87,16 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, driveID string, sh
 		}
 	}()
 
+	// Step 1b: Open incoming migration listener on the running QEMU.
+	// This replaces the previous approach of starting QEMU with -incoming,
+	// which is incompatible with Kata's sandbox lifecycle (Kata kills the
+	// QEMU because the kata-agent never connects via vsock in incoming mode).
+	incomingURI := fmt.Sprintf("tcp:0.0.0.0:%s", RAMMigrationPort)
+	log.Printf("Opening incoming migration listener on %s...", incomingURI)
+	if _, err = client.Execute(ctx, "migrate-incoming", qmp.MigrateArgs{URI: incomingURI}); err != nil {
+		return fmt.Errorf("configuring incoming migration listener: %w", err)
+	}
+
 	nbdStarted := false
 	if !sharedStorage {
 		// Step 2: Start NBD server to receive storage mirroring from the source.
