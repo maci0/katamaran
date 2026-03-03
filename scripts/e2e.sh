@@ -49,7 +49,7 @@ export SUDO
 if [[ "${CNI}" == "auto" ]]; then
     if [[ "${PROVIDER}" == "minikube" ]]; then
         CNI="calico"
-        log "Minikube detected: defaulting to Calico (OVN requires nftables support missing in minikube kernel)."
+        log "Minikube detected: defaulting to Calico."
     else
         CNI="kindnet"
     fi
@@ -61,7 +61,8 @@ node_exec() {
     local node="$1"
     shift
     if [[ "${PROVIDER}" == "minikube" ]]; then
-        minikube -p "${PROFILE}" ssh -n "$node" -- "$*"
+        # Pipe through tr to strip carriage returns added by minikube's PTY.
+        minikube -p "${PROFILE}" ssh -n "$node" -- "$*" | tr -d '\r'
     else
         podman exec "$node" bash -c "$*"
     fi
@@ -178,8 +179,10 @@ if [[ "${CNI}" == "ovn" ]]; then
     OVN_K_DIR="/tmp/ovn-kubernetes-${PROFILE}"
     rm -rf "${OVN_K_DIR}"
     git clone --depth 1 --branch "master" "https://github.com/ovn-org/ovn-kubernetes.git" "${OVN_K_DIR}"
+    # Pre-create namespace to avoid conflict with chart-managed Namespace resource.
+    kubectl --context "${CTX}" create namespace ovn-kubernetes 2>/dev/null || true
     helm upgrade --install ovn-kubernetes "${OVN_K_DIR}/helm/ovn-kubernetes" \
-        --kube-context "${CTX}" --namespace ovn-kubernetes --create-namespace \
+        --kube-context "${CTX}" --namespace ovn-kubernetes \
         -f "${OVN_K_DIR}/helm/ovn-kubernetes/values-no-ic.yaml" \
         --set k8sAPIServer="https://${API_HOST}:${API_PORT}" \
         --set global.k8sServiceHost="${API_HOST}" --set global.k8sServicePort="${API_PORT}" \
@@ -187,7 +190,7 @@ if [[ "${CNI}" == "ovn" ]]; then
         --set tags.ovnkube-db=true --set tags.ovnkube-master=true --set tags.ovnkube-node=true --wait=false
 
     log "Waiting for OVN-Kubernetes..."
-    kubectl --context "${CTX}" -n ovn-kubernetes rollout status daemonset/ovnkube-node --timeout=600s 2>/dev/null || true
+    kubectl --context "${CTX}" -n ovn-kubernetes rollout status daemonset/ovnkube-node --timeout=600s
 elif [[ "${CNI}" == "cilium" ]]; then
     log "Deploying Cilium..."
     helm upgrade --install cilium oci://quay.io/cilium/charts/cilium \
@@ -340,7 +343,7 @@ success "Helper pod IP: ${DST_POD_IP}"
 # Get the helper container's PID for nsenter.
 MIG_HELPER_PID=""
 for i in $(seq 1 15); do
-    MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect {} 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin)['info']['pid'])\"" 2>/dev/null || true)
+    MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect -o go-template --template '{{.info.pid}}' {} 2>/dev/null" 2>/dev/null || true)
     if [[ -n "${MIG_HELPER_PID}" && "${MIG_HELPER_PID}" =~ ^[0-9]+$ ]]; then break; fi
     sleep 1
 done
@@ -372,11 +375,8 @@ node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${D
 node_exec "${NODE2}" "${SUDO} cp /opt/kata/share/kata-containers/kata-ubuntu-noble.image /tmp/kata-dst-nvdimm-$$.img"
 
 # Start virtiofsd for the vhost-user-fs device.
-node_exec "${NODE2}" "${SUDO} /opt/kata/libexec/virtiofsd \
-    --socket-path=${DST_VM_DIR}/vhost-fs.sock \
-    --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared \
-    --cache=auto --thread-pool-size=1 --announce-submounts \
-    --sandbox=none --migration-on-error=guest-error &"
+# Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
+node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
 sleep 2
 if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
     error "virtiofsd socket not found."
@@ -437,7 +437,13 @@ success "Destination QEMU started. QMP: ${DST_SOCK}"
 # The destination QEMU runs inside the helper pod's network namespace.
 # The tap interface (tap0_kata) is in that namespace. Pass the netns path
 # so katamaran can run tc commands via nsenter.
-DST_TAP="tap0_kata"
+# Check if sch_plug is available; if not, skip qdisc setup (no zero-drop buffering).
+if node_exec "${NODE2}" "${SUDO} modprobe sch_plug" 2>/dev/null; then
+    DST_TAP="tap0_kata"
+else
+    log "sch_plug not available on ${NODE2}; skipping zero-drop qdisc (tap=none)."
+    DST_TAP="none"
+fi
 DST_TAP_NETNS="/proc/${MIG_HELPER_PID}/ns/net"
 
 PING_PID=""
