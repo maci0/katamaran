@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_STORAGE=false
 TUNNEL_MODE="ipip"
 DOWNTIME="25"
+AUTO_DOWNTIME=false
 KUBECTL_CONTEXT=""
 MIG_SUCCESS=false
 SOURCE_NODE=""
@@ -52,6 +53,7 @@ usage() {
     echo "  --shared-storage        Enable shared storage mode"
     echo "  --tunnel-mode <mode>    Tunnel encapsulation (ipip or gre, default: ipip)"
     echo "  --downtime <ms>         Max allowed downtime in milliseconds (default: 25)"
+    echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
     echo "  --context <context>     Kubectl context to use"
     echo "  --help                  Show this help message"
     exit "${1:-1}"
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --vm-ip) VM_IP="$2"; shift 2 ;;
         --image) IMAGE_REF="$2"; shift 2 ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
+        --auto-downtime) AUTO_DOWNTIME=true; shift ;;
         --tunnel-mode) TUNNEL_MODE="$2"; shift 2 ;;
         --downtime) DOWNTIME="$2"; shift 2 ;;
         --context) KUBECTL_CONTEXT="$2"; shift 2 ;;
@@ -114,6 +117,9 @@ if [[ "$SHARED_STORAGE" == "true" ]]; then
 fi
 
 SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS -tunnel-mode $TUNNEL_MODE -downtime $DOWNTIME"
+if [[ "$AUTO_DOWNTIME" == "true" ]]; then
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS -auto-downtime"
+fi
 
 # Cleanup trap
 cleanup() {
