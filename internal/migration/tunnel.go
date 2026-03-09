@@ -9,15 +9,21 @@ import (
 	"strings"
 )
 
+// TunnelMode specifies the encapsulation protocol for the migration IP tunnel.
+type TunnelMode string
+
+const (
+	// TunnelModeIPIP uses IPIP (IPv4) or IP6TNL (IPv6). Minimal overhead.
+	TunnelModeIPIP TunnelMode = "ipip"
+	// TunnelModeGRE uses GRE (IPv4) or IP6GRE (IPv6). Supported by cloud middleboxes.
+	TunnelModeGRE TunnelMode = "gre"
+	// TunnelModeNone skips tunnel creation.
+	TunnelModeNone TunnelMode = "none"
+)
+
 // SetupTunnel creates an IP tunnel to the destination node and installs
 // a host route for the VM IP through it. This ensures packets arriving at the
 // (now-stale) source during CNI convergence are forwarded to the destination.
-//
-// tunnelMode selects the encapsulation protocol:
-//   - "ipip": IPIP for IPv4 (mode ipip), ip6tnl for IPv6 (mode ip6ip6).
-//     Minimal overhead but may be blocked by cloud VPC security groups.
-//   - "gre": GRE for IPv4 (mode gre), ip6gre for IPv6. Widely supported
-//     by cloud middleboxes (AWS, GCP, Azure) at +4 bytes overhead.
 //
 // Both addresses must be the same family and already Unmap'd by the caller.
 //
@@ -26,9 +32,7 @@ import (
 //
 // On partial failure (e.g., route add fails after tunnel is created), the
 // tunnel is cleaned up before returning the error to prevent resource leaks.
-func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) error {
-	dest = dest.Unmap()
-	vm = vm.Unmap()
+func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode) error {
 
 	if !dest.IsValid() || !vm.IsValid() {
 		return fmt.Errorf("invalid destination or VM address")
@@ -46,7 +50,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 	cctx, ccancel := CleanupCtx(ctx)
 	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
-	} else if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
+	} else if !strings.Contains(err.Error(), "Cannot find device") {
 		log.Printf("Warning: failed to remove stale tunnel %s: %v", TunnelName, err)
 	}
 	ccancel()
@@ -56,9 +60,9 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 	// gre:  gre  (v4) / ip6gre  (v6) — +4 bytes overhead, widely supported by middleboxes.
 	var mode string
 	switch {
-	case tunnelMode == "gre" && dest.Is6():
+	case tunnelMode == TunnelModeGRE && dest.Is6():
 		mode = "ip6gre"
-	case tunnelMode == "gre":
+	case tunnelMode == TunnelModeGRE:
 		mode = "gre"
 	case dest.Is6():
 		mode = "ip6ip6"

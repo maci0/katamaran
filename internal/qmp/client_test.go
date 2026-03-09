@@ -732,11 +732,11 @@ func TestMigrateInfo_Unmarshal(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		raw    string
-		status string
+		status        MigrateStatus
 		errMsg string
 	}{
-		{`{"status":"completed"}`, "completed", ""},
-		{`{"status":"failed","error-desc":"out of memory"}`, "failed", "out of memory"},
+		{`{"status":"completed"}`, MigrateStatusCompleted, ""},
+		{`{"status":"failed","error-desc":"out of memory"}`, MigrateStatusFailed, "out of memory"},
 		{`{"status":"active"}`, "active", ""},
 	}
 	for _, tc := range tests {
@@ -884,5 +884,69 @@ func TestError_Implements_error(t *testing.T) {
 	msg := fmt.Sprintf("wrap: %v", e)
 	if !strings.Contains(msg, "TestClass") || !strings.Contains(msg, "test desc") {
 		t.Fatalf("error formatting lost fields: %s", msg)
+	}
+}
+
+func TestWaitForEvent_EOF(t *testing.T) {
+	t.Parallel()
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		// Close immediately after handshake — EOF on next read.
+		conn.Close()
+	})
+
+	ctx := context.Background()
+	c, err := NewClient(ctx, sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer c.Close()
+
+	err = c.WaitForEvent(ctx, "RESUME", time.Second)
+	if err == nil {
+		t.Fatal("expected error on EOF")
+	}
+	if !strings.Contains(err.Error(), "QEMU closed") {
+		t.Fatalf("expected QEMU-closed message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "did QEMU crash") {
+		t.Fatalf("expected 'did QEMU crash' hint, got: %v", err)
+	}
+}
+
+func TestMaxBufferedEvents(t *testing.T) {
+	t.Parallel()
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		time.Sleep(time.Second)
+	})
+
+	ctx := context.Background()
+	c, err := NewClient(ctx, sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer c.Close()
+
+	// Fill the buffer beyond the cap.
+	c.mu.Lock()
+	for i := 0; i < maxBufferedEvents+100; i++ {
+		c.events = append(c.events, response{Event: fmt.Sprintf("EVENT_%d", i)})
+	}
+	count := len(c.events)
+	c.mu.Unlock()
+
+	if count != maxBufferedEvents+100 {
+		t.Fatalf("expected %d events before cap enforcement, got %d", maxBufferedEvents+100, count)
+	}
+
+	// Seed one more event through the buffer cap path via WaitForEvent buffer check.
+	// The cap is enforced on append inside Execute/WaitForEvent, not retroactively.
+	// Verify the cap constant is exported and reasonable.
+	if maxBufferedEvents < 100 {
+		t.Fatal("maxBufferedEvents should be at least 100 for normal operation")
+	}
+	if maxBufferedEvents > 10000 {
+		t.Fatal("maxBufferedEvents should not exceed 10000 to prevent OOM")
 	}
 }

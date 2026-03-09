@@ -35,25 +35,46 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("QMP error [%s]: %s", e.Class, e.Desc)
 }
 
+// BlockJobStatus represents the status of a block job.
+type BlockJobStatus string
+
+const (
+	BlockJobStatusConcluded BlockJobStatus = "concluded"
+	BlockJobStatusNull      BlockJobStatus = "null"
+	// other statuses might exist, but these are the ones checked
+)
+
 // BlockJobInfo represents a single entry returned by query-block-jobs.
 type BlockJobInfo struct {
-	Device string `json:"device"`
-	Len    int64  `json:"len"`
-	Offset int64  `json:"offset"`
-	Ready  bool   `json:"ready"`
-	Status string `json:"status"`
-	Type   string `json:"type"`
+	Device string         `json:"device"`
+	Len    int64          `json:"len"`
+	Offset int64          `json:"offset"`
+	Ready  bool           `json:"ready"`
+	Status BlockJobStatus `json:"status"`
+	Type   string         `json:"type"`
 }
+
+// MigrateStatus represents the status of a migration.
+type MigrateStatus string
+
+const (
+	MigrateStatusCompleted MigrateStatus = "completed"
+	MigrateStatusFailed    MigrateStatus = "failed"
+	MigrateStatusCancelled MigrateStatus = "cancelled"
+)
 
 // MigrateInfo represents the response from query-migrate.
 type MigrateInfo struct {
-	Status    string `json:"status"`
-	ErrorDesc string `json:"error-desc,omitempty"`
+	Status    MigrateStatus `json:"status"`
+	ErrorDesc string        `json:"error-desc,omitempty"`
 	RAM       struct {
 		Total       int64 `json:"total"`
 		Transferred int64 `json:"transferred"`
 		Remaining   int64 `json:"remaining"`
 	} `json:"ram,omitempty"`
+	Downtime  int64 `json:"downtime,omitempty"`
+	SetupTime int64 `json:"setup-time,omitempty"`
+	TotalTime int64 `json:"total-time,omitempty"`
 }
 
 // QMP command argument types — strictly typed to prevent typos and ensure

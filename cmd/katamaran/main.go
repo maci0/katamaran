@@ -18,8 +18,15 @@ import (
 
 var version = "v0.3.0"
 
+type Role string
+
+const (
+	RoleSource Role = "source"
+	RoleDest   Role = "dest"
+)
+
 func main() {
-	mode := flag.String("mode", "", "Migration role: 'source' or 'dest'")
+	modeFlag := flag.String("mode", "", "Migration role: 'source' or 'dest'")
 	qmpSocket := flag.String("qmp", "/run/vc/vm/extra-monitor.sock", "Path to QEMU QMP unix socket")
 	tapIface := flag.String("tap", "", "Tap interface name (dest mode only, leave empty to skip tc sch_plug)")
 	tapNetns := flag.String("tap-netns", "", "Network namespace path for tap interface (e.g. /proc/PID/ns/net)")
@@ -29,6 +36,7 @@ func main() {
 	sharedStorage := flag.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
 	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := flag.Int("downtime", 25, "Max allowed downtime (ms)")
+	autoDowntime := flag.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT (overrides -downtime)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 
 	flag.Parse()
@@ -53,10 +61,11 @@ func main() {
 	}()
 
 	var err error
-	switch *mode {
-	case "dest":
+	mode := Role(*modeFlag)
+	switch mode {
+	case RoleDest:
 		err = migration.RunDestination(ctx, *qmpSocket, *tapIface, *tapNetns, *driveID, *sharedStorage)
-	case "source":
+	case RoleSource:
 		if *destIP == "" || *vmIP == "" {
 			fmt.Fprintln(os.Stderr, "Error: -dest-ip and -vm-ip are required for source mode")
 			flag.PrintDefaults()
@@ -79,7 +88,8 @@ func main() {
 				migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
 			os.Exit(1)
 		}
-		if *tunnelMode != "ipip" && *tunnelMode != "gre" && *tunnelMode != "none" {
+		tm := migration.TunnelMode(*tunnelMode)
+		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
 			fmt.Fprintf(os.Stderr, "Error: invalid -tunnel-mode: %q\n", *tunnelMode)
 			os.Exit(1)
 		}
@@ -87,13 +97,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: -downtime must be positive: %d\n", *downtimeLimit)
 			os.Exit(1)
 		}
-		err = migration.RunSource(ctx, *qmpSocket, parsedDest, parsedVM, *driveID, *sharedStorage, *tunnelMode, *downtimeLimit)
+		err = migration.RunSource(ctx, *qmpSocket, parsedDest, parsedVM, *driveID, *sharedStorage, tm, *downtimeLimit, *autoDowntime)
 	case "":
 		fmt.Fprintf(os.Stderr, "Usage: %s -mode <source|dest> [options]\n\n", os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "Error: invalid mode %q\n", *mode)
+		fmt.Fprintf(os.Stderr, "Error: invalid mode %q\n", mode)
 		os.Exit(1)
 	}
 
