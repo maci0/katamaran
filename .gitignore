@@ -22,3 +22,4 @@ query_qmp.py
 scripts/kata_test_rsa
 scripts/kata_test_rsa.pub
 
+.minikube-build/

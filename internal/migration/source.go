@@ -21,7 +21,7 @@ var (
 )
 
 // RunSource initiates live migration from the source node to the destination.
-func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, driveID string, sharedStorage bool, tunnelMode TunnelMode, downtimeLimitMS int, autoDowntime bool) error {
+func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, driveID string, sharedStorage bool, tunnelMode TunnelMode, downtimeLimitMS int, autoDowntime bool, multifdChannels int) error {
 	ctx, cancel := context.WithTimeout(ctx, MigrationTimeout+StorageSyncTimeout)
 	defer cancel()
 
@@ -76,10 +76,15 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 	}
 
 	log.Println("Configuring RAM migration...")
+	caps := []qmp.MigrationCapability{
+		{Capability: "auto-converge", State: true},
+	}
+	if multifdChannels > 0 {
+		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
+		log.Printf("Multifd enabled: %d parallel channels.", multifdChannels)
+	}
 	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
-		Capabilities: []qmp.MigrationCapability{
-			{Capability: "auto-converge", State: true},
-		},
+		Capabilities: caps,
 	}); err != nil {
 		return fmt.Errorf("setting migration capabilities: %w", err)
 	}
@@ -96,8 +101,9 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 	}
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
-		DowntimeLimit: int64(downtimeLimitMS),
-		MaxBandwidth:  MaxBandwidth,
+		DowntimeLimit:   int64(downtimeLimitMS),
+		MaxBandwidth:    MaxBandwidth,
+		MultiFDChannels: int64(multifdChannels),
 	}); err != nil {
 		return fmt.Errorf("setting migration parameters: %w", err)
 	}
