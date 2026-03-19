@@ -46,6 +46,16 @@ fi
 if [[ "${PROVIDER}" == "kind" ]]; then SUDO=""; fi
 export SUDO
 
+# Auto-detect container engine (podman preferred, docker fallback).
+if command -v podman >/dev/null 2>&1; then
+    CE="podman"
+elif command -v docker >/dev/null 2>&1; then
+    CE="docker"
+else
+    error "Neither podman nor docker found. One is required."
+    exit 1
+fi
+
 if [[ "${CNI}" == "auto" ]]; then
     if [[ "${PROVIDER}" == "minikube" ]]; then
         CNI="calico"
@@ -64,7 +74,7 @@ node_exec() {
         # Pipe through tr to strip carriage returns added by minikube's PTY.
         minikube -p "${PROFILE}" ssh -n "$node" -- "$*" | tr -d '\r'
     else
-        podman exec "$node" bash -c "$*"
+        ${CE} exec "$node" bash -c "$*"
     fi
 }
 
@@ -75,7 +85,7 @@ node_cp_to() {
     if [[ "${PROVIDER}" == "minikube" ]]; then
         minikube -p "${PROFILE}" cp "${src}" "${node}:${dst}"
     else
-        podman cp "${src}" "${node}:${dst}"
+        ${CE} cp "${src}" "${node}:${dst}"
     fi
 }
 
@@ -108,7 +118,7 @@ fi
 trap cleanup EXIT
 
 log "Checking prerequisites..."
-REQS="kubectl helm podman"
+REQS="kubectl helm"
 if [[ "${PROVIDER}" == "minikube" ]]; then REQS="${REQS} minikube"; else REQS="${REQS} kind"; fi
 if [[ "${CNI}" == "ovn" ]]; then REQS="${REQS} git"; fi
 
@@ -139,7 +149,11 @@ else
     else
         KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config.yaml"
     fi
-    KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    if [[ "${CE}" == "podman" ]]; then
+        KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    else
+        kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    fi
     NODE1="${PROFILE}-control-plane"
     NODE2="${PROFILE}-worker"
     CTX="kind-${PROFILE}"
@@ -147,7 +161,7 @@ else
     # Kata QEMU backs VM memory with /dev/shm.  Podman defaults to 63 MB,
     # which is far too small.  Remount with enough room (4 GB).
     for n in "${NODE1}" "${NODE2}"; do
-        podman exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
+        ${CE} exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
     done
 fi
 
@@ -239,9 +253,9 @@ kubectl --context "${CTX}" label node "${NODE1}" katamaran-role=source --overwri
 kubectl --context "${CTX}" label node "${NODE2}" katamaran-role=dest --overwrite
 
 log "Building and deploying katamaran..."
-podman build -t localhost/katamaran:dev .
+${CE} build -t localhost/katamaran:dev .
 rm -f katamaran.tar
-podman save localhost/katamaran:dev -o katamaran.tar
+${CE} save localhost/katamaran:dev -o katamaran.tar
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
     minikube -p "${PROFILE}" image load katamaran.tar
