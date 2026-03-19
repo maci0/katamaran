@@ -27,6 +27,7 @@ SHARED_STORAGE=false
 TUNNEL_MODE="ipip"
 DOWNTIME="25"
 AUTO_DOWNTIME=false
+MULTIFD_CHANNELS="4"
 KUBECTL_CONTEXT=""
 MIG_SUCCESS=false
 SOURCE_NODE=""
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
         --tunnel-mode) TUNNEL_MODE="$2"; shift 2 ;;
         --downtime) DOWNTIME="$2"; shift 2 ;;
+        --multifd-channels) MULTIFD_CHANNELS="$2"; shift 2 ;;
         --context) KUBECTL_CONTEXT="$2"; shift 2 ;;
         --help) usage 0 ;;
         *) echo "Unknown option: $1"; usage ;;
@@ -115,9 +117,9 @@ if [[ -n "$KUBECTL_CONTEXT" ]]; then
     KUBECTL+=(--context "$KUBECTL_CONTEXT")
 fi
 
-DEST_EXTRA_ARGS=""
+DEST_EXTRA_ARGS="-multifd-channels $MULTIFD_CHANNELS"
 if [[ "$SHARED_STORAGE" == "true" ]]; then
-    DEST_EXTRA_ARGS="-shared-storage"
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS -shared-storage"
 fi
 
 SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS -tunnel-mode $TUNNEL_MODE -downtime $DOWNTIME"

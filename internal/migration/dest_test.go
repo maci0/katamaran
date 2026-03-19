@@ -30,6 +30,7 @@ func TestRunDestination_Failures(t *testing.T) {
 				"",
 				"drive-virtio-disk0",
 				tt.sharedStorage,
+				0,
 			)
 			if err == nil {
 				t.Fatal("expected error for nonexistent QMP socket")
@@ -46,7 +47,7 @@ func TestRunDestination_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := RunDestination(ctx, "/nonexistent/qmp.sock", "", "", "drive-virtio-disk0", false)
+	err := RunDestination(ctx, "/nonexistent/qmp.sock", "", "", "drive-virtio-disk0", false, 0)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
@@ -77,7 +78,7 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true, 0)
 	if err != nil {
 		t.Fatalf("RunDestination shared-storage happy path: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false, 0)
 	if err != nil {
 		t.Fatalf("RunDestination non-shared happy path: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true, 0)
 	if err == nil {
 		t.Fatal("expected error for migrate-incoming failure")
 	}
@@ -178,7 +179,7 @@ func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false, 0)
 	if err == nil {
 		t.Fatal("expected error for NBD server start failure")
 	}
@@ -208,7 +209,7 @@ func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", false, 0)
 	if err == nil {
 		t.Fatal("expected error for NBD server add failure")
 	}
@@ -244,7 +245,7 @@ func TestRunDestination_GARPFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true)
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true, 0)
 	if err == nil {
 		t.Fatal("expected error for GARP failure")
 	}

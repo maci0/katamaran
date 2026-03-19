@@ -31,7 +31,7 @@ import (
 //  6. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
-func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool) error {
+func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool, multifdChannels int) error {
 	log.Println("Setting up destination node...")
 
 	// Step 1: Install sch_plug qdisc in pass-through mode.
@@ -91,7 +91,25 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		}
 	}()
 
-	// Step 2: Open incoming migration listener on the running QEMU.
+	// Step 2: Configure migration capabilities and open incoming listener.
+	// Multifd must be enabled BEFORE migrate-incoming so the destination
+	// opens the parallel channel listeners alongside the main listener.
+	if multifdChannels > 0 {
+		if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
+			Capabilities: []qmp.MigrationCapability{
+				{Capability: "multifd", State: true},
+			},
+		}); err != nil {
+			return fmt.Errorf("setting destination migration capabilities: %w", err)
+		}
+		if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
+			MultiFDChannels: int64(multifdChannels),
+		}); err != nil {
+			return fmt.Errorf("setting destination migration parameters: %w", err)
+		}
+		log.Printf("Multifd enabled on destination: %d channels.", multifdChannels)
+	}
+
 	// Starting QEMU with -incoming is incompatible with Kata's sandbox lifecycle
 	// (Kata kills the QEMU because kata-agent never connects via vsock in
 	// incoming mode), so we use a QMP command on the already-running instance.

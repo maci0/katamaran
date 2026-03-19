@@ -56,6 +56,7 @@ Source mode flags:
   --tunnel-mode string     Tunnel mode: 'ipip', 'gre', or 'none' (default "ipip")
   --downtime int           Max allowed downtime in milliseconds (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
+  --multifd-channels int   Parallel TCP channels for RAM migration, 0 to disable (default 4)
 
 Destination mode flags:
   --tap string             Tap interface name for tc sch_plug buffering
@@ -87,6 +88,7 @@ func main() {
 	tunnelMode := flag.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := flag.Int("downtime", 25, "Max allowed downtime in milliseconds")
 	autoDowntime := flag.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT")
+	multifdChannels := flag.Int("multifd-channels", migration.DefaultMultiFDChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 
 	flag.Usage = printUsage
@@ -128,7 +130,7 @@ func main() {
 
 	switch mode {
 	case RoleDest:
-		err = migration.RunDestination(ctx, *qmpSocket, *tapIface, *tapNetns, *driveID, *sharedStorage)
+		err = migration.RunDestination(ctx, *qmpSocket, *tapIface, *tapNetns, *driveID, *sharedStorage, *multifdChannels)
 	case RoleSource:
 		var missing []string
 		if *destIP == "" {
@@ -167,7 +169,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: --downtime must be positive, got %d\n", *downtimeLimit)
 			os.Exit(1)
 		}
-		err = migration.RunSource(ctx, *qmpSocket, parsedDest, parsedVM, *driveID, *sharedStorage, tm, *downtimeLimit, *autoDowntime)
+		err = migration.RunSource(ctx, *qmpSocket, parsedDest, parsedVM, *driveID, *sharedStorage, tm, *downtimeLimit, *autoDowntime, *multifdChannels)
 	case "":
 		printUsage()
 		os.Exit(1)

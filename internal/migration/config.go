@@ -74,6 +74,12 @@ const (
 	// this window, the drive-mirror command likely failed silently.
 	JobAppearTimeout = 30 * time.Second
 
+	// DefaultMultiFDChannels is the number of parallel TCP connections used
+	// for RAM migration. Multifd distributes page transfer across channels,
+	// improving throughput when per-connection bandwidth is limited (e.g.
+	// nested KVM, high-latency links). Set to 0 to disable multifd.
+	DefaultMultiFDChannels = 4
+
 	// CleanupTimeout is the deadline for deferred cleanup operations
 	// (qdisc removal, NBD server stop, block-job-cancel, tunnel teardown).
 	// Cleanup uses context.WithoutCancel to run even after main ctx cancel.
