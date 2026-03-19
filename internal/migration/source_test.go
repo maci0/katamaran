@@ -32,7 +32,7 @@ func TestRunSource_Failures(t *testing.T) {
 	tests := []struct {
 		name          string
 		sharedStorage bool
-		tunnelMode      TunnelMode
+		tunnelMode    TunnelMode
 	}{
 		{"BadQMPSocket", false, TunnelModeIPIP},
 		{"SharedStorage_BadQMPSocket", true, TunnelModeIPIP},

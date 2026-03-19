@@ -108,6 +108,12 @@ func migrateScriptPath() string {
 // validTarget checks that the target is a plausible IP or hostname for
 // ping/HTTP probing. Rejects loopback, link-local, and cloud metadata
 // addresses to prevent SSRF against internal services.
+//
+// Limitation: DNS rebinding could bypass this check — the hostname may
+// resolve to a safe IP here but rebind to an internal IP at connect time.
+// Accepted risk: this dashboard is a cluster-internal monitoring tool,
+// not a public-facing API. For ping targets, there is no way to hook
+// DNS resolution of an external process.
 func validTarget(target string) bool {
 	if strings.HasPrefix(target, "-") {
 		return false

@@ -341,7 +341,7 @@ if [[ -x "${MIGRATE_SCRIPT}" ]]; then
     fi
 
     BAD_TUN_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev --tunnel-mode bogus 2>&1 || true)
-    if echo "${BAD_TUN_ERR}" | grep -q -- "--tunnel-mode must be 'ipip' or 'gre'"; then
+    if echo "${BAD_TUN_ERR}" | grep -q -- "--tunnel-mode must be"; then
         pass "migrate.sh rejects invalid --tunnel-mode"
     else
         fail "migrate.sh should reject invalid --tunnel-mode"

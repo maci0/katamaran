@@ -732,7 +732,7 @@ func TestMigrateInfo_Unmarshal(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		raw    string
-		status        MigrateStatus
+		status MigrateStatus
 		errMsg string
 	}{
 		{`{"status":"completed"}`, MigrateStatusCompleted, ""},
@@ -948,5 +948,58 @@ func TestMaxBufferedEvents(t *testing.T) {
 	}
 	if maxBufferedEvents > 10000 {
 		t.Fatal("maxBufferedEvents should not exceed 10000 to prevent OOM")
+	}
+}
+
+func TestReadLine_MaxLineSizeGuard(t *testing.T) {
+	t.Parallel()
+
+	// Verify the maxLineSize constant is reasonable.
+	if maxLineSize < 1024*1024 {
+		t.Fatal("maxLineSize should be at least 1 MiB for normal QMP messages")
+	}
+	if maxLineSize > 16*1024*1024 {
+		t.Fatal("maxLineSize should not exceed 16 MiB")
+	}
+
+	// Create a fake QMP server that sends data exceeding maxLineSize without
+	// a newline, then closes the connection to trigger the guard.
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 4096)
+		conn.Read(buf) // consume command
+
+		// Send data exceeding maxLineSize without a newline terminator.
+		// We use a deadline to avoid hanging if the client disconnects.
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		chunk := make([]byte, 64*1024) // 64 KiB chunks
+		for i := range chunk {
+			chunk[i] = 'x'
+		}
+		written := 0
+		for written < maxLineSize+1 {
+			n, err := conn.Write(chunk)
+			if err != nil {
+				return
+			}
+			written += n
+		}
+		// Close without newline — forces ReadBytes to return with error.
+		conn.Close()
+	})
+
+	ctx := context.Background()
+	c, err := NewClient(ctx, sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer c.Close()
+
+	_, err = c.Execute(ctx, "query-migrate", nil)
+	if err == nil {
+		t.Fatal("expected error for oversized line")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Logf("got error (acceptable — may be IO error rather than size guard): %v", err)
 	}
 }

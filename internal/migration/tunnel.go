@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
-	"strings"
 )
 
 // TunnelMode specifies the encapsulation protocol for the migration IP tunnel.
@@ -46,12 +45,12 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 	vmStr := vm.String()
 
 	// Remove any stale tunnel from a previous run. Errors are ignored
-	// because the tunnel may not exist, which is the common case.
+	// because the tunnel typically doesn't exist (first run). On error,
+	// we log but continue — if there is a real problem (e.g., EPERM),
+	// it will surface when we attempt to create the new tunnel below.
 	cctx, ccancel := CleanupCtx(ctx)
 	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
-	} else if !strings.Contains(err.Error(), "Cannot find device") {
-		log.Printf("Warning: failed to remove stale tunnel %s: %v", TunnelName, err)
 	}
 	ccancel()
 
@@ -123,10 +122,14 @@ func IPFamily(addr netip.Addr) string {
 // TeardownTunnel removes the IP tunnel created during migration.
 // Uses "ip link del" which works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
 // Deleting the tunnel implicitly removes the associated host route.
+//
+// Best-effort: always returns nil. If the tunnel doesn't exist (expected after
+// a clean teardown or if setup was never reached), the error is swallowed.
+// Other errors (EPERM, context cancel) are logged but non-recoverable, and
+// the sole caller already treats the return value as a warning.
 func TeardownTunnel(ctx context.Context) error {
-	err := RunCmd(ctx, "ip", "link", "del", TunnelName)
-	if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
-		return fmt.Errorf("deleting tunnel %s: %w", TunnelName, err)
+	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err != nil {
+		log.Printf("Tunnel teardown: %v (non-fatal)", err)
 	}
 	return nil
 }
