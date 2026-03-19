@@ -2,12 +2,15 @@
 .gitignore
 .opencode/
 .sisyphus/
+.minikube-build/
 scripts/
 
 docs/
 bin/
+out/
 *.qcow2
 *.img
 *.iso
+*.tar
 kata_test_rsa*
 README.md
