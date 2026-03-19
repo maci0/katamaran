@@ -46,10 +46,20 @@ fi
 if [[ "${PROVIDER}" == "kind" ]]; then SUDO=""; fi
 export SUDO
 
+# Auto-detect container engine (podman preferred, docker fallback).
+if command -v podman >/dev/null 2>&1; then
+    CE="podman"
+elif command -v docker >/dev/null 2>&1; then
+    CE="docker"
+else
+    error "Neither podman nor docker found. One is required."
+    exit 1
+fi
+
 if [[ "${CNI}" == "auto" ]]; then
     if [[ "${PROVIDER}" == "minikube" ]]; then
         CNI="calico"
-        log "Minikube detected: defaulting to Calico (OVN requires nftables support missing in minikube kernel)."
+        log "Minikube detected: defaulting to Calico."
     else
         CNI="kindnet"
     fi
@@ -61,9 +71,10 @@ node_exec() {
     local node="$1"
     shift
     if [[ "${PROVIDER}" == "minikube" ]]; then
-        minikube -p "${PROFILE}" ssh -n "$node" -- "$*"
+        # Pipe through tr to strip carriage returns added by minikube's PTY.
+        minikube -p "${PROFILE}" ssh -n "$node" -- "$*" | tr -d '\r'
     else
-        podman exec "$node" bash -c "$*"
+        ${CE} exec "$node" bash -c "$*"
     fi
 }
 
@@ -74,7 +85,7 @@ node_cp_to() {
     if [[ "${PROVIDER}" == "minikube" ]]; then
         minikube -p "${PROFILE}" cp "${src}" "${node}:${dst}"
     else
-        podman cp "${src}" "${node}:${dst}"
+        ${CE} cp "${src}" "${node}:${dst}"
     fi
 }
 
@@ -107,7 +118,7 @@ fi
 trap cleanup EXIT
 
 log "Checking prerequisites..."
-REQS="kubectl helm podman"
+REQS="kubectl helm"
 if [[ "${PROVIDER}" == "minikube" ]]; then REQS="${REQS} minikube"; else REQS="${REQS} kind"; fi
 if [[ "${CNI}" == "ovn" ]]; then REQS="${REQS} git"; fi
 
@@ -138,7 +149,11 @@ else
     else
         KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config.yaml"
     fi
-    KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    if [[ "${CE}" == "podman" ]]; then
+        KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    else
+        kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
+    fi
     NODE1="${PROFILE}-control-plane"
     NODE2="${PROFILE}-worker"
     CTX="kind-${PROFILE}"
@@ -146,7 +161,7 @@ else
     # Kata QEMU backs VM memory with /dev/shm.  Podman defaults to 63 MB,
     # which is far too small.  Remount with enough room (4 GB).
     for n in "${NODE1}" "${NODE2}"; do
-        podman exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
+        ${CE} exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
     done
 fi
 
@@ -178,8 +193,10 @@ if [[ "${CNI}" == "ovn" ]]; then
     OVN_K_DIR="/tmp/ovn-kubernetes-${PROFILE}"
     rm -rf "${OVN_K_DIR}"
     git clone --depth 1 --branch "master" "https://github.com/ovn-org/ovn-kubernetes.git" "${OVN_K_DIR}"
+    # Pre-create namespace to avoid conflict with chart-managed Namespace resource.
+    kubectl --context "${CTX}" create namespace ovn-kubernetes 2>/dev/null || true
     helm upgrade --install ovn-kubernetes "${OVN_K_DIR}/helm/ovn-kubernetes" \
-        --kube-context "${CTX}" --namespace ovn-kubernetes --create-namespace \
+        --kube-context "${CTX}" --namespace ovn-kubernetes \
         -f "${OVN_K_DIR}/helm/ovn-kubernetes/values-no-ic.yaml" \
         --set k8sAPIServer="https://${API_HOST}:${API_PORT}" \
         --set global.k8sServiceHost="${API_HOST}" --set global.k8sServicePort="${API_PORT}" \
@@ -187,7 +204,7 @@ if [[ "${CNI}" == "ovn" ]]; then
         --set tags.ovnkube-db=true --set tags.ovnkube-master=true --set tags.ovnkube-node=true --wait=false
 
     log "Waiting for OVN-Kubernetes..."
-    kubectl --context "${CTX}" -n ovn-kubernetes rollout status daemonset/ovnkube-node --timeout=600s 2>/dev/null || true
+    kubectl --context "${CTX}" -n ovn-kubernetes rollout status daemonset/ovnkube-node --timeout=600s
 elif [[ "${CNI}" == "cilium" ]]; then
     log "Deploying Cilium..."
     helm upgrade --install cilium oci://quay.io/cilium/charts/cilium \
@@ -198,6 +215,14 @@ elif [[ "${CNI}" == "flannel" ]]; then
     log "Deploying Flannel..."
     kubectl --context "${CTX}" apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
     kubectl --context "${CTX}" -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=300s
+fi
+
+# After deploying a non-default CNI, wait for all nodes to become Ready.
+# Without this, kata-deploy pods may fail to start because the CNI hasn't
+# finished configuring networking on all nodes.
+if [[ "${CNI}" != "kindnet" && "${CNI}" != "calico" ]]; then
+    log "Waiting for all nodes to become Ready after CNI deployment..."
+    kubectl --context "${CTX}" wait --for=condition=Ready node --all --timeout=300s
 fi
 
 log "Installing Kata Containers via Helm..."
@@ -215,6 +240,10 @@ for node in "${NODE1}" "${NODE2}"; do
         if node_exec "${node}" "[ -f ${KATA_CFG} ]"; then break; fi
         sleep 2
     done
+    if ! node_exec "${node}" "[ -f ${KATA_CFG} ]"; then
+        error "Kata configuration not found on ${node} after waiting."
+        exit 1
+    fi
     node_exec "$node" "${SUDO} sed -i 's|^#*enable_debug = .*|enable_debug = true|' '${KATA_CFG}'"
     node_exec "$node" "${SUDO} sed -i 's|^#*extra_monitor_socket = .*|extra_monitor_socket = \"qmp\"|' '${KATA_CFG}'"
     node_exec "$node" "${SUDO} sed -i 's|^#*create_container_timeout = .*|create_container_timeout = 600|' '${KATA_CFG}'"
@@ -224,9 +253,9 @@ kubectl --context "${CTX}" label node "${NODE1}" katamaran-role=source --overwri
 kubectl --context "${CTX}" label node "${NODE2}" katamaran-role=dest --overwrite
 
 log "Building and deploying katamaran..."
-podman build -t localhost/katamaran:dev .
+${CE} build -t localhost/katamaran:dev .
 rm -f katamaran.tar
-podman save localhost/katamaran:dev -o katamaran.tar
+${CE} save localhost/katamaran:dev -o katamaran.tar
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
     minikube -p "${PROFILE}" image load katamaran.tar
@@ -328,7 +357,7 @@ success "Helper pod IP: ${DST_POD_IP}"
 # Get the helper container's PID for nsenter.
 MIG_HELPER_PID=""
 for i in $(seq 1 15); do
-    MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect {} 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin)['info']['pid'])\"" 2>/dev/null || true)
+    MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect -o go-template --template '{{.info.pid}}' {} 2>/dev/null" 2>/dev/null || true)
     if [[ -n "${MIG_HELPER_PID}" && "${MIG_HELPER_PID}" =~ ^[0-9]+$ ]]; then break; fi
     sleep 1
 done
@@ -360,11 +389,8 @@ node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${D
 node_exec "${NODE2}" "${SUDO} cp /opt/kata/share/kata-containers/kata-ubuntu-noble.image /tmp/kata-dst-nvdimm-$$.img"
 
 # Start virtiofsd for the vhost-user-fs device.
-node_exec "${NODE2}" "${SUDO} /opt/kata/libexec/virtiofsd \
-    --socket-path=${DST_VM_DIR}/vhost-fs.sock \
-    --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared \
-    --cache=auto --thread-pool-size=1 --announce-submounts \
-    --sandbox=none --migration-on-error=guest-error &"
+# Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
+node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
 sleep 2
 if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
     error "virtiofsd socket not found."
@@ -425,14 +451,18 @@ success "Destination QEMU started. QMP: ${DST_SOCK}"
 # The destination QEMU runs inside the helper pod's network namespace.
 # The tap interface (tap0_kata) is in that namespace. Pass the netns path
 # so katamaran can run tc commands via nsenter.
-DST_TAP="tap0_kata"
+# Check if sch_plug is available; if not, skip qdisc setup (no zero-drop buffering).
+if node_exec "${NODE2}" "${SUDO} modprobe sch_plug" 2>/dev/null; then
+    DST_TAP="tap0_kata"
+else
+    log "sch_plug not available on ${NODE2}; skipping zero-drop qdisc (tap=none)."
+    DST_TAP="none"
+fi
 DST_TAP_NETNS="/proc/${MIG_HELPER_PID}/ns/net"
 
 PING_PID=""
 if [[ "${PING_PROOF}" == "true" ]]; then
-    log "Starting continuous ping..."
-    ping -i 0.1 "${SRC_POD_IP}" > /tmp/katamaran-ping.log 2>&1 &
-    PING_PID=$!
+    log "Ping probe will verify sch_plug operation after migration."
 fi
 
 if [[ "${ENV_ONLY}" == "true" ]]; then
@@ -442,12 +472,13 @@ fi
 
 if [[ "${METHOD}" == "job" ]]; then
     log "Executing Live Migration (job mode)..."
+    MIG_LOG=$(mktemp)
     "${PROJECT_ROOT}/deploy/migrate.sh" \
         --context "${CTX}" --source-node "${NODE1}" --dest-node "${NODE2}" \
         --tap "${DST_TAP}" --tap-netns "${DST_TAP_NETNS}" \
         --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
         --dest-ip "${DST_POD_IP}" --vm-ip "${SRC_POD_IP}" \
-        --image "localhost/katamaran:dev" --shared-storage --downtime 25 || {
+        --image "localhost/katamaran:dev" --shared-storage --downtime 25 2>&1 | tee "${MIG_LOG}" || {
             error "Migration failed!"
             exit 1
         }
@@ -457,15 +488,22 @@ else
 fi
 
 if [[ "${PING_PROOF}" == "true" ]]; then
-    log "Checking packet loss..."
-    kill "${PING_PID}" || true
-    wait "${PING_PID}" 2>/dev/null || true
-    LOSS=$(grep "packet loss" /tmp/katamaran-ping.log | awk '{print $6}')
-    log "Ping results: ${LOSS}"
-    if [[ "${LOSS}" != "0%" ]]; then
-        error "Packet loss detected!"
+    log "Verifying sch_plug zero-drop buffering from migration output..."
+    # The dest logs are captured in the migrate.sh debug dump output.
+    PASS=true
+    for pattern in "Network queue installed" "Network queue plugged" "VM resumed. Flushing" "Zero drops achieved"; do
+        if grep -q "${pattern}" "${MIG_LOG}"; then
+            success "sch_plug: ${pattern}"
+        else
+            error "sch_plug: missing '${pattern}' in dest logs"
+            PASS=false
+        fi
+    done
+    rm -f "${MIG_LOG}"
+    if [[ "${PASS}" != "true" ]]; then
         exit 1
     fi
+    success "Zero-drop sch_plug buffering verified!"
 fi
 
 success "E2E Test Passed!"

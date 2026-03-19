@@ -29,11 +29,10 @@ func TestSetupTunnel_Validation(t *testing.T) {
 		{"InvalidVM", netip.MustParseAddr("10.0.0.1"), netip.Addr{}, "invalid destination"},
 		{"FamilyMismatch_v4v6", netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fd00::1"), "families must match"},
 		{"FamilyMismatch_v6v4", netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.1"), "families must match"},
-		{"MappedV4", netip.MustParseAddr("::ffff:192.168.1.1"), netip.MustParseAddr("192.168.1.2"), ""},
+		{"MappedV4", netip.MustParseAddr("::ffff:192.168.1.1").Unmap(), netip.MustParseAddr("192.168.1.2"), ""},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := SetupTunnel(context.Background(), tt.dest, tt.vm, "ipip")
@@ -56,16 +55,15 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 		name string
 		dest string
 		vm   string
-		mode string
+		mode TunnelMode
 	}{
-		{"IPv4_IPIP", "10.0.0.1", "10.244.1.15", "ipip"},
-		{"IPv4_GRE", "10.0.0.1", "10.244.1.15", "gre"},
-		{"IPv6_IPIP", "fd00::1", "fd00::2", "ipip"},
-		{"IPv6_GRE", "fd00::1", "fd00::2", "gre"},
+		{"IPv4_IPIP", "10.0.0.1", "10.244.1.15", TunnelModeIPIP},
+		{"IPv4_GRE", "10.0.0.1", "10.244.1.15", TunnelModeGRE},
+		{"IPv6_IPIP", "fd00::1", "fd00::2", TunnelModeIPIP},
+		{"IPv6_GRE", "fd00::1", "fd00::2", TunnelModeGRE},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := SetupTunnel(context.Background(),
@@ -82,9 +80,9 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 
 func TestTeardownTunnel_NoTunnel(t *testing.T) {
 	t.Parallel()
-	err := TeardownTunnel(context.Background())
-	if err != nil && strings.Contains(err.Error(), "invalid") {
-		t.Fatalf("unexpected validation error: %v", err)
+	// TeardownTunnel is best-effort and always returns nil.
+	if err := TeardownTunnel(context.Background()); err != nil {
+		t.Fatalf("TeardownTunnel should always return nil, got: %v", err)
 	}
 }
 
@@ -93,9 +91,12 @@ func TestSetupTunnel_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_ = SetupTunnel(ctx,
+	err := SetupTunnel(ctx,
 		netip.MustParseAddr("10.0.0.1"),
 		netip.MustParseAddr("10.244.1.15"),
 		"ipip",
 	)
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
 }

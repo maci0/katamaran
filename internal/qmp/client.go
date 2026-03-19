@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
 	"sync"
@@ -33,6 +34,18 @@ const (
 	// command response. If QEMU becomes unresponsive mid-command, Execute()
 	// returns a timeout error instead of blocking forever.
 	ExecuteTimeout = 2 * time.Minute
+
+	// maxBufferedEvents caps the in-memory event queue size. Normal operation
+	// buffers 1-3 events between Execute and WaitForEvent calls. This limit
+	// prevents unbounded memory growth if a misbehaving QEMU floods the
+	// socket with asynchronous events.
+	maxBufferedEvents = 1000
+
+	// maxLineSize caps the partial-line accumulation buffer. Prevents
+	// unbounded memory growth if QEMU sends continuous data without
+	// newlines (malicious or buggy). 4 MiB is far above any legitimate
+	// QMP message (~10 KiB typical).
+	maxLineSize = 4 * 1024 * 1024
 )
 
 // Client is a minimal synchronous client for the QEMU Machine Protocol.
@@ -41,6 +54,28 @@ type Client struct {
 	conn   net.Conn
 	r      *bufio.Reader
 	events []response // Buffered events received during synchronous command execution.
+	buf    []byte     // Unprocessed partial line data from timeouts.
+}
+
+// readLine reads a complete newline-terminated JSON message.
+// It safely accumulates partial reads if a timeout occurs, preventing data corruption.
+// The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
+// from a misbehaving QEMU that sends data without newlines.
+func (c *Client) readLine() ([]byte, error) {
+	line, err := c.r.ReadBytes('\n')
+	if len(line) > 0 {
+		c.buf = append(c.buf, line...)
+	}
+	if err != nil {
+		if len(c.buf) > maxLineSize {
+			c.buf = nil
+			return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
+		}
+		return nil, err
+	}
+	fullLine := c.buf
+	c.buf = nil
+	return fullLine, nil
 }
 
 // NewClient connects to a QEMU QMP unix socket, performs the capability
@@ -53,7 +88,10 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return nil, fmt.Errorf("dialing QMP socket %s: %w", socketPath, err)
 	}
 
-	r := bufio.NewReader(conn)
+	c := &Client{
+		conn: conn,
+		r:    bufio.NewReader(conn),
+	}
 
 	// If the context is cancelled during the handshake, close the connection
 	// to unblock any in-progress reads. context.AfterFunc (Go 1.21+) provides
@@ -74,7 +112,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return fail(fmt.Errorf("setting greeting deadline: %w", err))
 	}
 
-	if _, err := r.ReadString('\n'); err != nil {
+	if _, err := c.readLine(); err != nil {
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			// Ignore timeout — QEMU likely skipped the greeting (wait=off).
@@ -96,12 +134,12 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return fail(fmt.Errorf("sending qmp_capabilities: %w", err))
 	}
 
-	capLine, err := r.ReadString('\n')
+	capLine, err := c.readLine()
 	if err != nil {
 		return fail(fmt.Errorf("reading qmp_capabilities response: %w", err))
 	}
 	var capResp response
-	if err = json.Unmarshal([]byte(capLine), &capResp); err != nil {
+	if err = json.Unmarshal(capLine, &capResp); err != nil {
 		return fail(fmt.Errorf("unmarshaling qmp_capabilities response: %w", err))
 	}
 	if capResp.Error != nil {
@@ -118,7 +156,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return nil, ctx.Err()
 	}
 
-	return &Client{conn: conn, r: r}, nil
+	return c, nil
 }
 
 // Close releases the underlying socket connection. It is safe to call
@@ -178,21 +216,14 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}
 	defer func() { _ = conn.SetDeadline(time.Time{}) }()
 
-	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
-	// We no longer close the connection immediately on context cancellation.
-	// Trade-off: Closing the connection immediately would break deferred cleanup
-	// commands (like `migrate_cancel` or `block-job-cancel`) that must execute
-	// after the main context is cancelled (e.g., via SIGINT).
-	// Instead, we shorten the deadline to unblock any in-progress reads.
+	// On context cancellation, shorten the deadline to unblock in-progress reads
+	// rather than closing the connection. This preserves the socket for deferred
+	// cleanup commands (migrate_cancel, block-job-cancel) that run after the main
+	// context is cancelled.
 	//
-	// We use context.AfterFunc (Go 1.21+) because it is race-free: its stop()
-	// method guarantees the callback will NOT fire if it returns true. This fixes
-	// the non-deterministic data races of the old goroutine+select pattern.
-	//
-	// callbackDone acts as a synchronization barrier. If the context is cancelled
-	// and the callback runs, we wait for it to finish calling SetDeadline(time.Now()).
-	// This prevents the deferred SetDeadline(time.Time{}) from executing too early
-	// and accidentally clearing the deadline we just set to interrupt the read.
+	// callbackDone synchronizes the context.AfterFunc callback with our deferred
+	// SetDeadline(time.Time{}) clear — without it, the defer could race and undo
+	// the deadline we just set to interrupt the read.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
 		_ = conn.SetDeadline(time.Now())
@@ -212,7 +243,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}
 
 	for {
-		line, err := c.r.ReadBytes('\n')
+		line, err := c.readLine()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -234,6 +265,9 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		// event that already arrived.
 		if resp.Event != "" {
 			c.mu.Lock()
+			if len(c.events) >= maxBufferedEvents {
+				c.events = c.events[1:]
+			}
 			c.events = append(c.events, resp)
 			c.mu.Unlock()
 			continue
@@ -286,12 +320,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	}
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
-	// Like in Execute(), we shorten the read deadline on context cancellation
-	// instead of closing the connection. This preserves the socket for any
-	// deferred cleanup commands that use a separate context.
-	// We synchronize via callbackDone so the context.AfterFunc finishes
-	// before the deferred SetReadDeadline(time.Time{}) clears it.
+	// On context cancellation, shorten the read deadline instead of closing the
+	// connection — same strategy as Execute(). callbackDone prevents the deferred
+	// SetReadDeadline(time.Time{}) from racing with the cancellation callback.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
 		_ = conn.SetReadDeadline(time.Now())
@@ -304,7 +335,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	}()
 
 	for {
-		line, err := c.r.ReadBytes('\n')
+		line, err := c.readLine()
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -313,8 +344,8 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				return err
 			}
-			if err.Error() == "EOF" {
-				return fmt.Errorf("QEMU closed the QMP connection unexpectedly while waiting for %q (did QEMU crash?)", eventName)
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("QEMU closed the QMP connection unexpectedly while waiting for %q (did QEMU crash?): %w", eventName, err)
 			}
 			return fmt.Errorf("reading QMP event stream: %w", err)
 		}
@@ -333,6 +364,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// dropped, causing subsequent WaitForEvent calls to hang.
 		if resp.Event != "" {
 			c.mu.Lock()
+			if len(c.events) >= maxBufferedEvents {
+				c.events = c.events[1:]
+			}
 			c.events = append(c.events, resp)
 			c.mu.Unlock()
 		}

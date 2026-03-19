@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,18 +33,17 @@ func TestRunSource_Failures(t *testing.T) {
 	tests := []struct {
 		name          string
 		sharedStorage bool
-		tunnelMode    string
+		tunnelMode    TunnelMode
 	}{
-		{"BadQMPSocket", false, "ipip"},
-		{"SharedStorage_BadQMPSocket", true, "ipip"},
-		{"NonShared_BadQMPSocket", false, "gre"},
+		{"BadQMPSocket", false, TunnelModeIPIP},
+		{"SharedStorage_BadQMPSocket", true, TunnelModeIPIP},
+		{"NonShared_BadQMPSocket", false, TunnelModeGRE},
 	}
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := RunSource(
@@ -55,6 +55,7 @@ func TestRunSource_Failures(t *testing.T) {
 				tt.sharedStorage,
 				tt.tunnelMode,
 				25,
+				false,
 			)
 			if err == nil {
 				t.Fatal("expected error for nonexistent QMP socket")
@@ -341,5 +342,407 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMigrationFailed) {
 		t.Fatalf("expected ErrMigrationFailed, got: %v", err)
+	}
+}
+
+func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	handlers := map[string]string{
+		"migrate-set-capabilities": `{"return":{}}`,
+		"migrate-set-parameters":   `{"return":{}}`,
+		"migrate":                  `{"return":{}}`,
+		"query-migrate":            `{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50}}`,
+		"block-job-cancel":         `{"return":{}}`,
+	}
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			// After "migrate" command, inject STOP event before the response.
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				// Give the client a moment then send STOP event.
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+
+			responded := false
+			for cmd, resp := range handlers {
+				if strings.Contains(line, `"`+cmd+`"`) {
+					conn.Write([]byte(resp + "\n"))
+					responded = true
+					break
+				}
+			}
+			if !responded {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+			}
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err != nil {
+		t.Fatalf("RunSource shared-storage happy path: %v", err)
+	}
+}
+
+func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"failed","error-desc":"test failure"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error for failed migration")
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("expected 'failed' in error, got: %v", err)
+	}
+}
+
+func TestRunSource_NonShared_HappyPath(t *testing.T) {
+	t.Parallel()
+	callCount := 0
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, "query-block-jobs") {
+				callCount++
+				if callCount <= 1 {
+					conn.Write([]byte(`{"return":[{"device":"mirror-drive-virtio-disk0","len":1000,"offset":500,"ready":false,"status":"running","type":"mirror"}]}` + "\n"))
+				} else {
+					conn.Write([]byte(`{"return":[{"device":"mirror-drive-virtio-disk0","len":1000,"offset":1000,"ready":true,"status":"running","type":"mirror"}]}` + "\n"))
+				}
+				continue
+			}
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":800,"setup-time":30}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false)
+	if err != nil {
+		t.Fatalf("RunSource non-shared happy path: %v", err)
+	}
+}
+
+func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				continue
+			}
+			// During STOP polling, report migration as failed.
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"failed","error-desc":"RAM migration failed"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error when migration fails during STOP polling")
+	}
+	if !strings.Contains(err.Error(), "RAM migration failed") {
+		t.Fatalf("expected error description, got: %v", err)
+	}
+}
+
+func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"cancelled"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error when migration cancelled during STOP polling")
+	}
+	if !errors.Is(err, ErrMigrationCancelled) {
+		t.Fatalf("expected ErrMigrationCancelled, got: %v", err)
+	}
+}
+
+func TestRunSource_CompletedDuringPolling(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				continue
+			}
+			// Report completed without STOP event (triggered via polling).
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"completed","downtime":5,"total-time":500,"setup-time":20}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err != nil {
+		t.Fatalf("RunSource completed-during-polling: %v", err)
+	}
+}
+
+func TestMeasureRTT(t *testing.T) {
+	t.Parallel()
+
+	// measureRTT hardcodes RAMMigrationPort, so we can only test the error
+	// path with an unreachable address (RFC 5737 TEST-NET).
+	_, err := measureRTT(netip.MustParseAddr("192.0.2.1"))
+	if err == nil {
+		t.Fatal("expected error for unreachable address")
+	}
+}
+
+func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+	// With empty netnsPath, should delegate directly to RunCmd.
+	if err := RunCmdInNetns(context.Background(), "", "true"); err != nil {
+		t.Fatalf("expected success with empty netns, got: %v", err)
+	}
+}
+
+func TestRunCmdInNetns_WithNetns(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+	// nsenter with /proc/1/ns/net requires root; verify the nsenter code path
+	// runs without panic. It succeeds as root, errors otherwise — both OK.
+	_ = RunCmdInNetns(context.Background(), "/proc/1/ns/net", "true")
+}
+
+func TestRunSource_DriveMirrorFailure(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, "drive-mirror") {
+				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"device not found"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error for drive-mirror failure")
+	}
+	if !strings.Contains(err.Error(), "drive-mirror") {
+		t.Fatalf("expected 'drive-mirror' in error, got: %v", err)
+	}
+}
+
+func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, "migrate-set-capabilities") {
+				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"caps error"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error for capabilities failure")
+	}
+	if !strings.Contains(err.Error(), "capabilities") {
+		t.Fatalf("expected 'capabilities' in error, got: %v", err)
+	}
+}
+
+func TestRunSource_SetParametersFailure(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, "migrate-set-parameters") {
+				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"params error"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error for parameters failure")
+	}
+	if !strings.Contains(err.Error(), "parameters") {
+		t.Fatalf("expected 'parameters' in error, got: %v", err)
+	}
+}
+
+func TestRunSource_MigrateCommandFailure(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") {
+				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"migrate failed"}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	if err == nil {
+		t.Fatal("expected error for migrate command failure")
+	}
+	if !strings.Contains(err.Error(), "RAM migration") {
+		t.Fatalf("expected 'RAM migration' in error, got: %v", err)
 	}
 }

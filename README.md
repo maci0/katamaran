@@ -16,18 +16,18 @@ Zero-packet-drop live migration for [Kata Containers](https://katacontainers.io/
 make                # builds bin/katamaran
 
 # Destination node (run first)
-sudo ./bin/katamaran -mode dest -qmp /run/vc/vm/<id>/extra-monitor.sock -tap tap0_kata
+sudo ./bin/katamaran --mode dest --qmp /run/vc/vm/<id>/extra-monitor.sock --tap tap0_kata
 
 # Source node
-sudo ./bin/katamaran -mode source -qmp /run/vc/vm/<id>/extra-monitor.sock \
-  -dest-ip <dest-node-ip> -vm-ip <pod-ip>
+sudo ./bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
+  --dest-ip <dest-node-ip> --vm-ip <pod-ip>
 ```
 
-Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume — zero drops. Add `-shared-storage` with Ceph/NFS to skip the storage phase entirely.
+Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume — zero drops. Add `--shared-storage` with Ceph/NFS to skip the storage phase entirely.
 
 ---
 
-Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS — skip mirroring with `-shared-storage`).
+Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS — skip mirroring with `--shared-storage`).
 
 Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata Containers, pods typically use local virtio-blk disks — meaning the entire block device must be migrated alongside RAM and network state. `katamaran` orchestrates all three phases in the correct order while guaranteeing **zero in-flight packet drops** during the cutover.
 
@@ -80,7 +80,7 @@ cat /sys/module/kvm_amd/parameters/nested            # 1 (AMD)
 git clone https://github.com/maci0/katamaran.git
 cd katamaran
 make
-./bin/katamaran -help
+./bin/katamaran --help
 ```
 
 Run the smoke tests (no VMs required):
@@ -244,7 +244,7 @@ Once the remaining dirty RAM set is small enough to transfer within this 25ms bu
 
 The critical downtime window — between `STOP` on the source and `RESUME` on the destination — is where packets would normally be lost. `katamaran` eliminates this:
 
-1. **Source side**: Immediately after `STOP`, an IP tunnel is created pointing at the destination node. The tunnel encapsulation is selected by `-tunnel-mode`: with the default `ipip`, an IPIP tunnel is used for IPv4 (`mode ipip`) and an ip6tnl tunnel for IPv6 (`mode ip6ip6`); with `gre`, a GRE tunnel is used for IPv4 (`mode gre`) and an ip6gre tunnel for IPv6. GRE is recommended on cloud VPCs (AWS, GCP, Azure) where IPIP (IP protocol 4/41) is often blocked by security groups, while GRE (IP protocol 47) is widely permitted. A host route for the VM IP is added through the tunnel, forwarding any packets that arrive at the (now stale) source to the destination.
+1. **Source side**: Immediately after `STOP`, an IP tunnel is created pointing at the destination node. The tunnel encapsulation is selected by `--tunnel-mode`: with the default `ipip`, an IPIP tunnel is used for IPv4 (`mode ipip`) and an ip6tnl tunnel for IPv6 (`mode ip6ip6`); with `gre`, a GRE tunnel is used for IPv4 (`mode gre`) and an ip6gre tunnel for IPv6. GRE is recommended on cloud VPCs (AWS, GCP, Azure) where IPIP (IP protocol 4/41) is often blocked by security groups, while GRE (IP protocol 47) is widely permitted. A host route for the VM IP is added through the tunnel, forwarding any packets that arrive at the (now stale) source to the destination.
 2. **Destination side**: A `tc sch_plug` qdisc on the destination tap interface buffers all arriving packets (including those forwarded through the tunnel). The qdisc is installed in pass-through mode (`release_indefinite`) and only switched to buffering (`block`) just before the expected RESUME. When the VM resumes, the queue is unplugged with `release_indefinite`, flushing all buffered packets into the now-running VM in order. QEMU's `announce-self` QMP command then broadcasts Gratuitous ARP using the guest's actual MAC address, ensuring switches learn the correct port binding immediately.
 
 The result: packets that arrive during the switchover are queued, not dropped. After the CNI control plane converges (seconds later), new traffic flows directly to the destination and the tunnel is torn down.
@@ -383,11 +383,11 @@ The storage strategy depends on whether the cluster uses **shared storage** (bot
 
 | CSI Driver | Storage Type | katamaran Mode | Notes |
 |-----------|-------------|-------------------|-------|
-| **Ceph RBD** (`rbd.csi.ceph.com`) | Shared block | `-shared-storage` | Ideal. Both nodes mount the same RBD image. No data transfer needed — only RAM + network state migrate. Requires `ReadWriteMany` or controlled handoff (unmap on source, map on dest). |
-| **CephFS** (`cephfs.csi.ceph.com`) | Shared filesystem | `-shared-storage` | Works if the VM's rootfs is on a CephFS-backed virtio-fs or virtiofs mount. Less common for block-level VM disks. |
-| **NFS** (`nfs.csi.k8s.io`) | Shared filesystem | `-shared-storage` | Simple but slower. NFS latency can affect VM disk I/O during and after migration. Acceptable for low-IOPS workloads. |
+| **Ceph RBD** (`rbd.csi.ceph.com`) | Shared block | `--shared-storage` | Ideal. Both nodes mount the same RBD image. No data transfer needed — only RAM + network state migrate. Requires `ReadWriteMany` or controlled handoff (unmap on source, map on dest). |
+| **CephFS** (`cephfs.csi.ceph.com`) | Shared filesystem | `--shared-storage` | Works if the VM's rootfs is on a CephFS-backed virtio-fs or virtiofs mount. Less common for block-level VM disks. |
+| **NFS** (`nfs.csi.k8s.io`) | Shared filesystem | `--shared-storage` | Simple but slower. NFS latency can affect VM disk I/O during and after migration. Acceptable for low-IOPS workloads. |
 | **Longhorn** (`driver.longhorn.io`) | Replicated local | NBD drive-mirror | Longhorn volumes are node-local with network replication. `katamaran` mirrors the block device via NBD, then the Longhorn controller can adopt the replica on the destination. |
-| **OpenEBS Mayastor** (`io.openebs.csi-mayastor`) | Replicated local | NBD drive-mirror or `-shared-storage` | Mayastor NVMe-oF targets can be re-exported to the destination node, potentially allowing shared-storage mode. Otherwise, NBD drive-mirror works. |
+| **OpenEBS Mayastor** (`io.openebs.csi-mayastor`) | Replicated local | NBD drive-mirror or `--shared-storage` | Mayastor NVMe-oF targets can be re-exported to the destination node, potentially allowing shared-storage mode. Otherwise, NBD drive-mirror works. |
 | **TopoLVM** (`topolvm.io`) | Strict local | NBD drive-mirror | Purely local LVM. The entire block device must be mirrored. Best for small disks or infrequent migrations. |
 | **Local Path Provisioner** | Strict local | NBD drive-mirror | No replication. Full block copy required. Suitable for dev/test. |
 
@@ -402,10 +402,10 @@ sequenceDiagram
     participant D as Destination Node
 
     D->>RBD: Open same RBD image (read-only)
-    Note over D: katamaran -mode dest -shared-storage
+    Note over D: katamaran --mode dest --shared-storage
     D->>D: Install qdisc, wait for RESUME
 
-    Note over S: katamaran -mode source -shared-storage
+    Note over S: katamaran --mode source --shared-storage
     S->>D: RAM pre-copy only (no storage mirror)
     Note over S: VM pauses (STOP)
     Note over D: VM resumes (RESUME)
@@ -478,7 +478,7 @@ For production live migration with minimal downtime and operational complexity:
 ├──────────────┬──────────────────────────────────────┤
 │ Runtime      │ Kata Containers 3.x + Cloud Hypervisor or QEMU 8+ │
 │ Storage CSI  │ Ceph RBD (rbd.csi.ceph.com)          │
-│ Storage Mode │ -shared-storage (skip NBD mirror)     │
+│ Storage Mode │ --shared-storage (skip NBD mirror)     │
 │ CNI          │ OVN-Kubernetes or Cilium              │
 │ IPAM         │ Cluster-wide pool (not per-node)      │
 │ Kernel       │ 5.15+ (sch_plug, IPIP, KVM)           │
@@ -517,8 +517,8 @@ flowchart TD
     A[VMMigration CR created] --> B{Validate target node}
     B -->|capacity, runtime, kernel| C[Prepare destination pod]
     C --> D[Get QMP socket paths]
-    D --> E["katamaran -mode dest (target node)"]
-    E --> F["katamaran -mode source (source node)"]
+    D --> E["katamaran --mode dest (target node)"]
+    E --> F["katamaran --mode source (source node)"]
     F --> G{Migration result}
     G -->|Success| H[Patch pod nodeName]
     H --> I[Update endpoint slices]

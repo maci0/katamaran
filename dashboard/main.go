@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,18 +23,6 @@ import (
 const (
 	maxLogLines  = 1000
 	maxPingLines = 500
-)
-
-var (
-	migrationOutput []string
-	migrationMutex  sync.Mutex
-	isMigrating     bool
-	migrationCancel context.CancelFunc
-
-	pingLog        []PingData
-	loadgenMutex   sync.Mutex
-	loadgenRunning bool
-	loadgenCancel  context.CancelFunc
 )
 
 type PingData struct {
@@ -47,15 +37,30 @@ type StatusResponse struct {
 	Pings     []PingData `json:"pings"`
 }
 
+type App struct {
+	migrationOutput []string
+	migrationMutex  sync.Mutex
+	isMigrating     bool
+	migrationCancel context.CancelFunc
+
+	pingLog        []PingData
+	loadgenMutex   sync.Mutex
+	loadgenRunning bool
+	loadgenCancel  context.CancelFunc
+}
+
 func main() {
+	app := &App{}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", serveHome)
-	mux.HandleFunc("/api/migrate", handleMigrate)
-	mux.HandleFunc("/api/migrate/stop", handleMigrateStop)
-	mux.HandleFunc("/api/status", handleStatus)
-	mux.HandleFunc("/api/ping", handlePingStart)
-	mux.HandleFunc("/api/ping/stop", handlePingStop)
-	mux.HandleFunc("/api/httpgen", handleHTTPStart)
+	mux.HandleFunc("/", app.serveHome)
+	mux.HandleFunc("/api/migrate", app.handleMigrate)
+	mux.HandleFunc("/api/migrate/stop", app.handleMigrateStop)
+	mux.HandleFunc("/api/status", app.handleStatus)
+	mux.HandleFunc("/api/ping", app.handlePingStart)
+	mux.HandleFunc("/api/ping/stop", app.handlePingStop)
+	mux.HandleFunc("/api/httpgen", app.handleHTTPStart)
+	mux.HandleFunc("/api/httpgen/stop", app.handleHTTPStop)
 
 	srv := &http.Server{
 		Addr:         ":8080",
@@ -81,7 +86,7 @@ func main() {
 	}
 }
 
-func serveHome(w http.ResponseWriter, r *http.Request) {
+func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -106,7 +111,16 @@ func migrateScriptPath() string {
 // validTarget checks that the target is a plausible IP or hostname for
 // ping/HTTP probing. Rejects loopback, link-local, and cloud metadata
 // addresses to prevent SSRF against internal services.
+//
+// Limitation: DNS rebinding could bypass this check — the hostname may
+// resolve to a safe IP here but rebind to an internal IP at connect time.
+// Accepted risk: this dashboard is a cluster-internal monitoring tool,
+// not a public-facing API. For ping targets, there is no way to hook
+// DNS resolution of an external process.
 func validTarget(target string) bool {
+	if strings.HasPrefix(target, "-") {
+		return false
+	}
 	host := target
 	if h, _, err := net.SplitHostPort(target); err == nil {
 		host = h
@@ -115,7 +129,7 @@ func validTarget(target string) bool {
 		return false
 	}
 	// Reject shell metacharacters that could escape into arguments.
-	if strings.ContainsAny(host, ";|&$`\\\"'<>(){}!\n\r\t ") {
+	if strings.ContainsAny(host, ";|&$`\\\"'<>(){}!\n\r\t @#%") {
 		return false
 	}
 	ip, err := net.ResolveIPAddr("ip", host)
@@ -139,7 +153,7 @@ func validFormValue(v string) bool {
 	return !strings.ContainsAny(v, " ;|&$`\\\"'<>(){}!\n\r\t")
 }
 
-func handleMigrate(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -158,19 +172,19 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	migrationMutex.Lock()
-	if isMigrating {
-		migrationMutex.Unlock()
+	a.migrationMutex.Lock()
+	if a.isMigrating {
+		a.migrationMutex.Unlock()
 		http.Error(w, "Migration already running", http.StatusConflict)
 		return
 	}
-	isMigrating = true
-	migrationOutput = migrationOutput[:0]
+	a.isMigrating = true
+	a.migrationOutput = nil
 	// Use context.Background() so the migration process survives after
 	// the HTTP response is sent (r.Context() cancels on response write).
 	ctx, cancel := context.WithCancel(context.Background())
-	migrationCancel = cancel
-	migrationMutex.Unlock()
+	a.migrationCancel = cancel
+	a.migrationMutex.Unlock()
 
 	args := []string{
 		migrateScriptPath(),
@@ -188,20 +202,20 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--shared-storage")
 	}
 	if dt := r.FormValue("downtime"); dt != "" {
-		var d int
-		if _, err := fmt.Sscanf(dt, "%d", &d); err != nil || d <= 0 {
-			migrationMutex.Lock()
-			isMigrating = false
-			migrationCancel = nil
-			migrationMutex.Unlock()
+		d, err := strconv.Atoi(dt)
+		if err != nil || d <= 0 {
+			a.migrationMutex.Lock()
+			a.isMigrating = false
+			a.migrationCancel = nil
+			a.migrationMutex.Unlock()
 			cancel()
 			http.Error(w, "Invalid downtime value (must be a positive integer)", http.StatusBadRequest)
 			return
 		}
-		args = append(args, "--downtime", dt)
+		args = append(args, "--downtime", strconv.Itoa(d))
 	}
 
-	go runCommand(ctx, args)
+	go a.runCommand(ctx, args)
 
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte("Migration started")); err != nil {
@@ -209,37 +223,37 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleMigrateStop(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	migrationMutex.Lock()
-	if migrationCancel != nil {
-		migrationCancel()
+	a.migrationMutex.Lock()
+	if a.migrationCancel != nil {
+		a.migrationCancel()
 	}
-	migrationMutex.Unlock()
+	a.migrationMutex.Unlock()
 	w.WriteHeader(http.StatusOK)
 }
 
-func runCommand(ctx context.Context, args []string) {
+func (a *App) runCommand(ctx context.Context, args []string) {
 	defer func() {
-		migrationMutex.Lock()
-		isMigrating = false
-		migrationCancel = nil
-		migrationMutex.Unlock()
+		a.migrationMutex.Lock()
+		a.isMigrating = false
+		a.migrationCancel = nil
+		a.migrationMutex.Unlock()
 	}()
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		appendLog("Error: " + err.Error())
+		a.appendLog("Error: " + err.Error())
 		return
 	}
 	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
-		appendLog("Error starting: " + err.Error())
+		a.appendLog("Error starting: " + err.Error())
 		return
 	}
 
@@ -247,36 +261,49 @@ func runCommand(ctx context.Context, args []string) {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
-		appendLog(scanner.Text())
+		a.appendLog(scanner.Text())
 	}
 
 	if err := cmd.Wait(); err != nil {
-		appendLog("Finished with error: " + err.Error())
+		a.appendLog("Finished with error: " + err.Error())
 	} else {
-		appendLog("Finished successfully.")
+		a.appendLog("Finished successfully.")
 	}
 }
 
-func appendLog(msg string) {
-	migrationMutex.Lock()
-	defer migrationMutex.Unlock()
-	migrationOutput = append(migrationOutput, msg)
-	if len(migrationOutput) > maxLogLines {
-		migrationOutput = migrationOutput[len(migrationOutput)-maxLogLines:]
+func (a *App) appendLog(msg string) {
+	a.migrationMutex.Lock()
+	defer a.migrationMutex.Unlock()
+	a.migrationOutput = append(a.migrationOutput, msg)
+	if len(a.migrationOutput) > maxLogLines {
+		a.migrationOutput = a.migrationOutput[len(a.migrationOutput)-maxLogLines:]
 	}
 }
 
-func handleStatus(w http.ResponseWriter, r *http.Request) {
-	migrationMutex.Lock()
-	logs := make([]string, len(migrationOutput))
-	copy(logs, migrationOutput)
-	status := isMigrating
-	migrationMutex.Unlock()
+func (a *App) handleHTTPStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	a.stopLoadgen()
+	w.WriteHeader(http.StatusOK)
+}
 
-	loadgenMutex.Lock()
-	pings := make([]PingData, len(pingLog))
-	copy(pings, pingLog)
-	loadgenMutex.Unlock()
+func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	a.migrationMutex.Lock()
+	logs := make([]string, len(a.migrationOutput))
+	copy(logs, a.migrationOutput)
+	status := a.isMigrating
+	a.migrationMutex.Unlock()
+
+	a.loadgenMutex.Lock()
+	pings := make([]PingData, len(a.pingLog))
+	copy(pings, a.pingLog)
+	a.loadgenMutex.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(StatusResponse{
@@ -290,17 +317,15 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 var pingRe = regexp.MustCompile(`time=([0-9.]+) ms`)
 
-func stopLoadgen() {
-	loadgenMutex.Lock()
-	defer loadgenMutex.Unlock()
-	loadgenRunning = false
-	if loadgenCancel != nil {
-		loadgenCancel()
-		loadgenCancel = nil
+func (a *App) stopLoadgen() {
+	a.loadgenMutex.Lock()
+	defer a.loadgenMutex.Unlock()
+	if a.loadgenCancel != nil {
+		a.loadgenCancel()
 	}
 }
 
-func handlePingStart(w http.ResponseWriter, r *http.Request) {
+func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -316,25 +341,26 @@ func handlePingStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loadgenMutex.Lock()
-	if loadgenRunning {
-		loadgenMutex.Unlock()
+	a.loadgenMutex.Lock()
+	if a.loadgenRunning {
+		a.loadgenMutex.Unlock()
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	loadgenRunning = true
-	pingLog = pingLog[:0]
+	a.loadgenRunning = true
+	a.pingLog = a.pingLog[:0]
 	// Use context.Background() so the ping process survives after
 	// the HTTP response is sent.
 	ctx, cancel := context.WithCancel(context.Background())
-	loadgenCancel = cancel
-	loadgenMutex.Unlock()
+	a.loadgenCancel = cancel
+	a.loadgenMutex.Unlock()
 
 	go func() {
 		defer func() {
-			loadgenMutex.Lock()
-			loadgenRunning = false
-			loadgenMutex.Unlock()
+			a.loadgenMutex.Lock()
+			a.loadgenRunning = false
+			a.loadgenCancel = nil
+			a.loadgenMutex.Unlock()
 		}()
 
 		cmd := exec.CommandContext(ctx, "ping", "-i", "0.2", target)
@@ -355,9 +381,9 @@ func handlePingStart(w http.ResponseWriter, r *http.Request) {
 			if len(matches) > 1 {
 				var lat float64
 				fmt.Sscanf(matches[1], "%f", &lat)
-				addPing(lat, "")
+				a.addPing(lat, "")
 			} else if strings.Contains(line, "Unreachable") || strings.Contains(line, "timeout") {
-				addPing(0, "Timeout/Unreachable")
+				a.addPing(0, "Timeout/Unreachable")
 			}
 		}
 		if err := cmd.Wait(); err != nil {
@@ -368,29 +394,29 @@ func handlePingStart(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func handlePingStop(w http.ResponseWriter, r *http.Request) {
+func (a *App) handlePingStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	stopLoadgen()
+	a.stopLoadgen()
 	w.WriteHeader(http.StatusOK)
 }
 
-func addPing(lat float64, errStr string) {
-	loadgenMutex.Lock()
-	defer loadgenMutex.Unlock()
-	pingLog = append(pingLog, PingData{
+func (a *App) addPing(lat float64, errStr string) {
+	a.loadgenMutex.Lock()
+	defer a.loadgenMutex.Unlock()
+	a.pingLog = append(a.pingLog, PingData{
 		Time:    time.Now().Format("15:04:05.000"),
 		Latency: lat,
 		Error:   errStr,
 	})
-	if len(pingLog) > maxPingLines {
-		pingLog = pingLog[len(pingLog)-maxPingLines:]
+	if len(a.pingLog) > maxPingLines {
+		a.pingLog = a.pingLog[len(a.pingLog)-maxPingLines:]
 	}
 }
 
-func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -406,25 +432,26 @@ func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loadgenMutex.Lock()
-	if loadgenRunning {
-		loadgenMutex.Unlock()
+	a.loadgenMutex.Lock()
+	if a.loadgenRunning {
+		a.loadgenMutex.Unlock()
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	loadgenRunning = true
-	pingLog = pingLog[:0]
+	a.loadgenRunning = true
+	a.pingLog = a.pingLog[:0]
 	// Use context.Background() so the HTTP load generator survives after
 	// the HTTP response is sent.
 	ctx, cancel := context.WithCancel(context.Background())
-	loadgenCancel = cancel
-	loadgenMutex.Unlock()
+	a.loadgenCancel = cancel
+	a.loadgenMutex.Unlock()
 
 	go func() {
 		defer func() {
-			loadgenMutex.Lock()
-			loadgenRunning = false
-			loadgenMutex.Unlock()
+			a.loadgenMutex.Lock()
+			a.loadgenRunning = false
+			a.loadgenCancel = nil
+			a.loadgenMutex.Unlock()
 		}()
 
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -443,12 +470,11 @@ func handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 			lat := float64(time.Since(start).Milliseconds())
 
 			if err != nil {
-				addPing(0, "HTTP Error")
+				a.addPing(0, "HTTP Error")
 			} else {
-				if err := resp.Body.Close(); err != nil {
-					log.Printf("Failed to close response body: %v", err)
-				}
-				addPing(lat, "")
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				a.addPing(lat, "")
 			}
 
 			select {

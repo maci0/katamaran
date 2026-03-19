@@ -6,18 +6,23 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
-	"strings"
+)
+
+// TunnelMode specifies the encapsulation protocol for the migration IP tunnel.
+type TunnelMode string
+
+const (
+	// TunnelModeIPIP uses IPIP (IPv4) or IP6IP6 (IPv6). Minimal overhead.
+	TunnelModeIPIP TunnelMode = "ipip"
+	// TunnelModeGRE uses GRE (IPv4) or IP6GRE (IPv6). Supported by cloud middleboxes.
+	TunnelModeGRE TunnelMode = "gre"
+	// TunnelModeNone skips tunnel creation.
+	TunnelModeNone TunnelMode = "none"
 )
 
 // SetupTunnel creates an IP tunnel to the destination node and installs
 // a host route for the VM IP through it. This ensures packets arriving at the
 // (now-stale) source during CNI convergence are forwarded to the destination.
-//
-// tunnelMode selects the encapsulation protocol:
-//   - "ipip": IPIP for IPv4 (mode ipip), ip6tnl for IPv6 (mode ip6ip6).
-//     Minimal overhead but may be blocked by cloud VPC security groups.
-//   - "gre": GRE for IPv4 (mode gre), ip6gre for IPv6. Widely supported
-//     by cloud middleboxes (AWS, GCP, Azure) at +4 bytes overhead.
 //
 // Both addresses must be the same family and already Unmap'd by the caller.
 //
@@ -26,10 +31,7 @@ import (
 //
 // On partial failure (e.g., route add fails after tunnel is created), the
 // tunnel is cleaned up before returning the error to prevent resource leaks.
-func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) error {
-	dest = dest.Unmap()
-	vm = vm.Unmap()
-
+func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode) error {
 	if !dest.IsValid() || !vm.IsValid() {
 		return fmt.Errorf("invalid destination or VM address")
 	}
@@ -42,12 +44,12 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 	vmStr := vm.String()
 
 	// Remove any stale tunnel from a previous run. Errors are ignored
-	// because the tunnel may not exist, which is the common case.
+	// because the tunnel typically doesn't exist (first run). On error,
+	// we log but continue — if there is a real problem (e.g., EPERM),
+	// it will surface when we attempt to create the new tunnel below.
 	cctx, ccancel := CleanupCtx(ctx)
 	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
-	} else if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
-		log.Printf("Warning: failed to remove stale tunnel %s: %v", TunnelName, err)
 	}
 	ccancel()
 
@@ -56,9 +58,9 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 	// gre:  gre  (v4) / ip6gre  (v6) — +4 bytes overhead, widely supported by middleboxes.
 	var mode string
 	switch {
-	case tunnelMode == "gre" && dest.Is6():
+	case tunnelMode == TunnelModeGRE && dest.Is6():
 		mode = "ip6gre"
-	case tunnelMode == "gre":
+	case tunnelMode == TunnelModeGRE:
 		mode = "gre"
 	case dest.Is6():
 		mode = "ip6ip6"
@@ -83,7 +85,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
 		if cleanupErr != nil {
-			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
 		}
 		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), cleanupErr)
 	}
@@ -101,7 +103,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode string) er
 		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
 		if cleanupErr != nil {
-			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
 		}
 		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), cleanupErr)
 	}
@@ -119,10 +121,13 @@ func IPFamily(addr netip.Addr) string {
 // TeardownTunnel removes the IP tunnel created during migration.
 // Uses "ip link del" which works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
 // Deleting the tunnel implicitly removes the associated host route.
+//
+// Best-effort: always returns nil. If the tunnel doesn't exist (expected after
+// a clean teardown or if setup was never reached), the error is swallowed.
+// Other errors (EPERM, context cancel) are logged but non-recoverable.
 func TeardownTunnel(ctx context.Context) error {
-	err := RunCmd(ctx, "ip", "link", "del", TunnelName)
-	if err != nil && !strings.Contains(err.Error(), "Cannot find device") {
-		return fmt.Errorf("deleting tunnel %s: %w", TunnelName, err)
+	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err != nil {
+		log.Printf("Warning: tunnel teardown: %v", err)
 	}
 	return nil
 }
