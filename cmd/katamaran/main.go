@@ -49,6 +49,7 @@ Common flags:
   --qmp string             Path to QEMU QMP unix socket (default "/run/vc/vm/extra-monitor.sock")
   --drive-id string        QEMU block device ID to migrate (default "drive-virtio-disk0")
   --shared-storage         Skip NBD drive-mirror (use with shared storage)
+  --multifd-channels int   Parallel TCP channels for RAM migration, 0 to disable (default 4)
 
 Source mode flags:
   --dest-ip string         Destination node IP address (required)
@@ -56,7 +57,6 @@ Source mode flags:
   --tunnel-mode string     Tunnel mode: 'ipip', 'gre', or 'none' (default "ipip")
   --downtime int           Max allowed downtime in milliseconds (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
-  --multifd-channels int   Parallel TCP channels for RAM migration, 0 to disable (default 4)
 
 Destination mode flags:
   --tap string             Tap interface name for tc sch_plug buffering
@@ -126,6 +126,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Warning: --%s is ignored in source mode\n", f.Name)
 			}
 		})
+	}
+
+	if *multifdChannels < 0 {
+		fmt.Fprintf(os.Stderr, "Error: --multifd-channels must be non-negative, got %d\n", *multifdChannels)
+		os.Exit(1)
 	}
 
 	switch mode {

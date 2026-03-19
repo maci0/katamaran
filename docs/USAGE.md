@@ -31,6 +31,7 @@ katamaran --mode <source|dest> [flags]
 | `--qmp` | no | `/run/vc/vm/extra-monitor.sock` | QEMU QMP socket path |
 | `--drive-id` | no | `drive-virtio-disk0` | QEMU block device id |
 | `--shared-storage` | no | `false` | Skip NBD storage mirroring |
+| `--multifd-channels` | no | `4` | Parallel TCP channels for RAM migration (0 to disable) |
 
 ### Source mode flags
 

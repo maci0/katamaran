@@ -83,7 +83,7 @@ func TestConstants_Reasonable(t *testing.T) {
 	if NBDPort == "" || RAMMigrationPort == "" || PlugQdiscLimit == "" || TunnelName == "" {
 		t.Fatal("string constants should not be empty")
 	}
-	if MaxBandwidth <= 0 || EventWaitTimeout <= 0 || StoragePollInterval <= 0 || MigrationPollInterval <= 0 || PostMigrationTunnelDelay <= 0 || GARPRounds <= 0 || MigrationTimeout <= 0 || StorageSyncTimeout <= 0 || JobAppearTimeout <= 0 || CleanupTimeout <= 0 {
+	if MaxBandwidth <= 0 || EventWaitTimeout <= 0 || StoragePollInterval <= 0 || MigrationPollInterval <= 0 || PostMigrationTunnelDelay <= 0 || GARPRounds <= 0 || MigrationTimeout <= 0 || StorageSyncTimeout <= 0 || JobAppearTimeout <= 0 || CleanupTimeout <= 0 || DefaultMultiFDChannels <= 0 {
 		t.Fatal("numeric constants should be positive")
 	}
 }
