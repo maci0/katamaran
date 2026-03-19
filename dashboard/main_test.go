@@ -43,7 +43,7 @@ func TestValidFormValue(t *testing.T) {
 
 func TestApp_API(t *testing.T) {
 	app := &App{}
-	
+
 	// Test handleStatus
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestApp_API(t *testing.T) {
 	// Test appendLog and addPing
 	app.appendLog("test log")
 	app.addPing(1.5, "")
-	
+
 	w = httptest.NewRecorder()
 	app.handleStatus(w, req)
 	json.Unmarshal(w.Body.Bytes(), &status)

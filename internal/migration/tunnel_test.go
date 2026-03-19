@@ -55,7 +55,7 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 		name string
 		dest string
 		vm   string
-		mode    TunnelMode
+		mode TunnelMode
 	}{
 		{"IPv4_IPIP", "10.0.0.1", "10.244.1.15", TunnelModeIPIP},
 		{"IPv4_GRE", "10.0.0.1", "10.244.1.15", TunnelModeGRE},

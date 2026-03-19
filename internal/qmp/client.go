@@ -40,6 +40,12 @@ const (
 	// prevents unbounded memory growth if a misbehaving QEMU floods the
 	// socket with asynchronous events.
 	maxBufferedEvents = 1000
+
+	// maxLineSize caps the partial-line accumulation buffer. Prevents
+	// unbounded memory growth if QEMU sends continuous data without
+	// newlines (malicious or buggy). 4 MiB is far above any legitimate
+	// QMP message (~10 KiB typical).
+	maxLineSize = 4 * 1024 * 1024
 )
 
 // Client is a minimal synchronous client for the QEMU Machine Protocol.
@@ -53,12 +59,18 @@ type Client struct {
 
 // readLine reads a complete newline-terminated JSON message.
 // It safely accumulates partial reads if a timeout occurs, preventing data corruption.
+// The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
+// from a misbehaving QEMU that sends data without newlines.
 func (c *Client) readLine() ([]byte, error) {
 	line, err := c.r.ReadBytes('\n')
 	if len(line) > 0 {
 		c.buf = append(c.buf, line...)
 	}
 	if err != nil {
+		if len(c.buf) > maxLineSize {
+			c.buf = nil
+			return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
+		}
 		return nil, err
 	}
 	fullLine := c.buf

@@ -169,6 +169,13 @@ fi
 
 envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
+echo ">>> Waiting for destination pod to appear..."
+for _i in $(seq 1 30); do
+    if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest --no-headers 2>/dev/null | grep -q .; then
+        break
+    fi
+    sleep 2
+done
 echo ">>> Waiting for destination pod to be ready..."
 "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l job-name=katamaran-dest --timeout=60s
 
