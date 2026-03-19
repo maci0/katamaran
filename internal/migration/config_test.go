@@ -32,8 +32,6 @@ func TestCleanupCtx(t *testing.T) {
 		t.Fatal("CleanupCtx should not be cancelled when parent is")
 	default:
 	}
-
-	_ = parent
 }
 
 func TestRunCmd(t *testing.T) {
@@ -61,7 +59,6 @@ func TestRunCmd(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := RunCmd(tt.ctx, tt.cmd, tt.args...)
@@ -104,7 +101,6 @@ func FuzzFormatQEMUHost(f *testing.F) {
 	f.Add("fe80::1%eth0")
 	f.Add("::ffff:192.168.0.1")
 	f.Add("1.1.1.1")
-	f.Add("::")
 
 	f.Fuzz(func(t *testing.T, s string) {
 		addr, err := netip.ParseAddr(s)

@@ -5,13 +5,17 @@
 #   ./deploy/migrate.sh \
 #     --source-node <name> \
 #     --dest-node <name> \
+#     --tap <iface> \
 #     --qmp-source <path> \
 #     --qmp-dest <path> \
 #     --dest-ip <ip> \
 #     --vm-ip <ip> \
 #     --image <image:tag> \
+#     [--tap-netns <path>] \
 #     [--shared-storage] \
-#     [--tunnel-mode ipip|gre] \
+#     [--tunnel-mode ipip|gre|none] \
+#     [--downtime <ms>] \
+#     [--auto-downtime] \
 #     [--context <kubectl-context>]
 
 set -euo pipefail
@@ -38,20 +42,20 @@ IMAGE_REF=""
 usage() {
     echo "Usage: $0 [options]"
     echo ""
-    echo "Required options:"
+    echo "Required flags:"
     echo "  --source-node <name>    Name of the source K8s node"
     echo "  --dest-node <name>      Name of the destination K8s node"
     echo "  --tap <iface>           Destination tap interface (required for zero-drop buffering)"
-    echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
     echo "  --qmp-source <path>     Path to QMP socket on source node"
     echo "  --qmp-dest <path>       Path to QMP socket on destination node"
     echo "  --dest-ip <ip>          IP address of the destination node"
     echo "  --vm-ip <ip>            IP address of the VM (pod IP)"
     echo "  --image <tag>           Katamaran container image to use"
     echo ""
-    echo "Optional options:"
+    echo "Optional flags:"
+    echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
     echo "  --shared-storage        Enable shared storage mode"
-    echo "  --tunnel-mode <mode>    Tunnel encapsulation (ipip or gre, default: ipip)"
+    echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
     echo "  --downtime <ms>         Max allowed downtime in milliseconds (default: 25)"
     echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
     echo "  --context <context>     Kubectl context to use"

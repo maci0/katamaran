@@ -18,22 +18,36 @@ make
 General form:
 
 ```bash
-katamaran -mode <source|dest> [flags]
+katamaran --mode <source|dest> [flags]
 ```
 
 ## Flags
 
-| Flag | Required | Mode | Default | Description |
-|------|----------|------|---------|-------------|
-| `-mode` | yes | both | `""` | Migration role: `source` or `dest` |
-| `-qmp` | no | both | `/run/vc/vm/extra-monitor.sock` | QEMU QMP socket path |
-| `-tap` | recommended | dest | `""` | Destination tap interface for `tc sch_plug` buffering |
-| `-dest-ip` | yes | source | `""` | Destination node IP |
-| `-vm-ip` | yes | source | `""` | VM pod IP used for route/tunnel cutover |
-| `-drive-id` | no | both | `drive-virtio-disk0` | QEMU block device id |
-| `-shared-storage` | no | both | `false` | Skip NBD storage mirroring |
-| `-tunnel-mode` | no | source | `ipip` | `ipip` or `gre` |
-| `-downtime` | no | source | `25` | Maximum allowed downtime during VM pause (ms) |
+### Common flags
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--mode` | yes | `""` | Migration role: `source` or `dest` |
+| `--qmp` | no | `/run/vc/vm/extra-monitor.sock` | QEMU QMP socket path |
+| `--drive-id` | no | `drive-virtio-disk0` | QEMU block device id |
+| `--shared-storage` | no | `false` | Skip NBD storage mirroring |
+
+### Source mode flags
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--dest-ip` | yes | `""` | Destination node IP |
+| `--vm-ip` | yes | `""` | VM pod IP used for route/tunnel cutover |
+| `--tunnel-mode` | no | `ipip` | `ipip`, `gre`, or `none` |
+| `--downtime` | no | `25` | Maximum allowed downtime during VM pause (ms) |
+| `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |
+
+### Destination mode flags
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--tap` | recommended | `""` | Destination tap interface for `tc sch_plug` buffering |
+| `--tap-netns` | no | `""` | Network namespace path for tap interface (e.g. `/proc/PID/ns/net`) |
 
 ## Direct CLI Usage
 
@@ -41,38 +55,52 @@ katamaran -mode <source|dest> [flags]
 
 ```bash
 sudo /usr/local/bin/katamaran \
-  -mode dest \
-  -qmp /run/vc/vm/<sandbox-id>/extra-monitor.sock \
-  -tap tap0_kata
+  --mode dest \
+  --qmp /run/vc/vm/<sandbox-id>/extra-monitor.sock \
+  --tap tap0_kata
 ```
 
 ### 2) Source node
 
 ```bash
 sudo /usr/local/bin/katamaran \
-  -mode source \
-  -qmp /run/vc/vm/<sandbox-id>/extra-monitor.sock \
-  -dest-ip <destination-node-ip> \
-  -vm-ip <vm-pod-ip> \
-  -tunnel-mode ipip
+  --mode source \
+  --qmp /run/vc/vm/<sandbox-id>/extra-monitor.sock \
+  --dest-ip <destination-node-ip> \
+  --vm-ip <vm-pod-ip> \
+  --tunnel-mode ipip
 ```
 
 ### Shared storage mode (Ceph/NFS)
 
 ```bash
 # destination
-sudo /usr/local/bin/katamaran -mode dest -qmp /run/vc/vm/<id>/extra-monitor.sock -tap tap0_kata -shared-storage
+sudo /usr/local/bin/katamaran --mode dest --qmp /run/vc/vm/<id>/extra-monitor.sock --tap tap0_kata --shared-storage
 
 # source
-sudo /usr/local/bin/katamaran -mode source -qmp /run/vc/vm/<id>/extra-monitor.sock \
-  -dest-ip <destination-node-ip> -vm-ip <vm-pod-ip> -shared-storage
+sudo /usr/local/bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
+  --dest-ip <destination-node-ip> --vm-ip <vm-pod-ip> --shared-storage
 ```
 
 ### GRE mode (cloud VPC networks)
 
 ```bash
-sudo /usr/local/bin/katamaran -mode source -qmp /run/vc/vm/<id>/extra-monitor.sock \
-  -dest-ip <destination-node-ip> -vm-ip <vm-pod-ip> -tunnel-mode gre
+sudo /usr/local/bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
+  --dest-ip <destination-node-ip> --vm-ip <vm-pod-ip> --tunnel-mode gre
+```
+
+### Tap in a different network namespace
+
+```bash
+sudo /usr/local/bin/katamaran --mode dest --qmp /run/vc/vm/<id>/extra-monitor.sock \
+  --tap tap0_kata --tap-netns /proc/12345/ns/net
+```
+
+### Auto-downtime calculation
+
+```bash
+sudo /usr/local/bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
+  --dest-ip <destination-node-ip> --vm-ip <vm-pod-ip> --auto-downtime
 ```
 
 ## Kubernetes Job-Based Usage
@@ -121,22 +149,24 @@ deploy/migrate.sh --help
 
 ## Validation Rules
 
-- `-dest-ip` and `-vm-ip` are required in `source` mode
-- `-dest-ip` and `-vm-ip` must be the same address family
-- `-tunnel-mode` must be `ipip` or `gre`
+- `--dest-ip` and `--vm-ip` are required in `source` mode
+- `--dest-ip` and `--vm-ip` must be the same address family
+- `--tunnel-mode` must be `ipip`, `gre`, or `none`
+- `--downtime` must be a positive integer
+- Source-only flags in dest mode (and vice versa) produce warnings
 - Job orchestration requires `--tap` for zero-drop buffering path
 
 ## Operational Notes
 
 - NBD storage mirror port: `10809`
 - RAM migration port: `4444`
-- `-tap` is critical for `sch_plug` buffering during STOP→RESUME cutover
+- `--tap` is critical for `sch_plug` buffering during STOP→RESUME cutover
 - On failure, `deploy/migrate.sh` keeps jobs for forensic debugging output
 
 ## Troubleshooting
 
-- `invalid -tunnel-mode`
-  - use `ipip` or `gre`
+- `invalid --tunnel-mode`
+  - use `ipip`, `gre`, or `none`
 - `migration did not complete`
   - check logs from source and destination jobs/services
 

@@ -3,7 +3,6 @@ package migration
 import (
 	"context"
 	"net"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,41 +52,11 @@ func TestRunDestination_ContextCancelled(t *testing.T) {
 	}
 }
 
-// startFakeQMPDest creates a fake QMP server for destination-side testing.
-func startFakeQMPDest(t *testing.T, handler func(conn net.Conn)) string {
-	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "qmp.sock")
-	l, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { l.Close() })
-
-	go func() {
-		conn, err := l.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		handler(conn)
-	}()
-	return socketPath
-}
-
-// qmpHandshakeDest performs the server side of the QMP greeting + capabilities handshake.
-func qmpHandshakeDest(conn net.Conn) {
-	greeting := `{"QMP":{"version":{"qemu":{"micro":0,"minor":2,"major":6}}}}`
-	conn.Write([]byte(greeting + "\n"))
-	buf := make([]byte, 4096)
-	conn.Read(buf)
-	conn.Write([]byte(`{"return":{}}` + "\n"))
-}
-
 func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -98,7 +67,7 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 
 			if strings.Contains(line, "migrate-incoming") {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				// After accepting migrat-incoming, send RESUME event.
+				// After accepting migrate-incoming, send RESUME event.
 				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
 				continue
@@ -117,8 +86,8 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -161,8 +130,8 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -191,8 +160,8 @@ func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -221,8 +190,8 @@ func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -251,8 +220,8 @@ func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 func TestRunDestination_GARPFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMPDest(t, func(conn net.Conn) {
-		qmpHandshakeDest(conn)
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)

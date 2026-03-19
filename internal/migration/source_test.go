@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -344,40 +345,6 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 	}
 }
 
-// fakeQMPResponder handles arbitrary QMP commands by responding with {"return":{}}
-// for any command, and optionally injects events. This simulates a QEMU instance
-// for integration testing of RunSource/RunDestination.
-func fakeQMPResponder(conn net.Conn, handlers map[string]string, events []string) {
-	qmpHandshake(conn)
-	buf := make([]byte, 8192)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			return
-		}
-		line := string(buf[:n])
-
-		// Check if we should inject events before the response.
-		for _, ev := range events {
-			conn.Write([]byte(`{"event":"` + ev + `"}` + "\n"))
-		}
-		events = nil // Only inject once.
-
-		// Find matching handler by command name.
-		responded := false
-		for cmd, resp := range handlers {
-			if strings.Contains(line, `"`+cmd+`"`) {
-				conn.Write([]byte(resp + "\n"))
-				responded = true
-				break
-			}
-		}
-		if !responded {
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
-	}
-}
-
 func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -623,40 +590,33 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 func TestMeasureRTT(t *testing.T) {
 	t.Parallel()
 
-	// Start a TCP listener on a random port to simulate the migration endpoint.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer l.Close()
-
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			conn.Close()
-		}
-	}()
-
-	// measureRTT uses the RAMMigrationPort constant so we can't easily redirect
-
-	// measureRTT uses RAMMigrationPort constant, so we can't directly test
-	// against a random port. But we can test the unreachable path.
-	_, err = measureRTT(netip.MustParseAddr("192.0.2.1")) // RFC 5737 TEST-NET, unreachable
+	// measureRTT hardcodes RAMMigrationPort, so we can only test the error
+	// path with an unreachable address (RFC 5737 TEST-NET).
+	_, err := measureRTT(netip.MustParseAddr("192.0.2.1"))
 	if err == nil {
 		t.Fatal("expected error for unreachable address")
 	}
 }
 
+func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+	// With empty netnsPath, should delegate directly to RunCmd.
+	if err := RunCmdInNetns(context.Background(), "", "true"); err != nil {
+		t.Fatalf("expected success with empty netns, got: %v", err)
+	}
+}
+
 func TestRunCmdInNetns_WithNetns(t *testing.T) {
 	t.Parallel()
-	// Use a bogus netns path — nsenter will fail, but the code path is exercised.
-	err := RunCmdInNetns(context.Background(), "/proc/1/ns/net", "true")
-	// We don't assert success because we may not have permission,
-	// but we do exercise the code path.
-	_ = err
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+	// nsenter with /proc/1/ns/net requires root; verify the nsenter code path
+	// runs without panic. It succeeds as root, errors otherwise — both OK.
+	_ = RunCmdInNetns(context.Background(), "/proc/1/ns/net", "true")
 }
 
 func TestRunSource_DriveMirrorFailure(t *testing.T) {

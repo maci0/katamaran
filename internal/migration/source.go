@@ -33,7 +33,7 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
-			log.Printf("warning: closing QMP client: %v", err)
+			log.Printf("Warning: closing QMP client: %v", err)
 		}
 	}()
 
@@ -108,13 +108,10 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 	}
 	log.Println("RAM migration started. Waiting for VM to pause (STOP event)...")
 
-	// Step 4: Wait for the STOP event (downtime window begins).
-	// ARCHITECTURE UPDATE (Phase 1/2): Migration Polling
-	// We deliberately poll migration status sequentially in the same loop rather
-	// than using a separate goroutine for `WaitForEvent` vs `query-migrate`.
-	// This prevents concurrent state access issues and QMP socket data races,
-	// while ensuring we don't hang forever if QEMU silently fails the migration
-	// without emitting a STOP event.
+	// Wait for the STOP event (downtime window begins).
+	// We poll migration status sequentially in the same loop rather than using a
+	// separate goroutine for WaitForEvent vs query-migrate. This prevents QMP
+	// socket data races and ensures we detect silent migration failures.
 stopLoop:
 	for {
 		err = client.WaitForEvent(ctx, "STOP", MigrationPollInterval)
@@ -209,9 +206,7 @@ stopLoop:
 			}
 		}
 		cctx, ccancel := CleanupCtx(ctx)
-		if err := TeardownTunnel(cctx); err != nil {
-			log.Printf("Warning: failed to remove IP tunnel: %v", err)
-		}
+		TeardownTunnel(cctx)
 		ccancel()
 	}
 
