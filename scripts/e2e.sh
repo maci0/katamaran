@@ -325,7 +325,11 @@ SRC_VSOCK_ID=$(echo "${SRC_CMDLINE}" | grep 'vhost-vsock-pci' | grep -oP 'id=\Kv
 SRC_CHARDEV_FS=$(echo "${SRC_CMDLINE}" | grep 'vhost-user-fs-pci' | grep -oP 'chardev=\K[^,]+')
 SRC_MAC=$(echo "${SRC_CMDLINE}" | grep 'virtio-net-pci' | grep -oP 'mac=\K[^,]+')
 SRC_APPEND=$(echo "${SRC_CMDLINE}" | grep '^tsc=reliable')
+SRC_MACHINE=$(echo "${SRC_CMDLINE}" | grep -A1 '^-machine$' | tail -1)
+SRC_SMP=$(echo "${SRC_CMDLINE}" | grep -A1 '^-smp$' | tail -1)
+SRC_MEM=$(echo "${SRC_CMDLINE}" | grep -A1 '^-m$' | tail -1)
 success "Source UUID: ${SRC_UUID}, MAC: ${SRC_MAC}"
+success "Source machine: ${SRC_MACHINE}, SMP: ${SRC_SMP}, MEM: ${SRC_MEM}"
 
 log "Removing tc mirred redirect on source pod's eth0..."
 # Kata installs a tc filter that redirects ALL ingress on eth0 to tap0_kata.
@@ -412,25 +416,25 @@ node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net \
     /opt/kata/bin/qemu-system-x86_64 \
     -name sandbox-${DST_SANDBOX},debug-threads=on \
     -uuid ${SRC_UUID} \
-    -machine q35,accel=kvm,nvdimm=on \
+    -machine ${SRC_MACHINE} \
     -cpu host,pmu=off \
     -qmp unix:path=${DST_VM_DIR}/qmp-primary.sock,server=on,wait=off \
     -qmp unix:path=${DST_SOCK},server=on,wait=off \
-    -m 2048M,slots=10,maxmem=127437M \
+    -m ${SRC_MEM} \
     -device pci-bridge,bus=pcie.0,id=pci-bridge-0,chassis_nr=1,shpc=off,addr=2,io-reserve=4k,mem-reserve=1m,pref64-reserve=1m \
-    -device virtio-serial-pci,disable-modern=false,id=serial0 \
+    -device virtio-serial-pci,disable-modern=true,id=serial0 \
     -device virtconsole,chardev=charconsole0,id=console0 \
     -chardev socket,id=charconsole0,path=${DST_VM_DIR}/console.sock,server=on,wait=off \
     -device nvdimm,id=nv0,memdev=mem0,unarmed=on \
     -object memory-backend-file,id=mem0,mem-path=/tmp/kata-dst-nvdimm-$$.img,size=268435456 \
-    -device virtio-scsi-pci,id=scsi0,disable-modern=false \
+    -device virtio-scsi-pci,id=scsi0,disable-modern=true \
     -object rng-random,id=rng0,filename=/dev/urandom \
     -device virtio-rng-pci,rng=rng0 \
-    -device vhost-vsock-pci,disable-modern=false,id=${SRC_VSOCK_ID},guest-cid=88888888 \
+    -device vhost-vsock-pci,disable-modern=true,id=${SRC_VSOCK_ID},guest-cid=88888888 \
     -chardev socket,id=${SRC_CHARDEV_FS},path=${DST_VM_DIR}/vhost-fs.sock \
     -device vhost-user-fs-pci,chardev=${SRC_CHARDEV_FS},tag=kataShared,queue-size=1024 \
     -netdev tap,id=network-0,vhost=on,ifname=tap0_kata,script=no,downscript=no \
-    -device driver=virtio-net-pci,netdev=network-0,mac=${SRC_MAC},disable-modern=false,mq=on,vectors=4 \
+    -device driver=virtio-net-pci,netdev=network-0,mac=${SRC_MAC},disable-modern=true,mq=on,vectors=4 \
     -rtc base=utc,driftfix=slew,clock=host \
     -global kvm-pit.lost_tick_policy=discard \
     -vga none -no-user-config -nodefaults -nographic --no-reboot \
@@ -439,7 +443,8 @@ node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net \
     -kernel /opt/kata/share/kata-containers/vmlinux-6.12.47-173 \
     -append '${SRC_APPEND}' \
     -pidfile ${DST_VM_DIR}/pid \
-    -smp 1,cores=1,threads=1,sockets=32,maxcpus=32 \
+    -D ${DST_VM_DIR}/qemu.log -d guest_errors \
+    -smp ${SRC_SMP} \
     -incoming defer \
     -daemonize"
 
@@ -500,6 +505,19 @@ if [[ "${METHOD}" == "job" ]]; then
 else
     error "SSH method not implemented."
     exit 1
+fi
+
+# Post-migration: check dest QEMU status for debugging.
+DST_QEMU_ALIVE=$(node_exec "${NODE2}" "${SUDO} test -f ${DST_VM_DIR}/pid && ${SUDO} kill -0 \$(cat ${DST_VM_DIR}/pid) 2>/dev/null && echo alive || echo dead" 2>/dev/null || echo "unknown")
+log "Destination QEMU status: ${DST_QEMU_ALIVE}"
+if [[ -n "${DST_VM_DIR:-}" ]]; then
+    QEMU_LOG=$(node_exec "${NODE2}" "${SUDO} cat ${DST_VM_DIR}/qemu.log 2>/dev/null" 2>/dev/null || true)
+    if [[ -n "${QEMU_LOG}" ]]; then
+        log "Destination QEMU log:"
+        echo "${QEMU_LOG}" | head -20
+    fi
+    # Check dmesg for crashes.
+    node_exec "${NODE2}" "dmesg | grep -iE 'qemu|segfault|killed|oom' | tail -5" 2>/dev/null || true
 fi
 
 if [[ "${PING_PROOF}" == "true" ]]; then
