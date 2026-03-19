@@ -133,6 +133,12 @@ log "Starting 2-node ${PROVIDER} cluster (CNI: ${CNI})..."
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
     MINIKUBE_ARGS=("--nodes" "2" "--driver=kvm2" "--memory=12288" "--cpus=6" "--container-runtime=containerd" "--extra-config=kubelet.runtime-request-timeout=10m")
+    # Use custom ISO with sch_plug if available.
+    CUSTOM_ISO="${PROJECT_ROOT}/out/minikube-amd64.iso"
+    if [[ -f "${CUSTOM_ISO}" ]]; then
+        log "Using custom minikube ISO with sch_plug: ${CUSTOM_ISO}"
+        MINIKUBE_ARGS+=("--iso-url=file://${CUSTOM_ISO}")
+    fi
     if [[ "${CNI}" == "ovn" || "${CNI}" == "cilium" || "${CNI}" == "flannel" ]]; then
         MINIKUBE_ARGS+=("--cni=bridge")
     else
@@ -451,9 +457,18 @@ success "Destination QEMU started. QMP: ${DST_SOCK}"
 # The destination QEMU runs inside the helper pod's network namespace.
 # The tap interface (tap0_kata) is in that namespace. Pass the netns path
 # so katamaran can run tc commands via nsenter.
-# Check if sch_plug is available; if not, skip qdisc setup (no zero-drop buffering).
+# Check if sch_plug is available; if not, try to build it (minikube only).
 if node_exec "${NODE2}" "${SUDO} modprobe sch_plug" 2>/dev/null; then
     DST_TAP="tap0_kata"
+elif [[ "${PROVIDER}" == "minikube" ]] && [[ -x "${SCRIPT_DIR}/build-minikube-modules.sh" ]]; then
+    log "sch_plug not available. Building kernel module for minikube..."
+    if "${SCRIPT_DIR}/build-minikube-modules.sh" "${PROFILE}"; then
+        DST_TAP="tap0_kata"
+        success "sch_plug module built and loaded."
+    else
+        warn "Module build failed; skipping zero-drop qdisc (tap=none)."
+        DST_TAP="none"
+    fi
 else
     log "sch_plug not available on ${NODE2}; skipping zero-drop qdisc (tap=none)."
     DST_TAP="none"
