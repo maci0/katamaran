@@ -166,7 +166,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "-help output should include -mode flag description"
     fi
 
-    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode downtime; do
+    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode downtime multifd-channels; do
         if echo "${HELP_OUT}" | grep -q "\-${flag_name}"; then
             pass "-help output includes -${flag_name} flag"
         else

@@ -16,6 +16,7 @@
 #     [--tunnel-mode ipip|gre|none] \
 #     [--downtime <ms>] \
 #     [--auto-downtime] \
+#     [--multifd-channels <n>] \
 #     [--context <kubectl-context>]
 
 set -euo pipefail
@@ -59,6 +60,7 @@ usage() {
     echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
     echo "  --downtime <ms>         Max allowed downtime in milliseconds (default: 25)"
     echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
+    echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 4, 0 to disable)"
     echo "  --context <context>     Kubectl context to use"
     echo "  --help                  Show this help message"
     exit "${1:-1}"
