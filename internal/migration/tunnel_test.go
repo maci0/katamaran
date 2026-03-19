@@ -80,9 +80,9 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 
 func TestTeardownTunnel_NoTunnel(t *testing.T) {
 	t.Parallel()
-	err := TeardownTunnel(context.Background())
-	if err != nil && strings.Contains(err.Error(), "invalid") {
-		t.Fatalf("unexpected validation error: %v", err)
+	// TeardownTunnel is best-effort and always returns nil.
+	if err := TeardownTunnel(context.Background()); err != nil {
+		t.Fatalf("TeardownTunnel should always return nil, got: %v", err)
 	}
 }
 
@@ -91,9 +91,12 @@ func TestSetupTunnel_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_ = SetupTunnel(ctx,
+	err := SetupTunnel(ctx,
 		netip.MustParseAddr("10.0.0.1"),
 		netip.MustParseAddr("10.244.1.15"),
 		"ipip",
 	)
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
 }

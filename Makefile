@@ -1,4 +1,4 @@
-.PHONY: build test fuzz image dashboard clean vet fmt lint help
+.PHONY: all build test smoke fuzz fuzz-long image dashboard clean vet help
 
 # Default target
 all: build

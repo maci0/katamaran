@@ -216,21 +216,14 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}
 	defer func() { _ = conn.SetDeadline(time.Time{}) }()
 
-	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
-	// We no longer close the connection immediately on context cancellation.
-	// Trade-off: Closing the connection immediately would break deferred cleanup
-	// commands (like `migrate_cancel` or `block-job-cancel`) that must execute
-	// after the main context is cancelled (e.g., via SIGINT).
-	// Instead, we shorten the deadline to unblock any in-progress reads.
+	// On context cancellation, shorten the deadline to unblock in-progress reads
+	// rather than closing the connection. This preserves the socket for deferred
+	// cleanup commands (migrate_cancel, block-job-cancel) that run after the main
+	// context is cancelled.
 	//
-	// We use context.AfterFunc (Go 1.21+) because it is race-free: its stop()
-	// method guarantees the callback will NOT fire if it returns true. This fixes
-	// the non-deterministic data races of the old goroutine+select pattern.
-	//
-	// callbackDone acts as a synchronization barrier. If the context is cancelled
-	// and the callback runs, we wait for it to finish calling SetDeadline(time.Now()).
-	// This prevents the deferred SetDeadline(time.Time{}) from executing too early
-	// and accidentally clearing the deadline we just set to interrupt the read.
+	// callbackDone synchronizes the context.AfterFunc callback with our deferred
+	// SetDeadline(time.Time{}) clear — without it, the defer could race and undo
+	// the deadline we just set to interrupt the read.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
 		_ = conn.SetDeadline(time.Now())
@@ -327,12 +320,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	}
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	// ARCHITECTURE UPDATE (Phase 1/2): Context Cancellation Strategy
-	// Like in Execute(), we shorten the read deadline on context cancellation
-	// instead of closing the connection. This preserves the socket for any
-	// deferred cleanup commands that use a separate context.
-	// We synchronize via callbackDone so the context.AfterFunc finishes
-	// before the deferred SetReadDeadline(time.Time{}) clears it.
+	// On context cancellation, shorten the read deadline instead of closing the
+	// connection — same strategy as Execute(). callbackDone prevents the deferred
+	// SetReadDeadline(time.Time{}) from racing with the cancellation callback.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
 		_ = conn.SetReadDeadline(time.Now())

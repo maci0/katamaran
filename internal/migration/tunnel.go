@@ -12,7 +12,7 @@ import (
 type TunnelMode string
 
 const (
-	// TunnelModeIPIP uses IPIP (IPv4) or IP6TNL (IPv6). Minimal overhead.
+	// TunnelModeIPIP uses IPIP (IPv4) or IP6IP6 (IPv6). Minimal overhead.
 	TunnelModeIPIP TunnelMode = "ipip"
 	// TunnelModeGRE uses GRE (IPv4) or IP6GRE (IPv6). Supported by cloud middleboxes.
 	TunnelModeGRE TunnelMode = "gre"
@@ -32,7 +32,6 @@ const (
 // On partial failure (e.g., route add fails after tunnel is created), the
 // tunnel is cleaned up before returning the error to prevent resource leaks.
 func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode) error {
-
 	if !dest.IsValid() || !vm.IsValid() {
 		return fmt.Errorf("invalid destination or VM address")
 	}
@@ -86,7 +85,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
 		if cleanupErr != nil {
-			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
 		}
 		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), cleanupErr)
 	}
@@ -104,7 +103,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
 		ccancel()
 		if cleanupErr != nil {
-			log.Printf("failed to clean up tunnel after error: %v", cleanupErr)
+			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
 		}
 		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), cleanupErr)
 	}
@@ -125,11 +124,10 @@ func IPFamily(addr netip.Addr) string {
 //
 // Best-effort: always returns nil. If the tunnel doesn't exist (expected after
 // a clean teardown or if setup was never reached), the error is swallowed.
-// Other errors (EPERM, context cancel) are logged but non-recoverable, and
-// the sole caller already treats the return value as a warning.
+// Other errors (EPERM, context cancel) are logged but non-recoverable.
 func TeardownTunnel(ctx context.Context) error {
 	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err != nil {
-		log.Printf("Tunnel teardown: %v (non-fatal)", err)
+		log.Printf("Warning: tunnel teardown: %v", err)
 	}
 	return nil
 }

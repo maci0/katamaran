@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,6 +60,7 @@ func main() {
 	mux.HandleFunc("/api/ping", app.handlePingStart)
 	mux.HandleFunc("/api/ping/stop", app.handlePingStop)
 	mux.HandleFunc("/api/httpgen", app.handleHTTPStart)
+	mux.HandleFunc("/api/httpgen/stop", app.handleHTTPStop)
 
 	srv := &http.Server{
 		Addr:         ":8080",
@@ -199,8 +202,8 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--shared-storage")
 	}
 	if dt := r.FormValue("downtime"); dt != "" {
-		var d int
-		if _, err := fmt.Sscanf(dt, "%d", &d); err != nil || d <= 0 {
+		d, err := strconv.Atoi(dt)
+		if err != nil || d <= 0 {
 			a.migrationMutex.Lock()
 			a.isMigrating = false
 			a.migrationCancel = nil
@@ -209,7 +212,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid downtime value (must be a positive integer)", http.StatusBadRequest)
 			return
 		}
-		args = append(args, "--downtime", dt)
+		args = append(args, "--downtime", strconv.Itoa(d))
 	}
 
 	go a.runCommand(ctx, args)
@@ -277,7 +280,20 @@ func (a *App) appendLog(msg string) {
 	}
 }
 
+func (a *App) handleHTTPStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	a.stopLoadgen()
+	w.WriteHeader(http.StatusOK)
+}
+
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	a.migrationMutex.Lock()
 	logs := make([]string, len(a.migrationOutput))
 	copy(logs, a.migrationOutput)
@@ -456,9 +472,8 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				a.addPing(0, "HTTP Error")
 			} else {
-				if err := resp.Body.Close(); err != nil {
-					log.Printf("Failed to close response body: %v", err)
-				}
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
 				a.addPing(lat, "")
 			}
 

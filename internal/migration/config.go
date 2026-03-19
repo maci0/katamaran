@@ -83,12 +83,8 @@ const (
 // CleanupCtx returns a context with CleanupTimeout that is independent of the
 // parent's cancellation state but inherits all its values.
 //
-// ARCHITECTURE UPDATE (Phase 1/2): Trade-off in cleanup routines
-// We use context.WithoutCancel(baseCtx) instead of context.Background().
-// This prevents deferred cleanups (qdisc removal, NBD stop, block-job-cancel,
-// tunnel teardown) from being aborted if the main context is cancelled
-// (e.g. by SIGINT or early error), while preserving logging traces, metrics,
-// and other values attached to the parent context.
+// Uses context.WithoutCancel so cleanup operations are not aborted if the main
+// context is cancelled (e.g. by SIGINT), while preserving parent context values.
 func CleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(baseCtx), CleanupTimeout)
 }

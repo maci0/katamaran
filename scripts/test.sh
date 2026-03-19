@@ -182,10 +182,10 @@ if [[ -x "${BINARY}" ]]; then
     fi
 
     DESTIP_ERR=$("${BINARY}" -mode source -dest-ip "not-an-ip" -vm-ip 10.0.0.1 2>&1 || true)
-    if echo "${DESTIP_ERR}" | grep -q "invalid -dest-ip"; then
-        pass "invalid -dest-ip error mentions the flag name"
+    if echo "${DESTIP_ERR}" | grep -q "invalid --dest-ip"; then
+        pass "invalid --dest-ip error mentions the flag name"
     else
-        fail "invalid -dest-ip error should mention the flag name"
+        fail "invalid --dest-ip error should mention the flag name"
     fi
 
     # Invalid -vm-ip → should exit non-zero with specific error
@@ -196,10 +196,10 @@ if [[ -x "${BINARY}" ]]; then
     fi
 
     VMIP_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip "bogus" 2>&1 || true)
-    if echo "${VMIP_ERR}" | grep -q "invalid -vm-ip"; then
-        pass "invalid -vm-ip error mentions the flag name"
+    if echo "${VMIP_ERR}" | grep -q "invalid --vm-ip"; then
+        pass "invalid --vm-ip error mentions the flag name"
     else
-        fail "invalid -vm-ip error should mention the flag name"
+        fail "invalid --vm-ip error should mention the flag name"
     fi
 
     # Valid IPs should pass validation (fail later at QMP connect, not at validation)
@@ -271,10 +271,10 @@ if [[ -x "${BINARY}" ]]; then
 
     # Invalid -tunnel-mode → error should mention the flag name
     TUNBAD_ERR=$("${BINARY}" -mode source -dest-ip 10.0.0.1 -vm-ip 10.244.1.15 -tunnel-mode bogus 2>&1 || true)
-    if echo "${TUNBAD_ERR}" | grep -q "invalid -tunnel-mode"; then
-        pass "invalid -tunnel-mode error mentions the flag name"
+    if echo "${TUNBAD_ERR}" | grep -q "invalid --tunnel-mode"; then
+        pass "invalid --tunnel-mode error mentions the flag name"
     else
-        fail "invalid -tunnel-mode error should mention the flag name"
+        fail "invalid --tunnel-mode error should mention the flag name"
     fi
 
     # Invalid -downtime (negative) → should exit non-zero

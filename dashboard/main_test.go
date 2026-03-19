@@ -33,11 +33,64 @@ func TestValidTarget(t *testing.T) {
 }
 
 func TestValidFormValue(t *testing.T) {
-	if !validFormValue("tap0") {
-		t.Error("validFormValue(tap0) failed")
+	allowed := []string{"tap0", "10.0.0.1", "/run/vc/vm/sock", "katamaran:dev"}
+	for _, v := range allowed {
+		if !validFormValue(v) {
+			t.Errorf("validFormValue(%q) = false, want true", v)
+		}
 	}
-	if validFormValue("tap0;ls") {
-		t.Error("validFormValue(tap0;ls) should be false")
+	rejected := []string{
+		"tap0;ls",       // semicolon
+		"val|cat",       // pipe
+		"val&bg",        // ampersand
+		"val$(cmd)",     // dollar
+		"val`cmd`",      // backtick
+		"val with space", // space
+		"val\nnewline",  // newline
+	}
+	for _, v := range rejected {
+		if validFormValue(v) {
+			t.Errorf("validFormValue(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestHandleMigrate_DowntimeInjection(t *testing.T) {
+	// Regression test: downtime must be a strict integer to prevent
+	// command injection via migrate.sh → envsubst → /bin/sh -c.
+	payloads := []string{
+		"25;rm -rf /",        // shell command separator
+		"25|cat /etc/passwd", // pipe
+		"25$(whoami)",        // command substitution
+		"25`id`",             // backtick substitution
+		"abc",                // non-numeric
+		"25.5",               // float
+		"0",                  // zero (must be positive)
+		"-1",                 // negative
+	}
+
+	for _, payload := range payloads {
+		t.Run("downtime="+payload, func(t *testing.T) {
+			app := &App{}
+			form := url.Values{}
+			form.Add("source_node", "node1")
+			form.Add("dest_node", "node2")
+			form.Add("downtime", payload)
+			req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			app.handleMigrate(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("downtime=%q: got status %d, want 400", payload, w.Code)
+			}
+			// Ensure no migration was started.
+			app.migrationMutex.Lock()
+			started := app.isMigrating
+			app.migrationMutex.Unlock()
+			if started {
+				t.Errorf("downtime=%q: migration should not have started", payload)
+			}
+		})
 	}
 }
 

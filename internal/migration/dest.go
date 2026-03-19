@@ -23,13 +23,14 @@ import (
 // Sequentially it:
 //  1. Installs a tc sch_plug qdisc on the tap interface in pass-through mode
 //     (sch_plug defaults to buffering, so we immediately release_indefinite;
-//     non-fatal if sch_plug is unavailable or tapIface is empty)
-//  2. Starts an NBD server for storage mirroring (unless shared-storage mode)
-//  3. Plugs the network queue to catch in-flight packets (skipped if step 1 failed)
-//  4. Waits for the RESUME event (unconditional)
-//  5. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
-//  6. Stops the NBD server (unless shared-storage mode)
-//  7. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
+//     skipped if tapIface is empty or the interface does not exist)
+//  2. Opens an incoming migration listener via QMP migrate-incoming
+//  3. Starts an NBD server for storage mirroring (unless shared-storage mode)
+//  4. Plugs the network queue to catch in-flight packets (skipped if step 1 failed)
+//  5. Waits for the RESUME event (unconditional)
+//  6. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
+//  7. Stops the NBD server (unless shared-storage mode)
+//  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
 func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool) error {
 	log.Println("Setting up destination node...")
 
@@ -54,15 +55,15 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 
 			if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "add", "dev", tapIface, "root", "plug", "limit", PlugQdiscLimit); err != nil {
 				return fmt.Errorf("failed to add plug qdisc on %s (is sch_plug available?): %w", tapIface, err)
-			} else if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
+			}
+			if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 				cctx, ccancel := CleanupCtx(ctx)
 				cleanupErr := RunCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root")
 				ccancel()
 				return errors.Join(fmt.Errorf("failed to release plug qdisc on %s, removing it: %w", tapIface, err), cleanupErr)
-			} else {
-				qdiscInstalled = true
-				log.Println("Network queue installed (pass-through, not plugged yet).")
 			}
+			qdiscInstalled = true
+			log.Println("Network queue installed (pass-through, not plugged yet).")
 		}
 	} else {
 		log.Println("No TAP interface specified, skipping network queue setup.")
@@ -70,9 +71,6 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 
 	// Deferred cleanup: remove qdisc on any early return to prevent leaking it.
 	// Disarmed on the success path by setting qdiscInstalled = false.
-	// ARCHITECTURE UPDATE (Phase 1/2): Context Safety
-	// Uses CleanupCtx(ctx) so cleanup succeeds even if the main ctx is cancelled,
-	// while avoiding the previous loss of parent context values.
 	defer func() {
 		if qdiscInstalled {
 			cctx, ccancel := CleanupCtx(ctx)
@@ -89,14 +87,14 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
-			log.Printf("warning: closing QMP client: %v", err)
+			log.Printf("Warning: closing QMP client: %v", err)
 		}
 	}()
 
-	// Step 1b: Open incoming migration listener on the running QEMU.
-	// This replaces the previous approach of starting QEMU with -incoming,
-	// which is incompatible with Kata's sandbox lifecycle (Kata kills the
-	// QEMU because the kata-agent never connects via vsock in incoming mode).
+	// Step 2: Open incoming migration listener on the running QEMU.
+	// Starting QEMU with -incoming is incompatible with Kata's sandbox lifecycle
+	// (Kata kills the QEMU because kata-agent never connects via vsock in
+	// incoming mode), so we use a QMP command on the already-running instance.
 	incomingURI := fmt.Sprintf("tcp:0.0.0.0:%s", RAMMigrationPort)
 	log.Printf("Opening incoming migration listener on %s...", incomingURI)
 	if _, err = client.Execute(ctx, "migrate-incoming", qmp.MigrateArgs{URI: incomingURI}); err != nil {
@@ -105,7 +103,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 
 	nbdStarted := false
 	if !sharedStorage {
-		// Step 2: Start NBD server to receive storage mirroring from the source.
+		// Step 3: Start NBD server to receive storage mirroring from the source.
 		log.Println("Starting NBD server for storage migration...")
 		// Idempotency: attempt to stop any existing NBD server first, ignore errors.
 		_, _ = client.Execute(ctx, "nbd-server-stop", nil)
@@ -125,8 +123,6 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 
 		// Deferred cleanup: stop NBD server on any early return to prevent
 		// leaking it. Disarmed on the success path by setting nbdStarted = false.
-		// Uses CleanupCtx(ctx) to preserve context values (tracing, etc.) while
-		// detaching from the cancellation tree.
 		defer func() {
 			if nbdStarted {
 				cctx, ccancel := CleanupCtx(ctx)
@@ -148,7 +144,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		log.Println("Shared storage mode: skipping NBD server setup.")
 	}
 
-	// Step 3: Plug the network queue to begin catching in-flight packets.
+	// Step 4: Plug the network queue to begin catching in-flight packets.
 	//
 	// In a production orchestrator, this would be triggered via an RPC callback
 	// when the source emits its STOP event. In this standalone tool, we plug
@@ -156,12 +152,11 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 	if qdiscInstalled {
 		if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "block"); err != nil {
 			return fmt.Errorf("failed to plug network queue on %s: %w", tapIface, err)
-		} else {
-			log.Println("Network queue plugged. Buffering in-flight packets...")
 		}
+		log.Println("Network queue plugged. Buffering in-flight packets...")
 	}
 
-	// Step 4: Wait for the destination VM to resume.
+	// Step 5: Wait for the destination VM to resume.
 	log.Println("Waiting for QEMU RESUME event...")
 	if err = client.WaitForEvent(ctx, "RESUME", EventWaitTimeout); err != nil {
 		return fmt.Errorf("waiting for RESUME event: %w", err)
@@ -172,26 +167,23 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		log.Println("VM resumed.")
 	}
 
-	// Step 5: Unplug the queue — flush all buffered packets into the now-running VM.
+	// Step 6: Unplug the queue — flush all buffered packets into the now-running VM.
 	// Only disarm the deferred cleanup if the unplug succeeds. If it fails,
 	// the qdisc is still in "plugged" state and the deferred cleanup must
 	// remove it so the VM's network isn't left permanently blocked.
 	if qdiscInstalled {
 		if err := RunCmdInNetns(ctx, tapNetns, "tc", "qdisc", "change", "dev", tapIface, "root", "plug", "release_indefinite"); err != nil {
 			return fmt.Errorf("failed to unplug network queue on %s: %w", tapIface, err)
-		} else {
-			log.Println("Queue unplugged. Buffered packets delivered. Zero drops achieved.")
-			// Disarm qdisc deferred cleanup — we've successfully flushed and the
-			// qdisc will be naturally removed when the tap interface is torn down.
-			qdiscInstalled = false
 		}
+		log.Println("Queue unplugged. Buffered packets delivered. Zero drops achieved.")
+		// Disarm qdisc deferred cleanup — we've successfully flushed and the
+		// qdisc will be naturally removed when the tap interface is torn down.
+		qdiscInstalled = false
 	}
 
 	if !sharedStorage {
-		// Step 6: Stop the NBD server (storage migration is complete).
+		// Step 7: Stop the NBD server (storage migration is complete).
 		// Disarm the deferred cleanup since we're handling it explicitly.
-		// Uses CleanupCtx() so the stop succeeds even if the main ctx was
-		// cancelled (e.g., SIGINT received after RESUME).
 		nbdStarted = false
 		cctx, ccancel := CleanupCtx(ctx)
 		if _, err := client.Execute(cctx, "nbd-server-stop", nil); err != nil {
@@ -202,7 +194,7 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		ccancel()
 	}
 
-	// Step 7: Broadcast Gratuitous ARP via QEMU's announce-self command.
+	// Step 8: Broadcast Gratuitous ARP via QEMU's announce-self command.
 	// Unlike host-side arping (which sends the host tap MAC), announce-self
 	// emits GARP/RARP from the guest's actual MAC address on all NICs,
 	// ensuring switches learn the correct port-to-MAC binding.
@@ -218,9 +210,8 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		Step:    GARPStepMS,
 	}); err != nil {
 		return fmt.Errorf("GARP announce-self failed: %w", err)
-	} else {
-		log.Printf("GARP announce-self scheduled (%d rounds).", GARPRounds)
 	}
+	log.Printf("GARP announce-self scheduled (%d rounds).", GARPRounds)
 
 	log.Println("Destination setup complete.")
 	return nil
