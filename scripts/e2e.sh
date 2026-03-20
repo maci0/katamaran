@@ -400,21 +400,12 @@ elif [[ "${STORAGE}" == "nfs" ]]; then
     success "Source data disk hotplugged (NFS): ${NFS_DISK_IMG}"
 fi
 
-log "Extracting source QEMU configuration..."
-# Parse the running source QEMU's command line to get device IDs that
-# the destination must match exactly for live migration to succeed.
+log "Capturing source QEMU command line for replay..."
 SRC_QEMU_PID=$(node_exec "${NODE1}" "${SUDO} cat ${SRC_SANDBOX_DIR}/pid")
 SRC_CMDLINE=$(node_exec "${NODE1}" "${SUDO} cat /proc/${SRC_QEMU_PID}/cmdline | tr '\0' '\n'")
-SRC_UUID=$(echo "${SRC_CMDLINE}" | grep -A1 '^-uuid$' | tail -1)
-SRC_VSOCK_ID=$(echo "${SRC_CMDLINE}" | grep 'vhost-vsock-pci' | grep -oP 'id=\Kvsock-[0-9]+')
-SRC_CHARDEV_FS=$(echo "${SRC_CMDLINE}" | grep 'vhost-user-fs-pci' | grep -oP 'chardev=\K[^,]+')
-SRC_MAC=$(echo "${SRC_CMDLINE}" | grep 'virtio-net-pci' | grep -oP 'mac=\K[^,]+')
-SRC_APPEND=$(echo "${SRC_CMDLINE}" | grep '^tsc=reliable')
-SRC_MACHINE=$(echo "${SRC_CMDLINE}" | grep -A1 '^-machine$' | tail -1)
-SRC_SMP=$(echo "${SRC_CMDLINE}" | grep -A1 '^-smp$' | tail -1)
-SRC_MEM=$(echo "${SRC_CMDLINE}" | grep -A1 '^-m$' | tail -1)
-success "Source UUID: ${SRC_UUID}, MAC: ${SRC_MAC}"
-success "Source machine: ${SRC_MACHINE}, SMP: ${SRC_SMP}, MEM: ${SRC_MEM}"
+# Extract the nvdimm image path from source (needed for writable copy on dest).
+SRC_NVDIMM_PATH=$(echo "${SRC_CMDLINE}" | grep -oP 'mem-path=\K[^,]+' | grep -v '/dev/shm' | head -1)
+success "Source QEMU PID: ${SRC_QEMU_PID} — cmdline captured ($(echo "${SRC_CMDLINE}" | wc -l) args)"
 
 log "Removing tc mirred redirect on source pod's eth0..."
 # Kata installs a tc filter that redirects ALL ingress on eth0 to tap0_kata.
@@ -463,25 +454,24 @@ fi
 success "Helper container PID: ${MIG_HELPER_PID}"
 
 log "Setting up destination QEMU (manual, with -incoming defer)..."
-# Start a standalone QEMU on Node 2 that matches the source VM's device
-# topology. This bypasses Kata's sandbox lifecycle, which kills VMs that
-# don't boot within its vsock timeout (incompatible with -incoming mode).
+# Replay the source QEMU's command line on Node 2 with path substitutions
+# to guarantee identical device topology. This bypasses Kata's sandbox
+# lifecycle, which kills VMs that don't connect via vsock within the
+# dial_timeout (incompatible with -incoming mode).
 #
 # Key fixes for live migration:
-#   1. nvdimm uses a writable copy (source is readonly=on, but QEMU sends
-#      nvdimm pages during migration; writing to readonly mmap = SIGSEGV)
+#   1. nvdimm image is a writable copy (source has readonly=on, but QEMU
+#      sends nvdimm pages during migration; writing to readonly mmap = SIGSEGV)
 #   2. virtiofsd started with --migration-on-error=guest-error so that
 #      inode state mismatches between source/dest don't abort migration
-#   3. Device IDs, UUID, and MAC extracted from the source QEMU to ensure
-#      the destination has an identical device topology
 DST_SANDBOX="manual-dst-$$"
 DST_VM_DIR="/run/vc/vm/${DST_SANDBOX}"
 DST_SOCK="${DST_VM_DIR}/extra-monitor.sock"
 node_exec "${NODE2}" "${SUDO} mkdir -p ${DST_VM_DIR}"
 node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared"
 
-# Create a writable copy of the nvdimm image.
-node_exec "${NODE2}" "${SUDO} cp /opt/kata/share/kata-containers/kata-ubuntu-noble.image /tmp/kata-dst-nvdimm-$$.img"
+# Create a writable copy of the nvdimm image (path extracted from source cmdline).
+node_exec "${NODE2}" "${SUDO} cp ${SRC_NVDIMM_PATH} /tmp/kata-dst-nvdimm-$$.img"
 
 # Start virtiofsd for the vhost-user-fs device.
 # Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
@@ -496,42 +486,39 @@ fi
 node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip tuntap add dev tap0_kata mode tap" 2>/dev/null || true
 node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip link set tap0_kata up"
 
-# Start destination QEMU with matching device topology.
-node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net \
-    /opt/kata/bin/qemu-system-x86_64 \
-    -name sandbox-${DST_SANDBOX},debug-threads=on \
-    -uuid ${SRC_UUID} \
-    -machine ${SRC_MACHINE} \
-    -cpu host,pmu=off \
-    -qmp unix:path=${DST_VM_DIR}/qmp-primary.sock,server=on,wait=off \
-    -qmp unix:path=${DST_SOCK},server=on,wait=off \
-    -m ${SRC_MEM} \
-    -device pci-bridge,bus=pcie.0,id=pci-bridge-0,chassis_nr=1,shpc=off,addr=2,io-reserve=4k,mem-reserve=1m,pref64-reserve=1m \
-    -device virtio-serial-pci,disable-modern=true,id=serial0 \
-    -device virtconsole,chardev=charconsole0,id=console0 \
-    -chardev socket,id=charconsole0,path=${DST_VM_DIR}/console.sock,server=on,wait=off \
-    -device nvdimm,id=nv0,memdev=mem0,unarmed=on \
-    -object memory-backend-file,id=mem0,mem-path=/tmp/kata-dst-nvdimm-$$.img,size=268435456 \
-    -device virtio-scsi-pci,id=scsi0,disable-modern=true \
-    -object rng-random,id=rng0,filename=/dev/urandom \
-    -device virtio-rng-pci,rng=rng0 \
-    -device vhost-vsock-pci,disable-modern=true,id=${SRC_VSOCK_ID},guest-cid=88888888 \
-    -chardev socket,id=${SRC_CHARDEV_FS},path=${DST_VM_DIR}/vhost-fs.sock \
-    -device vhost-user-fs-pci,chardev=${SRC_CHARDEV_FS},tag=kataShared,queue-size=1024 \
-    -netdev tap,id=network-0,vhost=on,ifname=tap0_kata,script=no,downscript=no \
-    -device driver=virtio-net-pci,netdev=network-0,mac=${SRC_MAC},disable-modern=true,mq=on,vectors=4 \
-    -rtc base=utc,driftfix=slew,clock=host \
-    -global kvm-pit.lost_tick_policy=discard \
-    -vga none -no-user-config -nodefaults -nographic --no-reboot \
-    -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on \
-    -numa node,memdev=dimm1 \
-    -kernel /opt/kata/share/kata-containers/vmlinux-6.12.47-173 \
-    -append '${SRC_APPEND}' \
-    -pidfile ${DST_VM_DIR}/pid \
-    -D ${DST_VM_DIR}/qemu.log -d guest_errors \
-    -smp ${SRC_SMP} \
-    -incoming defer \
-    -daemonize"
+# Start destination QEMU by replaying the source's command line with path
+# substitutions. This ensures the device topology always matches exactly,
+# regardless of which devices Kata added at runtime.
+DST_NVDIMM_IMG="/tmp/kata-dst-nvdimm-$$.img"
+
+# Substitute paths: source sandbox → destination sandbox, nvdimm → writable
+# copy, and strip readonly from the nvdimm backend (migration writes to it).
+DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
+    | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
+    | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
+    | sed "s|,readonly=on||g; s|,readonly=true||g" \
+)
+[[ -n "${SRC_NVDIMM_PATH}" ]] && \
+    DST_CMDLINE=$(echo "${DST_CMDLINE}" | sed "s|${SRC_NVDIMM_PATH}|${DST_NVDIMM_IMG}|g")
+
+# Reconstruct the command: skip the QEMU binary (first arg), strip any
+# existing -incoming/-daemonize from source, then quote each argument for
+# remote execution via node_exec.
+DST_QEMU_CMD="nsenter --net=/proc/${MIG_HELPER_PID}/ns/net /opt/kata/bin/qemu-system-x86_64"
+first=true
+skip_next=false
+while IFS= read -r arg; do
+    if $first; then first=false; continue; fi
+    if $skip_next; then skip_next=false; continue; fi
+    case "${arg}" in
+        -daemonize) continue ;;
+        -incoming)  skip_next=true; continue ;;
+    esac
+    DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
+done <<< "${DST_CMDLINE}"
+DST_QEMU_CMD+=" -incoming defer -daemonize"
+
+node_exec "${NODE2}" "${SUDO} ${DST_QEMU_CMD}"
 
 # Wait for QMP socket to appear
 for i in $(seq 1 15); do
