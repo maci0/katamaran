@@ -14,3 +14,11 @@ out/
 *.tar
 kata_test_rsa*
 README.md
+demo/
+sweep-results/
+.claude/
+internal/qmptest/
+docs/superpowers/
+Makefile
+coverage.out
+*.log

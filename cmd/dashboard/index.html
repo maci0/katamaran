@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Katamaran Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4"></script>
     <script>
     tailwind.config = {
         theme: {
@@ -25,12 +25,29 @@
         .log-line{animation:fadein .15s ease-out}
         input:focus,select:focus{outline:none;box-shadow:0 0 0 2px rgba(43,142,255,.4)}
         button:focus-visible{outline:2px solid #2b8eff;outline-offset:2px}
+        @media(prefers-reduced-motion:reduce){
+            .wave-line,.wave-line-delay{animation:none}
+            .log-line{animation:none}
+            .animate-pulse{animation:none}
+            *{transition-duration:0.01ms !important}
+        }
+        @keyframes toast-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes toast-out{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-8px)}}
+        .toast-enter{animation:toast-in .2s ease-out}
+        .toast-exit{animation:toast-out .2s ease-in forwards}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+        [title]{cursor:help;border-bottom:1px dotted currentColor}
+        label[title],h2[title]{border-bottom:none;cursor:default}
     </style>
 </head>
 <body class="bg-hull-950 text-slate-200 font-sans min-h-screen">
 
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-hull-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-lg">Skip to main content</a>
+
+    <div id="toast-container" aria-live="polite" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
     <header class="border-b border-slate-700/50 bg-hull-950/80 backdrop-blur sticky top-0 z-10">
-        <div class="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-4">
                 <svg viewBox="0 0 40 40" class="w-10 h-10" role="img" aria-label="Katamaran logo">
                     <path d="M5 24 Q12 18 20 22 Q28 26 35 20" stroke="#2b8eff" stroke-width="2.5" fill="none" class="wave-line"/>
@@ -43,43 +60,44 @@
                     <p class="text-xs text-slate-400">Live Migration Dashboard</p>
                 </div>
             </div>
-            <span id="status-badge" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Idle</span>
+            <span id="status-badge" role="status" aria-live="polite" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Idle</span>
         </div>
     </header>
 
-    <main class="max-w-screen-2xl mx-auto px-6 py-6">
+    <main id="main-content" class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6">
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
             <div class="lg:col-span-3 space-y-5">
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Migration Config</h2>
-                    <form id="migration-form" class="space-y-3">
+                    <form id="migration-form" class="space-y-3" novalidate>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
-                                <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node</label>
-                                <input type="text" name="source_node" id="source_node" value="katamaran-e2e" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="source_node" id="source_node" value="katamaran-e2e" required class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                             </div>
                             <div>
-                                <label for="dest_node" class="block text-xs text-slate-400 mb-1">Dest Node</label>
-                                <input type="text" name="dest_node" id="dest_node" value="katamaran-e2e-m02" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <label for="dest_node" class="block text-xs text-slate-400 mb-1">Dest Node <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="dest_node" id="dest_node" value="katamaran-e2e-m02" required class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                             </div>
                         </div>
                         <div>
-                            <label for="tap" class="block text-xs text-slate-400 mb-1">Tap Interface</label>
+                            <label for="tap" class="block text-xs text-slate-400 mb-1" title="Network tap device inside the Kata VM sandbox">Tap Interface</label>
                             <input type="text" name="tap" id="tap" value="tap0_kata" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                         </div>
                         <div>
-                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1">Source QMP Socket</label>
-                            <input type="text" name="qmp_source" id="qmp_source" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-600">
+                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1" title="QEMU Machine Protocol socket path on the source node">Source QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_source" id="qmp_source" required placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-600" aria-describedby="qmp-help">
                         </div>
                         <div>
-                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1">Dest QMP Socket</label>
-                            <input type="text" name="qmp_dest" id="qmp_dest" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-600">
+                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1" title="QEMU Machine Protocol socket path on the destination node">Dest QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_dest" id="qmp_dest" required placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-600" aria-describedby="qmp-help">
                         </div>
+                        <p id="qmp-help" class="text-xs text-slate-600 -mt-1">Path to the QEMU control socket inside the pod</p>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
-                                <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP</label>
-                                <input type="text" name="dest_ip" id="dest_ip" placeholder="192.168.x.x" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600">
+                                <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="dest_ip" id="dest_ip" required placeholder="192.168.x.x" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600">
                             </div>
                             <div>
                                 <label for="vm_ip" class="block text-xs text-slate-400 mb-1">VM IP</label>
@@ -88,39 +106,45 @@
                         </div>
                         <div>
                             <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
-                            <input type="number" name="downtime" id="downtime" value="25" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            <input type="number" name="downtime" id="downtime" value="25" min="1" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                         </div>
                         <div>
                             <label for="image" class="block text-xs text-slate-400 mb-1">Image</label>
                             <input type="text" name="image" id="image" value="localhost/katamaran:dev" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono">
                         </div>
-                        <label class="flex items-center gap-2 cursor-pointer py-1">
+                        <label class="flex items-center gap-2 cursor-pointer py-1" title="Use shared storage instead of Network Block Device replication">
                             <input type="checkbox" name="shared_storage" value="true" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
-                            <span class="text-xs text-slate-300">Shared Storage (skip NBD)</span>
+                            <span class="text-xs text-slate-300">Shared Storage <span class="text-slate-500">(skip disk copy)</span></span>
                         </label>
-                        <div class="flex gap-2 mt-2"><button type="submit" id="btn-migrate" class="flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm">&#9654; Start</button><button type="button" id="btn-stop-mig" class="bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm">&#9632; Stop</button></div>
+                        <div class="flex gap-2 mt-2">
+                            <button type="submit" id="btn-migrate" class="flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">&#9654; Start Migration</button>
+                            <button type="button" id="btn-stop-mig" disabled aria-label="Stop migration" class="bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop</button>
+                        </div>
                     </form>
                 </div>
 
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Load Generator</h2>
                     <div class="space-y-2">
-                        <button id="btn-ping" class="w-full bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm">&#9673; ICMP Ping</button>
-                        <button id="btn-http" class="w-full bg-violet-600/80 hover:bg-violet-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm">&#8645; HTTP Load</button>
-                        <button id="btn-stop-load" class="w-full bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm">&#9632; Stop</button>
+                        <button id="btn-ping" class="w-full bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">&#9673; ICMP Ping</button>
+                        <button id="btn-http" class="w-full bg-violet-600/80 hover:bg-violet-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">&#8645; HTTP Load</button>
+                        <button id="btn-stop-load" disabled aria-label="Stop load generator" class="w-full bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop Load</button>
                     </div>
                 </div>
             </div>
 
             <div class="lg:col-span-9 space-y-5">
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4" role="region" aria-label="Migration statistics">
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p class="text-xs text-slate-400 uppercase tracking-wider">Packets</p>
                         <p id="stat-sent" class="text-2xl font-bold text-white mt-1">0</p>
                     </div>
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p class="text-xs text-slate-400 uppercase tracking-wider">Dropped</p>
-                        <p id="stat-lost" class="text-2xl font-bold text-emerald-400 mt-1">0</p>
+                        <p id="stat-lost" class="text-2xl font-bold text-emerald-400 mt-1">
+                            <span class="sr-only" id="stat-lost-sr">0 dropped packets</span>
+                            <span aria-hidden="true">0</span>
+                        </p>
                     </div>
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p class="text-xs text-slate-400 uppercase tracking-wider">Avg Latency</p>
@@ -135,17 +159,17 @@
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <div class="flex items-center justify-between mb-3">
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &mdash; Zero-Drop Proof</h2>
-                        <span id="loadgen-indicator" class="text-xs text-slate-500"></span>
+                        <span id="loadgen-indicator" class="text-xs text-slate-500" aria-live="polite"></span>
                     </div>
-                    <div style="height:280px"><canvas id="latencyChart"></canvas></div>
+                    <div style="height:280px" role="img" aria-label="Latency chart showing ping response times over time"><canvas id="latencyChart"></canvas></div>
                 </div>
 
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
                     <div class="px-5 py-3 border-b border-slate-700/50 flex items-center justify-between">
-                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Migration Log</h2>
-                        <button id="btn-clear-logs" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">Clear</button>
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider" id="log-heading">Migration Log</h2>
+                        <button id="btn-clear-logs" class="text-xs text-slate-500 hover:text-slate-300 transition-colors px-2 py-1 rounded" aria-label="Clear migration logs">Clear</button>
                     </div>
-                    <div id="logs" class="font-mono text-xs leading-relaxed p-4 h-72 overflow-y-auto bg-slate-900/50 text-slate-400">
+                    <div id="logs" role="log" aria-labelledby="log-heading" aria-live="polite" class="font-mono text-xs leading-relaxed p-4 h-72 overflow-y-auto bg-slate-900/50 text-slate-400" tabindex="0">
                         <div class="text-slate-600">Awaiting migration start...</div>
                     </div>
                 </div>
@@ -192,7 +216,7 @@
                     bodyColor: '#e2e8f0',
                     padding: 10,
                     displayColors: false,
-                    callbacks: { label: function(c) { return c.parsed.y >= 999 ? 'TIMEOUT' : c.parsed.y.toFixed(2) + ' ms'; } }
+                    callbacks: { label: function(c) { if (c.dataset.label === 'Error') return 'Timeout / Unreachable'; return c.parsed.y >= 999 ? 'TIMEOUT' : c.parsed.y.toFixed(2) + ' ms'; } }
                 }
             },
             scales: {
@@ -202,41 +226,93 @@
         }
     });
 
+    function showToast(message, type) {
+        var container = document.getElementById('toast-container');
+        var toast = document.createElement('div');
+        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : 'bg-slate-700/90';
+        toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur ' + bgColor + ' toast-enter';
+        toast.textContent = message;
+        toast.setAttribute('role', 'alert');
+        container.appendChild(toast);
+        setTimeout(function() {
+            toast.className = toast.className.replace('toast-enter', 'toast-exit');
+            setTimeout(function() { toast.remove(); }, 200);
+        }, 4000);
+    }
+
     function apiCall(url, opts) {
         opts = opts || {};
         if (!opts.method) opts.method = 'POST';
         return fetch(url, opts).then(function(r) {
-            if (!r.ok) r.text().then(function(t) { console.error(url, r.status, t); });
+            if (!r.ok) {
+                return r.text().then(function(t) {
+                    showToast(t || 'Request failed (' + r.status + ')', 'error');
+                    throw new Error(t);
+                });
+            }
             return r;
-        }).catch(function(err) { console.error(url, err); });
+        }).catch(function(err) {
+            if (!err.message || err.message === 'Failed to fetch') {
+                showToast('Connection failed \u2014 is the server running?', 'error');
+            }
+        });
     }
 
     document.getElementById('migration-form').addEventListener('submit', function(e) {
         e.preventDefault();
+        var form = e.target;
+        var requiredFields = form.querySelectorAll('[required]');
+        var firstInvalid = null;
+        requiredFields.forEach(function(field) {
+            if (!field.value.trim()) {
+                field.classList.add('border-red-500/70');
+                if (!firstInvalid) firstInvalid = field;
+            } else {
+                field.classList.remove('border-red-500/70');
+            }
+        });
+        if (firstInvalid) {
+            firstInvalid.focus();
+            showToast('Please fill in all required fields', 'error');
+            return;
+        }
         var btn = document.getElementById('btn-migrate');
         btn.disabled = true; btn.textContent = 'Starting\u2026';
-        apiCall('/api/migrate', { method: 'POST', body: new URLSearchParams(new FormData(e.target)) })
-            .finally(function() { btn.disabled = false; btn.textContent = '\u25B6 Start'; });
+        apiCall('/api/migrate', { method: 'POST', body: new URLSearchParams(new FormData(form)) })
+            .then(function(r) { if (r) showToast('Migration started', 'success'); })
+            .finally(function() { btn.textContent = '\u25B6 Start Migration'; });
     });
 
     document.getElementById('btn-ping').addEventListener('click', function() {
-        apiCall('/api/ping?target=' + encodeURIComponent(document.getElementById('vm_ip').value));
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        apiCall('/api/ping?target=' + encodeURIComponent(document.getElementById('vm_ip').value))
+            .then(function(r) { if (r) showToast('Ping load generator started', 'success'); })
+            .finally(function() { btn.textContent = '\u25C9 ICMP Ping'; });
     });
     document.getElementById('btn-http').addEventListener('click', function() {
-        apiCall('/api/httpgen?target=' + encodeURIComponent(document.getElementById('vm_ip').value));
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        apiCall('/api/httpgen?target=' + encodeURIComponent(document.getElementById('vm_ip').value))
+            .then(function(r) { if (r) showToast('HTTP load generator started', 'success'); })
+            .finally(function() { btn.textContent = '\u21C5 HTTP Load'; });
     });
     document.getElementById('btn-stop-load').addEventListener('click', function() {
-        apiCall('/api/ping/stop');
+        apiCall('/api/ping/stop').then(function(r) { if (r) showToast('Load generator stopped', 'success'); });
     });
     document.getElementById('btn-stop-mig').addEventListener('click', function() {
-        apiCall('/api/migrate/stop');
+        apiCall('/api/migrate/stop').then(function(r) { if (r) showToast('Migration stop requested', 'success'); });
     });
 
     var logsDiv = document.getElementById('logs');
     var lastLogCount = 0;
 
     document.getElementById('btn-clear-logs').addEventListener('click', function() {
-        logsDiv.innerHTML = '<div class="text-slate-600">Cleared.</div>';
+        while (logsDiv.firstChild) logsDiv.removeChild(logsDiv.firstChild);
+        var cleared = document.createElement('div');
+        cleared.className = 'text-slate-600';
+        cleared.textContent = 'Cleared.';
+        logsDiv.appendChild(cleared);
         lastLogCount = 0;
     });
 
@@ -249,6 +325,16 @@
         return 'text-slate-400';
     }
 
+    var wasMigrating = false;
+
+    document.querySelectorAll('#migration-form [required]').forEach(function(field) {
+        field.addEventListener('input', function() {
+            if (field.value.trim()) {
+                field.classList.remove('border-red-500/70');
+            }
+        });
+    });
+
     setInterval(async function() {
         try {
             var res = await fetch('/api/status');
@@ -260,13 +346,31 @@
             if (data.migrating) {
                 badge.textContent = 'Migration Running';
                 badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-hull-600/30 text-hull-300 animate-pulse transition-all duration-300';
-            } else if (hasPings) {
+            } else if (data.loadgen_running) {
                 badge.textContent = 'Loadgen Active';
                 badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-emerald-600/30 text-emerald-300 animate-pulse transition-all duration-300';
             } else {
                 badge.textContent = 'Idle';
                 badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300';
             }
+
+            // Button state management
+            document.getElementById('btn-migrate').disabled = data.migrating;
+            document.getElementById('btn-stop-mig').disabled = !data.migrating;
+            document.getElementById('btn-ping').disabled = data.loadgen_running;
+            document.getElementById('btn-http').disabled = data.loadgen_running;
+            document.getElementById('btn-stop-load').disabled = !data.loadgen_running;
+
+            // Notify when migration completes
+            if (wasMigrating && !data.migrating) {
+                var lastLog = data.logs && data.logs.length > 0 ? data.logs[data.logs.length - 1] : '';
+                if (lastLog.indexOf('Finished successfully') !== -1) {
+                    showToast('Migration completed successfully', 'success');
+                } else {
+                    showToast('Migration finished with errors', 'error');
+                }
+            }
+            wasMigrating = data.migrating;
 
             if (data.logs && data.logs.length > lastLogCount) {
                 data.logs.slice(lastLogCount).forEach(function(l) {
@@ -287,8 +391,17 @@
 
                 document.getElementById('stat-sent').textContent = pings.length;
                 var lostEl = document.getElementById('stat-lost');
-                lostEl.textContent = errors;
-                lostEl.className = errors > 0 ? 'text-2xl font-bold text-red-400 mt-1' : 'text-2xl font-bold text-emerald-400 mt-1';
+                var lostDisplay = lostEl.querySelector('[aria-hidden]');
+                var lostSr = document.getElementById('stat-lost-sr');
+                lostDisplay.textContent = errors;
+                lostSr.textContent = errors + ' dropped packet' + (errors !== 1 ? 's' : '');
+                if (errors > 0) {
+                    lostDisplay.textContent = '\u26A0 ' + errors;
+                    lostEl.className = 'text-2xl font-bold text-red-400 mt-1';
+                } else {
+                    lostDisplay.textContent = '\u2713 ' + errors;
+                    lostEl.className = 'text-2xl font-bold text-emerald-400 mt-1';
+                }
 
                 if (latencies.length > 0) {
                     var avg = latencies.reduce(function(a,b){return a+b;},0) / latencies.length;
@@ -296,7 +409,7 @@
                     document.getElementById('stat-max').textContent = Math.max.apply(null, latencies).toFixed(2) + ' ms';
                 }
 
-                indicator.textContent = pings.length + ' samples';
+                indicator.textContent = data.loadgen_running ? pings.length + ' samples' : pings.length + ' samples (stopped)';
                 latencyChart.data.labels = pings.map(function(p){return p.time;});
                 latencyChart.data.datasets[0].data = pings.map(function(p){return p.error ? null : p.latency;});
 

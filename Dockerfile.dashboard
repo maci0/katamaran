@@ -5,23 +5,34 @@ ARG TARGETARCH=amd64
 
 WORKDIR /src
 COPY go.mod ./
-COPY dashboard/ dashboard/
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /dashboard ./dashboard/
+COPY cmd/dashboard/ cmd/dashboard/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /dashboard ./cmd/dashboard/
 
 FROM alpine:3.20
 
 ARG TARGETARCH=amd64
 
-RUN apk add --no-cache bash curl gettext iputils
-# Install kubectl (multi-arch)
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
+RUN apk add --no-cache bash gettext iputils
+# Install kubectl (multi-arch) — uses wget (built-in Alpine/BusyBox)
+RUN KUBECTL_VERSION=$(wget -qO- https://dl.k8s.io/release/stable.txt) && \
+    wget -qO kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
+    wget -qO kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check && \
     chmod +x kubectl && \
-    mv kubectl /usr/local/bin/
+    mv kubectl /usr/local/bin/ && \
+    rm kubectl.sha256
+
+RUN addgroup -g 1000 dashboard && \
+    adduser -D -u 1000 -G dashboard dashboard
 
 WORKDIR /app
 COPY --from=builder /dashboard .
-COPY dashboard/index.html .
+COPY cmd/dashboard/index.html .
 COPY deploy /app/deploy
+RUN chown -R dashboard:dashboard /app
 
+USER dashboard
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -q --spider http://localhost:8080/healthz || exit 1
 CMD ["./dashboard"]

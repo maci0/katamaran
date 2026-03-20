@@ -50,9 +50,9 @@ usage() {
     echo "  --tap <iface>           Destination tap interface for zero-drop buffering (use 'none' to skip)"
     echo "  --qmp-source <path>     Path to QMP socket on source node"
     echo "  --qmp-dest <path>       Path to QMP socket on destination node"
-    echo "  --dest-ip <ip>          IP address of the destination node"
+    echo "  --dest-ip <ip>          IP address of the destination (must be reachable from source QEMU)"
     echo "  --vm-ip <ip>            IP address of the VM (pod IP)"
-    echo "  --image <tag>           Katamaran container image to use"
+    echo "  --image <image>         Katamaran container image to use"
     echo ""
     echo "Optional flags:"
     echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
@@ -84,7 +84,7 @@ while [[ $# -gt 0 ]]; do
         --multifd-channels) MULTIFD_CHANNELS="$2"; shift 2 ;;
         --context) KUBECTL_CONTEXT="$2"; shift 2 ;;
         --help) usage 0 ;;
-        *) echo "Unknown option: $1"; usage ;;
+        *) echo "Error: unknown option: $1" >&2; usage ;;
     esac
 done
 
@@ -98,7 +98,7 @@ missing_args=()
 [[ -z "$VM_IP" ]] && missing_args+=(--vm-ip)
 [[ -z "$IMAGE_REF" ]] && missing_args+=(--image)
 if [[ ${#missing_args[@]} -gt 0 ]]; then
-    echo "Error: missing required flag(s): ${missing_args[*]}"
+    echo "Error: missing required flag(s): ${missing_args[*]}" >&2
     usage
 fi
 
@@ -107,18 +107,42 @@ if [[ "$TAP_IFACE" == "none" ]]; then
 fi
 
 if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
-    echo "Error: --tunnel-mode must be 'ipip', 'gre', or 'none'."
+    echo "Error: --tunnel-mode must be 'ipip', 'gre', or 'none'." >&2
     exit 1
 fi
 
 if [[ "$TAP_IFACE" == *[[:space:]]* ]]; then
-    echo "Error: --tap must be a single interface name without spaces."
+    echo "Error: --tap must be a single interface name without spaces." >&2
     exit 1
 fi
 
+if [[ ! "$DOWNTIME" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --downtime must be a positive integer." >&2
+    exit 1
+fi
+
+if [[ ! "$MULTIFD_CHANNELS" =~ ^[0-9]+$ ]]; then
+    echo "Error: --multifd-channels must be a non-negative integer." >&2
+    exit 1
+fi
+
+# Reject shell metacharacters in values that will be interpolated into
+# job YAML via envsubst → /bin/sh -c.  Defence-in-depth: the dashboard
+# already validates these, but migrate.sh can also be called directly.
+shell_safe_re='^[a-zA-Z0-9_./:@=-]+$'
+for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT; do
+    val="${!var_name}"
+    if [[ -n "$val" && ! "$val" =~ $shell_safe_re ]]; then
+        flag_name="${var_name,,}"
+        flag_name="${flag_name//_/-}"
+        echo "Error: --${flag_name} contains invalid characters: $val" >&2
+        exit 1
+    fi
+done
+
 for cmd in kubectl envsubst; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "Error: required command not found: $cmd"
+        echo "Error: required command not found: $cmd" >&2
         exit 1
     fi
 done
@@ -206,7 +230,7 @@ for _ in $(seq 1 20); do
     sleep 2
 done
 if [[ "$ready" -ne 1 ]]; then
-    echo "Error: destination did not reach ready state in time."
+    echo "Error: destination did not reach ready state in time." >&2
     dump_debug
     exit 1
 fi
@@ -235,7 +259,7 @@ fi
 dump_debug
 
 if [[ "$wait_rc" -ne 0 ]]; then
-    echo "Error: source migration job did not complete successfully."
+    echo "Error: source migration job did not complete successfully." >&2
     exit "$wait_rc"
 fi
 

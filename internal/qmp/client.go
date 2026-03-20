@@ -22,18 +22,18 @@ import (
 
 // Client timeouts.
 const (
-	// DialTimeout is the maximum time to wait for a QMP socket connection.
-	DialTimeout = 10 * time.Second
+	// dialTimeout is the maximum time to wait for a QMP socket connection.
+	dialTimeout = 10 * time.Second
 
-	// GreetingTimeout is the maximum time to wait for the QMP greeting banner
-	// during initial connection. If QEMU was started with -qmp wait=off, no
-	// greeting is sent and we proceed after this timeout elapses.
-	GreetingTimeout = 1 * time.Second
+	// greetingTimeout is the maximum time to wait for the QMP greeting banner
+	// during initial connection. If QEMU was started with wait=off on the
+	// chardev, no greeting is sent and we proceed after this timeout elapses.
+	greetingTimeout = 1 * time.Second
 
-	// ExecuteTimeout is the maximum time to wait for a synchronous QMP
+	// executeTimeout is the maximum time to wait for a synchronous QMP
 	// command response. If QEMU becomes unresponsive mid-command, Execute()
 	// returns a timeout error instead of blocking forever.
-	ExecuteTimeout = 2 * time.Minute
+	executeTimeout = 2 * time.Minute
 
 	// maxBufferedEvents caps the in-memory event queue size. Normal operation
 	// buffers 1-3 events between Execute and WaitForEvent calls. This limit
@@ -70,21 +70,29 @@ func (c *Client) bufferEvent(ev response) {
 }
 
 // readLine reads a complete newline-terminated JSON message.
-// It safely accumulates partial reads if a timeout occurs, preventing data corruption.
+// It safely accumulates partial reads across errors (e.g., timeouts), preventing data loss.
 // The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
 // from a misbehaving QEMU that sends data without newlines.
 func (c *Client) readLine() ([]byte, error) {
 	line, err := c.r.ReadBytes('\n')
-	if len(line) > 0 {
-		c.buf = append(c.buf, line...)
-	}
 	if err != nil {
+		if len(line) > 0 {
+			c.buf = append(c.buf, line...)
+		}
 		if len(c.buf) > maxLineSize {
 			c.buf = nil
 			return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
 		}
 		return nil, err
 	}
+	// Fast path: no prior partial data from a timeout — return the line
+	// directly from ReadBytes without copying into the accumulation buffer.
+	if len(c.buf) == 0 {
+		return line, nil
+	}
+	// Slow path: had partial data from a previous timeout — assemble
+	// the complete line from accumulated fragments.
+	c.buf = append(c.buf, line...)
 	fullLine := c.buf
 	c.buf = nil
 	return fullLine, nil
@@ -94,7 +102,7 @@ func (c *Client) readLine() ([]byte, error) {
 // negotiation handshake, and returns a ready-to-use client.
 func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	var d net.Dialer
-	d.Timeout = DialTimeout
+	d.Timeout = dialTimeout
 	conn, err := d.DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("dialing QMP socket %s: %w", socketPath, err)
@@ -119,7 +127,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return nil, err
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(GreetingTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(greetingTimeout)); err != nil {
 		return fail(fmt.Errorf("setting greeting deadline: %w", err))
 	}
 
@@ -132,7 +140,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		}
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(DialTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(dialTimeout)); err != nil {
 		return fail(fmt.Errorf("setting capabilities deadline: %w", err))
 	}
 
@@ -189,7 +197,7 @@ func (c *Client) Close() error {
 // Asynchronous events received while waiting for the reply are buffered so
 // WaitForEvent can find them later.
 //
-// A read deadline of ExecuteTimeout (or the context deadline, whichever is
+// A read deadline of executeTimeout (or the context deadline, whichever is
 // sooner) is enforced. On context cancellation, the deadline is shortened to
 // unblock reads without destroying the connection, preserving it for deferred
 // cleanup commands.
@@ -215,7 +223,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}
 
 	// Set a deadline so we don't block forever waiting for a response.
-	deadline := time.Now().Add(ExecuteTimeout)
+	deadline := time.Now().Add(executeTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
@@ -261,7 +269,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, ExecuteTimeout, err)
+				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, executeTimeout, err)
 			}
 			return nil, fmt.Errorf("reading QMP response for %q: %w", cmd, err)
 		}
@@ -295,7 +303,8 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 // On context cancellation, the read deadline is shortened to unblock without
 // destroying the connection.
 //
-// Returns an error if the connection has already been closed.
+// Returns an error if the connection has already been closed and no matching
+// event is found in the buffer.
 func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout time.Duration) error {
 	c.mu.Lock()
 	conn := c.conn

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
@@ -16,35 +16,61 @@ import (
 
 // Sentinel errors for migration terminal states.
 var (
-	ErrMigrationFailed    = errors.New("migration failed")
-	ErrMigrationCancelled = errors.New("migration cancelled")
+	errMigrationFailed    = errors.New("migration failed")
+	errMigrationCancelled = errors.New("migration cancelled")
 )
 
 // RunSource initiates live migration from the source node to the destination.
-func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, driveID string, sharedStorage bool, tunnelMode TunnelMode, downtimeLimitMS int, autoDowntime bool, multifdChannels int) error {
-	ctx, cancel := context.WithTimeout(ctx, MigrationTimeout+StorageSyncTimeout)
+//
+// Deferred cleanups ensure the drive-mirror job and tunnel are torn down on
+// any early return, preventing resource leaks. They are disarmed on the
+// success path.
+//
+// Sequentially it:
+//   - Starts a drive-mirror job to synchronize storage via NBD (unless shared-storage mode)
+//   - Waits for drive-mirror to reach "ready" (full sync)
+//   - Configures migration capabilities (auto-converge, multifd) and parameters
+//   - Optionally measures RTT for auto-downtime calculation
+//   - Starts RAM migration via QMP migrate command
+//   - Polls for the STOP event (VM pause), checking for migration failures
+//   - Creates an IP tunnel to forward in-flight traffic to the destination
+//   - Waits for migration to complete (query-migrate polling)
+//   - Cancels the drive-mirror block job
+//   - Tears down the IP tunnel after a CNI convergence delay
+func RunSource(ctx context.Context, cfg SourceConfig) error {
+	ctx, cancel := context.WithTimeout(ctx, migrationTimeout+storageSyncTimeout)
 	defer cancel()
 
-	log.Printf("Starting live migration to %s...", destIP)
+	slog.Info("Starting live migration",
+		"dest_ip", cfg.DestIP,
+		"vm_ip", cfg.VMIP,
+		"tunnel_mode", string(cfg.TunnelMode),
+		"shared_storage", cfg.SharedStorage,
+		"multifd_channels", cfg.MultifdChannels,
+		"downtime_limit_ms", cfg.DowntimeLimitMS,
+		"auto_downtime", cfg.AutoDowntime,
+	)
 
-	client, err := qmp.NewClient(ctx, qmpSocket)
+	client, err := qmp.NewClient(ctx, cfg.QMPSocket)
 	if err != nil {
 		return fmt.Errorf("connecting to source QMP: %w", err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
-			log.Printf("Warning: closing QMP client: %v", err)
+			slog.Warn("Failed to close QMP client", "error", err)
 		}
 	}()
 
-	jobID := "mirror-" + driveID
+	jobID := "mirror-" + cfg.DriveID
 	mirrorStarted := false
+	downtimeLimitMS := cfg.DowntimeLimitMS
+	multifdChannels := cfg.MultifdChannels
 
-	if !sharedStorage {
-		log.Println("Initiating storage mirror (drive-mirror)...")
-		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", FormatQEMUHost(destIP), NBDPort, driveID)
+	if !cfg.SharedStorage {
+		slog.Info("Initiating storage mirror (drive-mirror)")
+		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", formatQEMUHost(cfg.DestIP), nbdPort, cfg.DriveID)
 		if _, err = client.Execute(ctx, "drive-mirror", qmp.DriveMirrorArgs{
-			Device: driveID,
+			Device: cfg.DriveID,
 			Target: targetNBD,
 			Sync:   "full",
 			Mode:   "existing",
@@ -56,32 +82,35 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 
 		defer func() {
 			if mirrorStarted {
-				cctx, ccancel := CleanupCtx(ctx)
+				cctx, ccancel := cleanupCtx(ctx)
 				defer ccancel()
 				if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
 					Device: jobID,
 					Force:  true,
 				}); cancelErr != nil {
-					log.Printf("Warning: deferred block job cancel failed: %v", cancelErr)
+					slog.Warn("Deferred block job cancel failed", "error", cancelErr)
 				}
 			}
 		}()
 
-		log.Println("Waiting for storage mirror to synchronize...")
+		slog.Info("Waiting for storage mirror to synchronize")
 		if err = waitForStorageSync(ctx, client, jobID); err != nil {
 			return fmt.Errorf("storage sync failed: %w", err)
 		}
 	} else {
-		log.Println("Shared storage mode: skipping drive-mirror.")
+		slog.Info("Shared storage mode: skipping drive-mirror")
 	}
 
-	log.Println("Configuring RAM migration...")
+	slog.Info("Configuring RAM migration")
+	// Always enable auto-converge: if the guest's dirty page rate exceeds the
+	// transfer rate, QEMU will throttle guest vCPUs to ensure migration converges.
+	// Without this, migration could run indefinitely on write-heavy workloads.
 	caps := []qmp.MigrationCapability{
 		{Capability: "auto-converge", State: true},
 	}
 	if multifdChannels > 0 {
 		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
-		log.Printf("Multifd enabled: %d parallel channels.", multifdChannels)
+		slog.Info("Multifd enabled", "channels", multifdChannels)
 	}
 	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
 		Capabilities: caps,
@@ -89,30 +118,30 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 		return fmt.Errorf("setting migration capabilities: %w", err)
 	}
 
-	if autoDowntime {
-		rtt, err := measureRTT(destIP)
+	if cfg.AutoDowntime {
+		rtt, err := measureRTT(cfg.DestIP)
 		if err != nil {
-			log.Printf("Warning: failed to measure RTT for auto-downtime: %v. Falling back to %d ms.", err, downtimeLimitMS)
+			slog.Warn("Failed to measure RTT for auto-downtime, using fallback", "error", err, "fallback_ms", downtimeLimitMS)
 		} else {
-			calculatedDowntime := int(rtt.Milliseconds()*2) + 10
-			log.Printf("Auto-calculated downtime limit: %dms (based on RTT: %dms)", calculatedDowntime, rtt.Milliseconds())
+			calculatedDowntime := int(rtt.Milliseconds()*rttMultiplier) + rttMinOverheadMS
+			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rtt.Milliseconds())
 			downtimeLimitMS = calculatedDowntime
 		}
 	}
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
-		MaxBandwidth:    MaxBandwidth,
-		MultiFDChannels: int64(multifdChannels),
+		MaxBandwidth:    maxBandwidth,
+		MultifdChannels: int64(multifdChannels),
 	}); err != nil {
 		return fmt.Errorf("setting migration parameters: %w", err)
 	}
 
-	uri := fmt.Sprintf("tcp:%s:%s", FormatQEMUHost(destIP), RAMMigrationPort)
+	uri := fmt.Sprintf("tcp:%s:%s", formatQEMUHost(cfg.DestIP), ramMigrationPort)
 	if _, err = client.Execute(ctx, "migrate", qmp.MigrateArgs{URI: uri}); err != nil {
 		return fmt.Errorf("starting RAM migration to %s: %w", uri, err)
 	}
-	log.Println("RAM migration started. Waiting for VM to pause (STOP event)...")
+	slog.Info("RAM migration started. Waiting for VM to pause (STOP event)")
 
 	// Wait for the STOP event (downtime window begins).
 	// We poll migration status sequentially in the same loop rather than using a
@@ -120,7 +149,7 @@ func RunSource(ctx context.Context, qmpSocket string, destIP, vmIP netip.Addr, d
 	// socket data races and ensures we detect silent migration failures.
 stopLoop:
 	for {
-		err = client.WaitForEvent(ctx, "STOP", MigrationPollInterval)
+		err = client.WaitForEvent(ctx, "STOP", migrationPollInterval)
 		if err == nil {
 			break // Success: VM stopped.
 		}
@@ -130,20 +159,25 @@ stopLoop:
 			// Check if the background migration process failed.
 			raw, qerr := client.Execute(ctx, "query-migrate", nil)
 			if qerr != nil {
-				continue // Ignore transient query errors.
+				slog.Warn("Transient query-migrate error during STOP polling", "error", qerr)
+				continue
 			}
 			var info qmp.MigrateInfo
 			if err := json.Unmarshal(raw, &info); err != nil {
-				log.Printf("Warning: failed to parse query-migrate response: %v", err)
+				slog.Warn("Failed to parse query-migrate response", "error", err)
 				continue
 			}
-			log.Printf("Migration progress: %s (RAM: %d / %d bytes, Remaining: %d bytes)", info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
-			if info.Status == qmp.MigrateStatusFailed {
-				return fmt.Errorf("migration background process failed: %s", info.ErrorDesc)
-			} else if info.Status == qmp.MigrateStatusCancelled {
-				return ErrMigrationCancelled
-			} else if info.Status == qmp.MigrateStatusCompleted {
-				log.Println("Migration completed without explicit STOP event.")
+			slog.Info("Migration progress", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+			switch info.Status {
+			case qmp.MigrateStatusFailed:
+				if info.ErrorDesc != "" {
+					return fmt.Errorf("%w: %s", errMigrationFailed, info.ErrorDesc)
+				}
+				return errMigrationFailed
+			case qmp.MigrateStatusCancelled:
+				return errMigrationCancelled
+			case qmp.MigrateStatusCompleted:
+				slog.Info("Migration completed without explicit STOP event")
 				break stopLoop
 			}
 			continue
@@ -151,18 +185,22 @@ stopLoop:
 		return fmt.Errorf("unexpected error waiting for STOP event: %w", err)
 	}
 
-	log.Println("VM paused. Redirecting in-flight packets to destination...")
+	slog.Info("VM paused. Redirecting in-flight packets to destination")
 
 	tunnelCreated := false
-	if tunnelMode == TunnelModeNone {
-		log.Println("Tunnel mode 'none': skipping IP tunnel setup.")
-	} else if err := SetupTunnel(ctx, destIP, vmIP, tunnelMode); err != nil {
+	var tunnelName string
+	if cfg.TunnelMode == TunnelModeNone {
+		slog.Info("Tunnel mode 'none': skipping IP tunnel setup")
+	} else if name, genErr := generateTunnelName(); genErr != nil {
+		return fmt.Errorf("generating tunnel name: %w", genErr)
+	} else if err := setupTunnel(ctx, cfg.DestIP, cfg.VMIP, cfg.TunnelMode, name); err != nil {
 		return fmt.Errorf("failed to create IP tunnel: %w", err)
 	} else {
+		tunnelName = name
 		tunnelCreated = true
-		log.Println("IP tunnel established. Traffic redirected.")
+		slog.Info("IP tunnel established. Traffic redirected", "tunnel", tunnelName)
 	}
-	log.Println("Waiting for migration to complete...")
+	slog.Info("Waiting for migration to complete")
 
 	migrationErr := waitForMigrationComplete(ctx, client)
 
@@ -171,38 +209,37 @@ stopLoop:
 		if raw, err := client.Execute(ctx, "query-migrate", nil); err == nil {
 			var info qmp.MigrateInfo
 			if err := json.Unmarshal(raw, &info); err == nil {
-				log.Printf("Migration completed: actual_downtime=%dms total_time=%dms setup_time=%dms",
-					info.Downtime, info.TotalTime, info.SetupTime)
+				slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime)
 			}
 		}
 	}
 
 	if migrationErr != nil {
-		cctx, ccancel := CleanupCtx(ctx)
+		cctx, ccancel := cleanupCtx(ctx)
+		defer ccancel()
 		if _, cancelErr := client.Execute(cctx, "migrate_cancel", nil); cancelErr != nil {
-			log.Printf("Warning: failed to cancel migration: %v", cancelErr)
+			slog.Warn("Failed to cancel migration", "error", cancelErr)
 		}
-		ccancel()
 	}
 
-	if !sharedStorage {
-		cctx, ccancel := CleanupCtx(ctx)
+	if !cfg.SharedStorage {
+		cctx, ccancel := cleanupCtx(ctx)
+		defer ccancel()
 		if _, err := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
 			Device: jobID,
 			Force:  true,
 		}); err != nil {
-			log.Printf("Warning: failed to cancel block job: %v", err)
+			slog.Warn("Failed to cancel block job", "error", err)
 		} else {
 			mirrorStarted = false
-			log.Println("Storage mirror cancelled.")
+			slog.Info("Storage mirror cancelled")
 		}
-		ccancel()
 	}
 
 	if tunnelCreated {
 		if migrationErr == nil {
-			log.Printf("Waiting %v for CNI convergence...", PostMigrationTunnelDelay)
-			timer := time.NewTimer(PostMigrationTunnelDelay)
+			slog.Info("Waiting for CNI convergence", "delay", postMigrationTunnelDelay)
+			timer := time.NewTimer(postMigrationTunnelDelay)
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {
@@ -211,22 +248,25 @@ stopLoop:
 			case <-timer.C:
 			}
 		}
-		cctx, ccancel := CleanupCtx(ctx)
-		TeardownTunnel(cctx)
-		ccancel()
+		cctx, ccancel := cleanupCtx(ctx)
+		defer ccancel()
+		teardownTunnel(cctx, tunnelName)
 	}
 
 	if migrationErr != nil {
 		return fmt.Errorf("migration failed: %w", migrationErr)
 	}
 
-	log.Println("Source cleanup complete. Migration succeeded.")
+	slog.Info("Source cleanup complete. Migration succeeded")
 	return nil
 }
 
+// measureRTT estimates network round-trip time to the destination by performing
+// TCP handshake timing against the RAM migration port. Returns the best (lowest)
+// of 3 samples.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	const samples = 3
-	addr := net.JoinHostPort(destIP.String(), RAMMigrationPort)
+	addr := net.JoinHostPort(destIP.String(), ramMigrationPort)
 	var best time.Duration
 
 	for i := 0; i < samples; i++ {
@@ -237,32 +277,37 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 		}
 		rtt := time.Since(start)
 		conn.Close()
-		log.Printf("RTT sample %d/%d: %s", i+1, samples, rtt)
+		slog.Info("RTT sample", "sample", i+1, "of", samples, "rtt", rtt)
 		if i == 0 || rtt < best {
 			best = rtt
 		}
 	}
 
-	log.Printf("RTT best of %d samples: %s", samples, best)
+	slog.Info("RTT measurement complete", "best", best, "samples", samples)
 	return best, nil
 }
 
+// waitForStorageSync polls query-block-jobs until the drive-mirror job reaches
+// the "ready" state, indicating full synchronization. Fails if the job disappears,
+// never appears within jobAppearTimeout, or reaches a terminal failure state.
 func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) error {
+	ctx, cancel := context.WithTimeout(ctx, storageSyncTimeout)
+	defer cancel()
+
 	jobSeen := false
-	appearDeadline := time.Now().Add(JobAppearTimeout)
-	syncDeadline := time.Now().Add(StorageSyncTimeout)
-	ticker := time.NewTicker(StoragePollInterval)
+	appearDeadline := time.Now().Add(jobAppearTimeout)
+	ticker := time.NewTicker(storagePollInterval)
 	defer ticker.Stop()
 
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
+		if ctx.Err() != nil {
+			return fmt.Errorf("storage sync: %w", ctx.Err())
 		}
 
 		raw, err := client.Execute(ctx, "query-block-jobs", nil)
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return fmt.Errorf("storage sync: %w", ctx.Err())
 			}
 			return fmt.Errorf("querying block jobs: %w", err)
 		}
@@ -284,43 +329,43 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) e
 		} else {
 			jobSeen = true
 			if job.Ready {
-				log.Printf("Storage sync progress: 100.00%%")
-				log.Println("Storage mirror synchronized.")
+				slog.Info("Storage mirror synchronized", "progress_pct", 100.0)
 				return nil
 			}
 			if job.Len > 0 {
 				pct := float64(job.Offset) / float64(job.Len) * 100
-				log.Printf("Storage sync progress: %.2f%%", pct)
+				slog.Info("Storage sync progress", "progress_pct", fmt.Sprintf("%.2f", pct), "offset", job.Offset, "len", job.Len)
 			}
 			if job.Status == qmp.BlockJobStatusConcluded || job.Status == qmp.BlockJobStatusNull {
 				return fmt.Errorf("block mirror job %q failed", jobID)
 			}
 		}
-		if time.Now().After(syncDeadline) {
-			return fmt.Errorf("storage sync timed out")
-		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("storage sync: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}
 }
 
+// waitForMigrationComplete polls query-migrate until migration reaches a terminal
+// state (completed, failed, or cancelled). Times out after migrationTimeout.
 func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
-	deadline := time.Now().Add(MigrationTimeout)
-	ticker := time.NewTicker(MigrationPollInterval)
+	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(migrationPollInterval)
 	defer ticker.Stop()
 
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
+		if ctx.Err() != nil {
+			return fmt.Errorf("migration: %w", ctx.Err())
 		}
 
 		raw, err := client.Execute(ctx, "query-migrate", nil)
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return fmt.Errorf("migration: %w", ctx.Err())
 			}
 			return fmt.Errorf("querying migration status: %w", err)
 		}
@@ -328,24 +373,21 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 		if err = json.Unmarshal(raw, &info); err != nil {
 			return fmt.Errorf("unmarshaling migration status: %w", err)
 		}
-		log.Printf("Migration status: %s", info.Status)
+		slog.Info("Migration status", "status", info.Status)
 		switch info.Status {
 		case qmp.MigrateStatusCompleted:
 			return nil
 		case qmp.MigrateStatusFailed:
 			if info.ErrorDesc != "" {
-				return fmt.Errorf("%w: %s", ErrMigrationFailed, info.ErrorDesc)
+				return fmt.Errorf("%w: %s", errMigrationFailed, info.ErrorDesc)
 			}
-			return ErrMigrationFailed
+			return errMigrationFailed
 		case qmp.MigrateStatusCancelled:
-			return ErrMigrationCancelled
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("migration timed out (status: %s)", info.Status)
+			return errMigrationCancelled
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("migration: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}
