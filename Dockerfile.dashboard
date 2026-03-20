@@ -3,9 +3,10 @@ FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 
-WORKDIR /app
-COPY dashboard/main.go .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o dashboard main.go
+WORKDIR /src
+COPY go.mod ./
+COPY dashboard/ dashboard/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /dashboard ./dashboard/
 
 FROM alpine:3.20
 
@@ -18,7 +19,7 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
     mv kubectl /usr/local/bin/
 
 WORKDIR /app
-COPY --from=builder /app/dashboard .
+COPY --from=builder /dashboard .
 COPY dashboard/index.html .
 COPY deploy /app/deploy
 

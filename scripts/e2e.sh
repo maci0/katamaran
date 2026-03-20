@@ -1,5 +1,17 @@
 #!/bin/bash
 # e2e.sh — Unified E2E test harness for Katamaran live migration.
+#
+# --provider <name>  Cluster provider: 'minikube' (default) or 'kind'.
+# --cni <name>       CNI plugin: 'auto' (default), 'calico', 'cilium', 'flannel',
+#                    'ovn', or 'kindnet'.
+# --storage <mode>   Storage mode: 'none' (default, skip NBD), 'local' (NBD drive-mirror),
+#                    or 'nfs' (NFS shared storage). 'local' exercises the full 3-phase
+#                    migration including storage mirroring. 'nfs' deploys an NFS server
+#                    pod and uses it as shared storage.
+# --method <name>    Orchestration method: 'job' (default) or 'direct'.
+# --ping-proof       Run continuous ping during migration and assert zero packet loss.
+# --env-only         Provision the cluster and install Kata, then stop (no migration).
+# --help             Show this help text.
 
 set -euo pipefail
 
@@ -37,9 +49,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${STORAGE}" == "nfs" ]]; then
-    error "--storage nfs is not yet implemented. All E2E tests currently use shared storage mode."
-    error "NFS manifests exist in scripts/manifests/ but the e2e.sh harness does not deploy them."
+if [[ "${STORAGE}" != "none" && "${STORAGE}" != "local" && "${STORAGE}" != "nfs" ]]; then
+    error "--storage must be 'none', 'local', or 'nfs' (got '${STORAGE}')"
     exit 1
 fi
 
@@ -89,6 +100,26 @@ node_cp_to() {
     fi
 }
 
+# qmp_hotplug_disk attaches a virtio-blk data disk to a running QEMU via QMP.
+# Uses a fixed PCI address (bus=pci-bridge-0,addr=0x8) so source and destination
+# have matching PCI topology for live migration.
+#
+# Usage: qmp_hotplug_disk <node> <qmp_socket> <disk_image_path>
+qmp_hotplug_disk() {
+    local node="$1" sock="$2" disk="$3"
+    # QMP is conversational: consume greeting, negotiate capabilities, then send commands.
+    # Each command needs a pause for QEMU to process and respond.
+    node_exec "${node}" "${SUDO} bash -c '(
+        sleep 0.2
+        printf \"{\\\"execute\\\": \\\"qmp_capabilities\\\"}\\n\"
+        sleep 0.2
+        printf \"{\\\"execute\\\": \\\"blockdev-add\\\", \\\"arguments\\\": {\\\"driver\\\": \\\"raw\\\", \\\"node-name\\\": \\\"drive-virtio-disk0\\\", \\\"file\\\": {\\\"driver\\\": \\\"file\\\", \\\"filename\\\": \\\"${disk}\\\"}}}\\n\"
+        sleep 0.2
+        printf \"{\\\"execute\\\": \\\"device_add\\\", \\\"arguments\\\": {\\\"driver\\\": \\\"virtio-blk-pci\\\", \\\"drive\\\": \\\"drive-virtio-disk0\\\", \\\"id\\\": \\\"data-disk0\\\", \\\"bus\\\": \\\"pci-bridge-0\\\", \\\"addr\\\": \\\"0x8\\\"}}\\n\"
+        sleep 0.3
+    ) | nc -U ${sock}'" 2>/dev/null
+}
+
 cleanup() {
     if [[ -n "${PING_PID:-}" ]] && kill -0 "${PING_PID}" 2>/dev/null; then
         kill "${PING_PID}" 2>/dev/null || true
@@ -101,6 +132,14 @@ cleanup() {
     if [[ "${E2E_NO_CLEANUP:-}" == "true" ]]; then
         log "E2E_NO_CLEANUP set, skipping cluster deletion for '${PROFILE}'"
         return
+    fi
+    # Unmount NFS if mounted.
+    if [[ "${STORAGE}" == "nfs" ]]; then
+        for node in "${NODE1:-}" "${NODE2:-}"; do
+            if [[ -n "${node}" ]]; then
+                node_exec "${node}" "${SUDO} umount /mnt/nfs-katamaran 2>/dev/null" || true
+            fi
+        done
     fi
     log "Cleaning up cluster '${PROFILE}'..."
     if [[ "${PROVIDER}" == "minikube" ]]; then
@@ -272,6 +311,39 @@ fi
 envsubst < "${PROJECT_ROOT}/deploy/daemonset.yaml" | kubectl --context "${CTX}" apply -f -
 kubectl --context "${CTX}" -n kube-system rollout status daemonset/katamaran-deploy --timeout=300s
 
+# --- Storage: deploy NFS server for shared storage test ---
+NFS_DISK_IMG=""
+if [[ "${STORAGE}" == "nfs" ]]; then
+    log "Deploying NFS server on Node 1..."
+    export NODE_NAME="${NODE1}"
+    export NFS_EXPORT_PATH="/exports"
+    envsubst '$NODE_NAME $NFS_EXPORT_PATH' < "${SCRIPT_DIR}/manifests/nfs-server.yaml" \
+        | kubectl --context "${CTX}" apply -f -
+
+    kubectl --context "${CTX}" wait --for=condition=Ready pod/nfs-server --timeout=120s
+    NFS_SERVER_IP=$(kubectl --context "${CTX}" get pod nfs-server -o jsonpath='{.status.podIP}')
+    success "NFS server running at ${NFS_SERVER_IP}"
+
+    # Mount NFS on both nodes and create the shared disk image.
+    NFS_MNT="/mnt/nfs-katamaran"
+    for node in "${NODE1}" "${NODE2}"; do
+        node_exec "${node}" "${SUDO} mkdir -p ${NFS_MNT}"
+        if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
+            if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=3,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
+                error "NFS mount failed on ${node}. Kernel NFS client modules (nfs, sunrpc) may be missing."
+                error "For custom minikube ISOs, enable CONFIG_NFS_FS and CONFIG_SUNRPC in the kernel config."
+                exit 1
+            fi
+        fi
+        success "NFS mounted on ${node} at ${NFS_MNT}"
+    done
+
+    # Create the shared data disk on NFS (visible from both nodes).
+    NFS_DISK_IMG="${NFS_MNT}/shared-disk.img"
+    node_exec "${NODE1}" "${SUDO} qemu-img create -f raw ${NFS_DISK_IMG} 64M"
+    success "Shared disk image created on NFS: ${NFS_DISK_IMG}"
+fi
+
 log "Deploying source pod on Node 1..."
 kubectl --context "${CTX}" delete pod kata-src --ignore-not-found --force --grace-period=0
 cat <<EOFPOD | kubectl --context "${CTX}" apply -f -
@@ -315,21 +387,25 @@ fi
 SRC_SANDBOX_DIR=$(dirname "${SRC_SOCK}")
 SRC_SANDBOX_ID=$(basename "${SRC_SANDBOX_DIR}")
 
-log "Extracting source QEMU configuration..."
-# Parse the running source QEMU's command line to get device IDs that
-# the destination must match exactly for live migration to succeed.
+# --- Storage: create and attach data disk to source QEMU ---
+if [[ "${STORAGE}" == "local" ]]; then
+    log "Creating local data disk for source QEMU..."
+    SRC_DISK_IMG="/tmp/kata-src-data-$$.img"
+    node_exec "${NODE1}" "${SUDO} qemu-img create -f raw ${SRC_DISK_IMG} 64M"
+    qmp_hotplug_disk "${NODE1}" "${SRC_SOCK}" "${SRC_DISK_IMG}"
+    success "Source data disk hotplugged: ${SRC_DISK_IMG}"
+elif [[ "${STORAGE}" == "nfs" ]]; then
+    log "Attaching shared NFS data disk to source QEMU..."
+    qmp_hotplug_disk "${NODE1}" "${SRC_SOCK}" "${NFS_DISK_IMG}"
+    success "Source data disk hotplugged (NFS): ${NFS_DISK_IMG}"
+fi
+
+log "Capturing source QEMU command line for replay..."
 SRC_QEMU_PID=$(node_exec "${NODE1}" "${SUDO} cat ${SRC_SANDBOX_DIR}/pid")
 SRC_CMDLINE=$(node_exec "${NODE1}" "${SUDO} cat /proc/${SRC_QEMU_PID}/cmdline | tr '\0' '\n'")
-SRC_UUID=$(echo "${SRC_CMDLINE}" | grep -A1 '^-uuid$' | tail -1)
-SRC_VSOCK_ID=$(echo "${SRC_CMDLINE}" | grep 'vhost-vsock-pci' | grep -oP 'id=\Kvsock-[0-9]+')
-SRC_CHARDEV_FS=$(echo "${SRC_CMDLINE}" | grep 'vhost-user-fs-pci' | grep -oP 'chardev=\K[^,]+')
-SRC_MAC=$(echo "${SRC_CMDLINE}" | grep 'virtio-net-pci' | grep -oP 'mac=\K[^,]+')
-SRC_APPEND=$(echo "${SRC_CMDLINE}" | grep '^tsc=reliable')
-SRC_MACHINE=$(echo "${SRC_CMDLINE}" | grep -A1 '^-machine$' | tail -1)
-SRC_SMP=$(echo "${SRC_CMDLINE}" | grep -A1 '^-smp$' | tail -1)
-SRC_MEM=$(echo "${SRC_CMDLINE}" | grep -A1 '^-m$' | tail -1)
-success "Source UUID: ${SRC_UUID}, MAC: ${SRC_MAC}"
-success "Source machine: ${SRC_MACHINE}, SMP: ${SRC_SMP}, MEM: ${SRC_MEM}"
+# Extract the nvdimm image path from source (needed for writable copy on dest).
+SRC_NVDIMM_PATH=$(echo "${SRC_CMDLINE}" | grep -oP 'mem-path=\K[^,]+' | grep -v '/dev/shm' | head -1)
+success "Source QEMU PID: ${SRC_QEMU_PID} — cmdline captured ($(echo "${SRC_CMDLINE}" | wc -l) args)"
 
 log "Removing tc mirred redirect on source pod's eth0..."
 # Kata installs a tc filter that redirects ALL ingress on eth0 to tap0_kata.
@@ -378,25 +454,24 @@ fi
 success "Helper container PID: ${MIG_HELPER_PID}"
 
 log "Setting up destination QEMU (manual, with -incoming defer)..."
-# Start a standalone QEMU on Node 2 that matches the source VM's device
-# topology. This bypasses Kata's sandbox lifecycle, which kills VMs that
-# don't boot within its vsock timeout (incompatible with -incoming mode).
+# Replay the source QEMU's command line on Node 2 with path substitutions
+# to guarantee identical device topology. This bypasses Kata's sandbox
+# lifecycle, which kills VMs that don't connect via vsock within the
+# dial_timeout (incompatible with -incoming mode).
 #
 # Key fixes for live migration:
-#   1. nvdimm uses a writable copy (source is readonly=on, but QEMU sends
-#      nvdimm pages during migration; writing to readonly mmap = SIGSEGV)
+#   1. nvdimm image is a writable copy (source has readonly=on, but QEMU
+#      sends nvdimm pages during migration; writing to readonly mmap = SIGSEGV)
 #   2. virtiofsd started with --migration-on-error=guest-error so that
 #      inode state mismatches between source/dest don't abort migration
-#   3. Device IDs, UUID, and MAC extracted from the source QEMU to ensure
-#      the destination has an identical device topology
 DST_SANDBOX="manual-dst-$$"
 DST_VM_DIR="/run/vc/vm/${DST_SANDBOX}"
 DST_SOCK="${DST_VM_DIR}/extra-monitor.sock"
 node_exec "${NODE2}" "${SUDO} mkdir -p ${DST_VM_DIR}"
 node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared"
 
-# Create a writable copy of the nvdimm image.
-node_exec "${NODE2}" "${SUDO} cp /opt/kata/share/kata-containers/kata-ubuntu-noble.image /tmp/kata-dst-nvdimm-$$.img"
+# Create a writable copy of the nvdimm image (path extracted from source cmdline).
+node_exec "${NODE2}" "${SUDO} cp ${SRC_NVDIMM_PATH} /tmp/kata-dst-nvdimm-$$.img"
 
 # Start virtiofsd for the vhost-user-fs device.
 # Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
@@ -411,42 +486,39 @@ fi
 node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip tuntap add dev tap0_kata mode tap" 2>/dev/null || true
 node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ip link set tap0_kata up"
 
-# Start destination QEMU with matching device topology.
-node_exec "${NODE2}" "${SUDO} nsenter --net=/proc/${MIG_HELPER_PID}/ns/net \
-    /opt/kata/bin/qemu-system-x86_64 \
-    -name sandbox-${DST_SANDBOX},debug-threads=on \
-    -uuid ${SRC_UUID} \
-    -machine ${SRC_MACHINE} \
-    -cpu host,pmu=off \
-    -qmp unix:path=${DST_VM_DIR}/qmp-primary.sock,server=on,wait=off \
-    -qmp unix:path=${DST_SOCK},server=on,wait=off \
-    -m ${SRC_MEM} \
-    -device pci-bridge,bus=pcie.0,id=pci-bridge-0,chassis_nr=1,shpc=off,addr=2,io-reserve=4k,mem-reserve=1m,pref64-reserve=1m \
-    -device virtio-serial-pci,disable-modern=true,id=serial0 \
-    -device virtconsole,chardev=charconsole0,id=console0 \
-    -chardev socket,id=charconsole0,path=${DST_VM_DIR}/console.sock,server=on,wait=off \
-    -device nvdimm,id=nv0,memdev=mem0,unarmed=on \
-    -object memory-backend-file,id=mem0,mem-path=/tmp/kata-dst-nvdimm-$$.img,size=268435456 \
-    -device virtio-scsi-pci,id=scsi0,disable-modern=true \
-    -object rng-random,id=rng0,filename=/dev/urandom \
-    -device virtio-rng-pci,rng=rng0 \
-    -device vhost-vsock-pci,disable-modern=true,id=${SRC_VSOCK_ID},guest-cid=88888888 \
-    -chardev socket,id=${SRC_CHARDEV_FS},path=${DST_VM_DIR}/vhost-fs.sock \
-    -device vhost-user-fs-pci,chardev=${SRC_CHARDEV_FS},tag=kataShared,queue-size=1024 \
-    -netdev tap,id=network-0,vhost=on,ifname=tap0_kata,script=no,downscript=no \
-    -device driver=virtio-net-pci,netdev=network-0,mac=${SRC_MAC},disable-modern=true,mq=on,vectors=4 \
-    -rtc base=utc,driftfix=slew,clock=host \
-    -global kvm-pit.lost_tick_policy=discard \
-    -vga none -no-user-config -nodefaults -nographic --no-reboot \
-    -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on \
-    -numa node,memdev=dimm1 \
-    -kernel /opt/kata/share/kata-containers/vmlinux-6.12.47-173 \
-    -append '${SRC_APPEND}' \
-    -pidfile ${DST_VM_DIR}/pid \
-    -D ${DST_VM_DIR}/qemu.log -d guest_errors \
-    -smp ${SRC_SMP} \
-    -incoming defer \
-    -daemonize"
+# Start destination QEMU by replaying the source's command line with path
+# substitutions. This ensures the device topology always matches exactly,
+# regardless of which devices Kata added at runtime.
+DST_NVDIMM_IMG="/tmp/kata-dst-nvdimm-$$.img"
+
+# Substitute paths: source sandbox → destination sandbox, nvdimm → writable
+# copy, and strip readonly from the nvdimm backend (migration writes to it).
+DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
+    | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
+    | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
+    | sed "s|,readonly=on||g; s|,readonly=true||g" \
+)
+[[ -n "${SRC_NVDIMM_PATH}" ]] && \
+    DST_CMDLINE=$(echo "${DST_CMDLINE}" | sed "s|${SRC_NVDIMM_PATH}|${DST_NVDIMM_IMG}|g")
+
+# Reconstruct the command: skip the QEMU binary (first arg), strip any
+# existing -incoming/-daemonize from source, then quote each argument for
+# remote execution via node_exec.
+DST_QEMU_CMD="nsenter --net=/proc/${MIG_HELPER_PID}/ns/net /opt/kata/bin/qemu-system-x86_64"
+first=true
+skip_next=false
+while IFS= read -r arg; do
+    if $first; then first=false; continue; fi
+    if $skip_next; then skip_next=false; continue; fi
+    case "${arg}" in
+        -daemonize) continue ;;
+        -incoming)  skip_next=true; continue ;;
+    esac
+    DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
+done <<< "${DST_CMDLINE}"
+DST_QEMU_CMD+=" -incoming defer -daemonize"
+
+node_exec "${NODE2}" "${SUDO} ${DST_QEMU_CMD}"
 
 # Wait for QMP socket to appear
 for i in $(seq 1 15); do
@@ -458,6 +530,19 @@ if ! node_exec "${NODE2}" "[ -S ${DST_SOCK} ]" 2>/dev/null; then
     exit 1
 fi
 success "Destination QEMU started. QMP: ${DST_SOCK}"
+
+# --- Storage: create and attach data disk to destination QEMU ---
+if [[ "${STORAGE}" == "local" ]]; then
+    log "Creating local data disk for destination QEMU..."
+    DST_DISK_IMG="/tmp/kata-dst-data-$$.img"
+    node_exec "${NODE2}" "${SUDO} qemu-img create -f raw ${DST_DISK_IMG} 64M"
+    qmp_hotplug_disk "${NODE2}" "${DST_SOCK}" "${DST_DISK_IMG}"
+    success "Destination data disk hotplugged: ${DST_DISK_IMG}"
+elif [[ "${STORAGE}" == "nfs" ]]; then
+    log "Attaching shared NFS data disk to destination QEMU..."
+    qmp_hotplug_disk "${NODE2}" "${DST_SOCK}" "${NFS_DISK_IMG}"
+    success "Destination data disk hotplugged (NFS): ${NFS_DISK_IMG}"
+fi
 
 # The destination QEMU runs inside the helper pod's network namespace.
 # The tap interface (tap0_kata) is in that namespace. Pass the netns path
@@ -491,14 +576,18 @@ if [[ "${ENV_ONLY}" == "true" ]]; then
 fi
 
 if [[ "${METHOD}" == "job" ]]; then
-    log "Executing Live Migration (job mode)..."
+    STORAGE_FLAGS=""
+    if [[ "${STORAGE}" != "local" ]]; then
+        STORAGE_FLAGS="--shared-storage"
+    fi
+    log "Executing Live Migration (job mode, storage=${STORAGE})..."
     MIG_LOG=$(mktemp)
     "${PROJECT_ROOT}/deploy/migrate.sh" \
         --context "${CTX}" --source-node "${NODE1}" --dest-node "${NODE2}" \
         --tap "${DST_TAP}" --tap-netns "${DST_TAP_NETNS}" \
         --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
         --dest-ip "${DST_POD_IP}" --vm-ip "${SRC_POD_IP}" \
-        --image "localhost/katamaran:dev" --shared-storage --downtime 25 2>&1 | tee "${MIG_LOG}" || {
+        --image "localhost/katamaran:dev" ${STORAGE_FLAGS} --downtime 25 2>&1 | tee "${MIG_LOG}" || {
             error "Migration failed!"
             exit 1
         }

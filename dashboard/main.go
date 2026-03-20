@@ -58,9 +58,9 @@ func main() {
 	mux.HandleFunc("/api/migrate/stop", app.handleMigrateStop)
 	mux.HandleFunc("/api/status", app.handleStatus)
 	mux.HandleFunc("/api/ping", app.handlePingStart)
-	mux.HandleFunc("/api/ping/stop", app.handlePingStop)
+	mux.HandleFunc("/api/ping/stop", app.handleLoadgenStop)
 	mux.HandleFunc("/api/httpgen", app.handleHTTPStart)
-	mux.HandleFunc("/api/httpgen/stop", app.handleHTTPStop)
+	mux.HandleFunc("/api/httpgen/stop", app.handleLoadgenStop)
 
 	srv := &http.Server{
 		Addr:         ":8080",
@@ -276,11 +276,13 @@ func (a *App) appendLog(msg string) {
 	defer a.migrationMutex.Unlock()
 	a.migrationOutput = append(a.migrationOutput, msg)
 	if len(a.migrationOutput) > maxLogLines {
-		a.migrationOutput = a.migrationOutput[len(a.migrationOutput)-maxLogLines:]
+		n := len(a.migrationOutput) - maxLogLines
+		clear(a.migrationOutput[:n]) // Release old strings for GC.
+		a.migrationOutput = a.migrationOutput[n:]
 	}
 }
 
-func (a *App) handleHTTPStop(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -394,15 +396,6 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (a *App) handlePingStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	a.stopLoadgen()
-	w.WriteHeader(http.StatusOK)
-}
-
 func (a *App) addPing(lat float64, errStr string) {
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()
@@ -412,7 +405,9 @@ func (a *App) addPing(lat float64, errStr string) {
 		Error:   errStr,
 	})
 	if len(a.pingLog) > maxPingLines {
-		a.pingLog = a.pingLog[len(a.pingLog)-maxPingLines:]
+		n := len(a.pingLog) - maxPingLines
+		clear(a.pingLog[:n]) // Release old entries for GC.
+		a.pingLog = a.pingLog[n:]
 	}
 }
 

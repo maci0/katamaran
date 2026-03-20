@@ -9,6 +9,8 @@
 ./scripts/e2e.sh --provider minikube --cni cilium --ping-proof  # two-node + zero-drop proof (Cilium)
 ./scripts/e2e.sh --provider minikube --cni flannel --ping-proof # two-node + zero-drop proof (Flannel)
 ./scripts/e2e.sh --provider kind --ping-proof                   # two-node + zero-drop proof (Kind + Podman)
+./scripts/e2e.sh --provider minikube --cni calico --storage local --ping-proof  # NBD drive-mirror (full 3-phase)
+./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
@@ -50,6 +52,27 @@ cat /sys/module/kvm_intel/parameters/nested   # should print Y or 1
 # AMD
 cat /sys/module/kvm_amd/parameters/nested     # should print 1
 ```
+
+### Disable AVIC on AMD Zen 4+ Hosts
+
+AMD's AVIC (Advanced Virtual Interrupt Controller) is enabled by default on Zen 4/5 CPUs since Linux 6.18. A known errata (#1235) causes KVM page faults during nested guest initialization, which crashes Kata Container VMs with `kvm run failed Bad address` or internal-error exits.
+
+If you have an AMD Zen 4 or newer CPU (Ryzen 7000/9000, EPYC Genoa/Turin), **disable AVIC before running E2E tests**:
+
+```bash
+# Check current AVIC status
+cat /sys/module/kvm_amd/parameters/avic   # must print N or 0
+
+# If it prints Y or 1, disable it:
+sudo modprobe -r kvm_amd && sudo modprobe kvm_amd avic=0
+
+# Verify
+cat /sys/module/kvm_amd/parameters/avic   # should now print N
+```
+
+To make this persistent across reboots, add `kvm_amd.avic=0` to your kernel command line.
+
+> **Note:** Intel hosts are not affected. AMD Zen 3 and older are not affected (AVIC was not default-on).
 
 ## 1. Smoke Tests (No VMs Required)
 
@@ -189,6 +212,25 @@ The script:
 - QMP handshake and command execution on both nodes
 - Migration state matching between source and destination QEMU instances
 - Graceful cleanup on success and failure
+
+### Storage Modes
+
+The `--storage` flag controls how the E2E test handles block device migration:
+
+| Mode | Flag | What It Tests | Phases |
+|------|------|---------------|--------|
+| **none** (default) | `--storage none` | Skips storage mirroring (`--shared-storage`) | RAM + Network |
+| **local** | `--storage local` | NBD drive-mirror with local disk images | Storage + RAM + Network |
+| **nfs** | `--storage nfs` | Shared NFS-backed disk with `--shared-storage` | RAM + Network (shared disk verified) |
+
+The `local` mode is the most comprehensive: it adds a 64MB virtio-blk data disk to both
+QEMUs and runs katamaran without `--shared-storage`, exercising the full NBD drive-mirror
+synchronization loop (`waitForStorageSync`, `nbd-server-start/add/stop`, `drive-mirror`,
+`block-job-cancel`).
+
+**NFS kernel modules:** The `nfs` mode requires NFS client support in the node kernel
+(`CONFIG_NFS_FS`, `CONFIG_SUNRPC`). If using a custom minikube ISO, enable these in the
+kernel config alongside `CONFIG_NET_SCH_PLUG`.
 
 ## 5. Zero-Packet-Drop Proof — Full Worked Example
 
@@ -967,6 +1009,7 @@ sequenceDiagram
 | `storage sync for job.*did not complete` | Drive-mirror never converged (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
 | `timed out waiting for QMP response` | QEMU unresponsive mid-command | Check QEMU process health; may need restart |
 | `connection is closed` | QMP command issued after socket was closed | Indicates a bug or QEMU crashed mid-operation; check QEMU logs |
+| `kvm run failed Bad address` or VM internal-error | AVIC enabled on AMD Zen 4/5 (errata #1235) | Disable AVIC: `modprobe -r kvm_amd && modprobe kvm_amd avic=0` |
 | minikube won't start | KVM not available or nested virt disabled | Check `/dev/kvm` exists and nested virt is enabled |
 | kata-deploy pod not starting | Image pull issues or resource constraints | Check pod events: `kubectl -n kube-system describe pod -l name=kata-deploy` |
 | No extra-monitor.sock found | extra_monitor_socket not configured | Verify `enable_debug = true` and `extra_monitor_socket = "qmp"` in Kata config |

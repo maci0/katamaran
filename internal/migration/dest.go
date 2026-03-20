@@ -26,12 +26,12 @@ import (
 //     skipped if tapIface is empty or the interface does not exist)
 //  2. Opens an incoming migration listener via QMP migrate-incoming
 //  3. Starts an NBD server for storage mirroring (unless shared-storage mode)
-//  4. Plugs the network queue to catch in-flight packets (skipped if step 1 failed)
+//  4. Plugs the network queue to catch in-flight packets (skipped if no qdisc installed)
 //  5. Waits for the RESUME event (unconditional)
-//  6. Flushes all buffered packets via release_indefinite (skipped if step 1 failed)
+//  6. Flushes all buffered packets via release_indefinite (skipped if no qdisc installed)
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
-func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool) error {
+func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID string, sharedStorage bool, multifdChannels int) error {
 	log.Println("Setting up destination node...")
 
 	// Step 1: Install sch_plug qdisc in pass-through mode.
@@ -47,9 +47,8 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 			// Idempotency: clear any existing qdisc on this interface before adding.
 			cctx, ccancel := CleanupCtx(ctx)
 			if err := RunCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
-				// We don't care if this fails, as the qdisc might not exist.
-				// But we log it instead of completely ignoring it.
-				log.Printf("Cleared existing qdisc on %s (error ignored: %v)", tapIface, err)
+				// Expected to fail if no qdisc exists (first run).
+				log.Printf("Pre-clearing qdisc on %s: %v (expected if none exists)", tapIface, err)
 			}
 			ccancel()
 
@@ -91,7 +90,25 @@ func RunDestination(ctx context.Context, qmpSocket, tapIface, tapNetns, driveID 
 		}
 	}()
 
-	// Step 2: Open incoming migration listener on the running QEMU.
+	// Step 2: Configure migration capabilities and open incoming listener.
+	// Multifd must be enabled BEFORE migrate-incoming so the destination
+	// opens the parallel channel listeners alongside the main listener.
+	if multifdChannels > 0 {
+		if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
+			Capabilities: []qmp.MigrationCapability{
+				{Capability: "multifd", State: true},
+			},
+		}); err != nil {
+			return fmt.Errorf("setting destination migration capabilities: %w", err)
+		}
+		if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
+			MultiFDChannels: int64(multifdChannels),
+		}); err != nil {
+			return fmt.Errorf("setting destination migration parameters: %w", err)
+		}
+		log.Printf("Multifd enabled on destination: %d channels.", multifdChannels)
+	}
+
 	// Starting QEMU with -incoming is incompatible with Kata's sandbox lifecycle
 	// (Kata kills the QEMU because kata-agent never connects via vsock in
 	// incoming mode), so we use a QMP command on the already-running instance.

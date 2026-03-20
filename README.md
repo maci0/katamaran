@@ -366,7 +366,7 @@ This section explores which storage and networking stacks are compatible, what t
 flowchart LR
     A[Build image localhost/katamaran:dev] --> B[Load image into cluster]
     B --> C[Apply deploy/daemonset.yaml]
-    C --> D[/usr/local/bin/katamaran present on Kata nodes]
+    C --> D["katamaran binary present on Kata nodes"]
     D --> E[Create destination VM pod]
     E --> F[Detect QMP socket + tap iface]
     F --> G[Run deploy/migrate.sh]
@@ -463,10 +463,17 @@ The network cutover (Phase 3) must work with the cluster's CNI plugin. The key r
 > [!IMPORTANT]
 > The most critical requirement for network routing is that **the VM's pod IP must survive migration**.
 
-This means:
-- The IPAM must allow the same IP to be assigned on the destination node
-- Per-node IP blocks (Calico's default) are problematic — the pod IP belongs to the source node's CIDR
-- Solutions: cluster-wide IPAM pools, static IP annotation, or a migration-aware IPAM plugin
+This means the IPAM must allow the same IP to be assigned on the destination node. Per-node IP blocks (the default for several CNIs) are problematic because the pod IP belongs to the source node's CIDR and is invalid on the destination.
+
+| CNI | Default IPAM | Migration-Safe Config |
+|-----|-------------|----------------------|
+| **OVN-Kubernetes** | Cluster-wide | Works out of the box — IPs are not tied to nodes |
+| **Kube-OVN** | Cluster-wide | Works out of the box |
+| **Cilium** | `cluster-pool` | Works out of the box with default `cluster-pool` IPAM mode. Avoid `kubernetes` IPAM mode (per-node CIDRs) |
+| **Calico** | Per-node blocks | **Requires config change.** Use `ipipMode: Always` with a shared IPPool and disable `blockSize`-based per-node allocation, or use Calico's IPAM with `nat-outgoing: false` and a flat pool |
+| **Flannel** | Per-node `/24` | **Problematic.** Flannel allocates a `/24` per node from the pod CIDR. No built-in mechanism to preserve IPs across nodes. Requires external IPAM or static IP annotation |
+| **Antrea** | Per-node | **Requires config change.** Configure `NodeIPAM` with a shared pool or use `externalIPAM` |
+| **kindnet** | Per-node | **Not suitable** for live migration (no cross-node IP support) |
 
 ### The Ideal Setup
 

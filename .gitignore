@@ -6,7 +6,9 @@ test_signal
 
 # Generated artifacts
 coverage.out
+*_cover.out
 godoc_all.txt
+out/
 
 # Merge/patch artifacts
 *.orig
@@ -22,3 +24,4 @@ query_qmp.py
 scripts/kata_test_rsa
 scripts/kata_test_rsa.pub
 
+.minikube-build/

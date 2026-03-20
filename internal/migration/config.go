@@ -32,14 +32,16 @@ const (
 	// StoragePollInterval is how often to check drive-mirror sync progress.
 	StoragePollInterval = 2 * time.Second
 
-	// MigrationPollInterval is how often to check RAM migration status.
+	// MigrationPollInterval is the interval for migration status polling.
+	// Used both as the STOP event wait timeout and the query-migrate poll rate.
 	MigrationPollInterval = 1 * time.Second
 
 	// PostMigrationTunnelDelay is how long to keep the IP tunnel alive
 	// after migration completes, allowing the CNI control plane to converge.
 	PostMigrationTunnelDelay = 5 * time.Second
 
-	// PlugQdiscLimit is the packet buffer size for the tc sch_plug qdisc.
+	// PlugQdiscLimit is the maximum number of packets the tc sch_plug qdisc
+	// will buffer before dropping. Passed as the "limit" argument to tc.
 	PlugQdiscLimit = "32768"
 
 	// GARPInitialMS is the initial delay before the first GARP announcement.
@@ -73,6 +75,12 @@ const (
 	// in query-block-jobs after being submitted. If it doesn't appear within
 	// this window, the drive-mirror command likely failed silently.
 	JobAppearTimeout = 30 * time.Second
+
+	// DefaultMultiFDChannels is the number of parallel TCP connections used
+	// for RAM migration. Multifd distributes page transfer across channels,
+	// improving throughput when per-connection bandwidth is limited (e.g.
+	// nested KVM, high-latency links). Set to 0 to disable multifd.
+	DefaultMultiFDChannels = 4
 
 	// CleanupTimeout is the deadline for deferred cleanup operations
 	// (qdisc removal, NBD server stop, block-job-cancel, tunnel teardown).

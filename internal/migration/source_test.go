@@ -56,6 +56,7 @@ func TestRunSource_Failures(t *testing.T) {
 				tt.tunnelMode,
 				25,
 				false,
+				0,
 			)
 			if err == nil {
 				t.Fatal("expected error for nonexistent QMP socket")
@@ -391,7 +392,7 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err != nil {
 		t.Fatalf("RunSource shared-storage happy path: %v", err)
 	}
@@ -426,7 +427,7 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
@@ -474,7 +475,7 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false, 0)
 	if err != nil {
 		t.Fatalf("RunSource non-shared happy path: %v", err)
 	}
@@ -508,7 +509,7 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error when migration fails during STOP polling")
 	}
@@ -544,7 +545,7 @@ func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error when migration cancelled during STOP polling")
 	}
@@ -581,9 +582,45 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err != nil {
 		t.Fatalf("RunSource completed-during-polling: %v", err)
+	}
+}
+
+func TestRunSource_SharedStorage_Multifd(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}` + "\n"))
+				continue
+			}
+			// migrate-set-capabilities, migrate-set-parameters, etc.
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 4)
+	if err != nil {
+		t.Fatalf("RunSource with multifd: %v", err)
 	}
 }
 
@@ -642,7 +679,7 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error for drive-mirror failure")
 	}
@@ -674,7 +711,7 @@ func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error for capabilities failure")
 	}
@@ -706,7 +743,7 @@ func TestRunSource_SetParametersFailure(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error for parameters failure")
 	}
@@ -738,7 +775,7 @@ func TestRunSource_MigrateCommandFailure(t *testing.T) {
 
 	destIP := netip.MustParseAddr("10.0.0.1")
 	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false)
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
 	if err == nil {
 		t.Fatal("expected error for migrate command failure")
 	}

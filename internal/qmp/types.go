@@ -41,7 +41,6 @@ type BlockJobStatus string
 const (
 	BlockJobStatusConcluded BlockJobStatus = "concluded"
 	BlockJobStatusNull      BlockJobStatus = "null"
-	// other statuses might exist, but these are the ones checked
 )
 
 // BlockJobInfo represents a single entry returned by query-block-jobs.
@@ -131,8 +130,9 @@ type MigrationCapability struct {
 
 // MigrateSetParametersArgs are the arguments for migrate-set-parameters.
 type MigrateSetParametersArgs struct {
-	DowntimeLimit int64 `json:"downtime-limit"`
-	MaxBandwidth  int64 `json:"max-bandwidth"`
+	DowntimeLimit   int64 `json:"downtime-limit,omitempty"`
+	MaxBandwidth    int64 `json:"max-bandwidth,omitempty"`
+	MultiFDChannels int64 `json:"multifd-channels,omitempty"`
 }
 
 // MigrateArgs are the arguments for the migrate command.
