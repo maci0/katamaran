@@ -23,6 +23,12 @@ spec:
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
         command: ["/bin/sh", "-c"]
         args:
           - |
@@ -35,7 +41,7 @@ spec:
             echo "katamaran binary installed"
 
             # --- 2. Load required kernel modules ---
-            for mod in ipip ip6_tunnel ip_gre sch_plug; do
+            for mod in ipip ip6_tunnel ip_gre ip6_gre sch_plug; do
               nsenter --target 1 --mount -- modprobe "$mod" 2>/dev/null \
                 && echo "loaded $mod" \
                 || echo "skipped $mod (not available)"
@@ -64,6 +70,12 @@ spec:
       - name: keepalive
         image: localhost/katamaran:dev
         imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 1m
+            memory: 8Mi
+          limits:
+            memory: 16Mi
         command: ["/bin/sh", "-c"]
         args:
           - |

@@ -49,7 +49,7 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Dashboard](#dashboard)
 - [Testing](#testing)
 
-See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](dashboard/README.md)**
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/dashboard/README.md)**
 
 ---
 
@@ -86,7 +86,7 @@ make
 Run the smoke tests (no VMs required):
 
 ```bash
-make smoke    # 66 tests, validates compilation, CLI behavior, project structure
+make smoke    # validates compilation, CLI behavior, project structure
 ```
 
 ### 2. Create a Two-Node Minikube Cluster
@@ -125,7 +125,7 @@ kubectl get runtimeclass kata-qemu
 
 ### 4. Deploy katamaran on Both Nodes
 
-Build the container image and deploy via DaemonSet. This automatically installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `sch_plug`) on both nodes:
+Build the container image and deploy via DaemonSet. This automatically installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on both nodes:
 
 ```bash
 make image
@@ -193,7 +193,7 @@ envsubst < deploy/job-source.yaml | kubectl apply -f -
 > **Tip:** For a faster setup (~30s instead of ~5min), use Kind + Podman instead of minikube:
 > ```bash
 > ./scripts/e2e.sh --provider kind --ping-proof
-> ./scripts/e2e.sh teardown --provider kind
+> ./scripts/e2e.sh --teardown --provider kind
 > ```
 
 ---
@@ -283,9 +283,13 @@ Dockerfile.dashboard            # Dashboard container image build (multi-arch)
 cmd/
   katamaran/
     main.go                     # CLI entry point — flag parsing and dispatch
+  dashboard/
+    main.go                     # Dashboard web server (Go, stdlib only)
+    index.html                  # Dashboard frontend (dark theme, Chart.js)
+    README.md                   # Dashboard usage guide
 internal/
   migration/
-    config.go                   # Constants, CleanupCtx, and RunCmd helper
+    config.go                   # Constants, cleanupCtx, and runCmd helper
     config_test.go              # Config unit tests and FuzzFormatQEMUHost
     dest.go                     # Destination-side migration logic
     dest_test.go                # Destination unit tests
@@ -298,12 +302,10 @@ internal/
     client_test.go              # QMP client unit tests
     fuzz_test.go                # Fuzz tests for QMP protocol parsing (6 targets)
     types.go                    # QMP protocol types and command argument structs
-dashboard/
-  main.go                       # Dashboard web server (Go, stdlib only)
-  index.html                    # Dashboard frontend (dark theme, Chart.js)
-  dashboard.yaml                # Kubernetes Deployment + NodePort Service
-  README.md                     # Dashboard usage guide
+  qmptest/
+    helpers.go                  # Shared test helpers for faking a QMP server
 deploy/
+  dashboard.yaml                # Dashboard Kubernetes Deployment + NodePort Service
   daemonset.yaml                # DaemonSet for node setup (binary, QMP config, kernel modules)
   job-dest.yaml                 # Job template for destination-side migration
   job-source.yaml               # Job template for source-side migration
@@ -314,18 +316,25 @@ docs/
   TESTING.md                    # Test environment guide
   STORIES.md                    # User stories
   logo.png                      # Project logo
+demo/
+  nginx-kata.yaml               # Example Kata Containers pod with NGINX + NodePort
 scripts/                        # Test and operational scripts
   test.sh                       # Smoke tests (no VMs required)
   cleanup.sh                    # Cluster cleanup helper
   minikube-test.sh              # Single-node Kata QMP smoke test (requires KVM)
   e2e.sh                        # Unified E2E live migration test harness
+  sweep.sh                      # Parameter sweep tool for migration tuning
+  lib.sh                        # Shared utility functions for scripts
+  build-minikube-iso.sh         # Custom minikube ISO builder
+  build-minikube-modules.sh     # Kernel module builder for minikube
   manifests/                    # E2E test manifests and templates
     kata-pod.yaml               # Kata Containers pod template
     kind-config.yaml            # Kind cluster configuration
     kind-config-nocni.yaml      # Kind cluster configuration (CNI disabled for Cilium/Flannel)
     nfs-pv.yaml                 # NFS PersistentVolume template
     nfs-server.yaml             # NFS server pod template
-    qemu-wrapper.sh             # QEMU state-matching wrapper for destination
+    pod-src.yaml                # Source pod manifest for E2E tests
+    pod-dest.yaml               # Destination pod manifest for E2E tests
 ```
 
 ---
@@ -483,7 +492,7 @@ For production live migration with minimal downtime and operational complexity:
 ┌─────────────────────────────────────────────────────┐
 │                  Ideal Stack                         │
 ├──────────────┬──────────────────────────────────────┤
-│ Runtime      │ Kata Containers 3.x + Cloud Hypervisor or QEMU 8+ │
+│ Runtime      │ Kata Containers 3.x + QEMU 8+                     │
 │ Storage CSI  │ Ceph RBD (rbd.csi.ceph.com)          │
 │ Storage Mode │ --shared-storage (skip NBD mirror)     │
 │ CNI          │ OVN-Kubernetes or Cilium              │
@@ -548,7 +557,7 @@ flowchart TD
 
 ## Dashboard
 
-A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. See [dashboard/README.md](dashboard/README.md) for details.
+A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. See [cmd/dashboard/README.md](cmd/dashboard/README.md) for details.
 
 ### Deploying the Dashboard
 
@@ -560,7 +569,7 @@ make dashboard
 minikube image load dashboard.tar
 
 # 3. Deploy the manifests
-kubectl apply -f dashboard/dashboard.yaml
+kubectl apply -f deploy/dashboard.yaml
 ```
 
 ### Using the Dashboard

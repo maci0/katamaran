@@ -12,5 +12,5 @@ RUN apk add --no-cache iproute2 kmod
 COPY --from=builder /katamaran /usr/local/bin/katamaran
 ENTRYPOINT ["/usr/local/bin/katamaran"]
 
-LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran"
-LABEL org.opencontainers.image.description="Zero-packet-drop live migration for Kata Containers"
+LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.description="Zero-packet-drop live migration for Kata Containers"

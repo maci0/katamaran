@@ -17,11 +17,13 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Dashboard frontend |
-| `/api/migrate` | POST | Start migration (form fields: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `dest_ip`, `vm_ip`, `image`, `shared_storage`) |
-| `/api/status` | GET | JSON status: `{migrating, logs, pings}` |
-| `/api/ping?target=<ip>` | GET | Start continuous ping (5/sec) to target |
-| `/api/ping/stop` | GET | Stop active ping/loadgen |
-| `/api/httpgen?target=<host:port>` | GET | Start HTTP load generator (5 req/sec) to target |
+| `/api/migrate` | POST | Start migration (form fields: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`) |
+| `/api/migrate/stop` | POST | Cancel running migration |
+| `/api/status` | GET | JSON status: `{migrating, loadgen_running, logs, pings}` |
+| `/api/ping?target=<ip>` | POST | Start continuous ping (5/sec) to target |
+| `/api/ping/stop` | POST | Stop active ping/loadgen |
+| `/api/httpgen?target=<host:port>` | POST | Start HTTP load generator (5 req/sec) to target |
+| `/api/httpgen/stop` | POST | Stop active ping/loadgen |
 
 ## Building the Container
 
@@ -53,7 +55,7 @@ Then visit http://localhost:8080
 ## Running In-Cluster
 
 ```bash
-kubectl apply -f dashboard/dashboard.yaml
+kubectl apply -f deploy/dashboard.yaml
 ```
 
 This creates:
@@ -80,4 +82,4 @@ Access the dashboard at `http://<any-node-ip>:30080`.
 └─────────────────────────────────────────────┘
 ```
 
-The server is stdlib-only Go (zero external dependencies). It uses graceful shutdown via `signal.NotifyContext`, HTTP server timeouts, and context-based cancellation for child processes.
+The server is stdlib-only Go (zero external dependencies). It uses graceful shutdown via `signal.Notify`, HTTP server timeouts, and context-based cancellation for child processes.

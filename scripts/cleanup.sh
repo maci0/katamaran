@@ -5,10 +5,9 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+source "${SCRIPT_DIR}/lib.sh"
 
 KEEP_LOGS=false
-
-log() { echo ">>> $1"; }
 
 usage() {
     cat <<USAGE
@@ -24,7 +23,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-logs) KEEP_LOGS=true; shift ;;
         --help) usage; exit 0 ;;
-        *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+        *) echo "Error: unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
 

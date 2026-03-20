@@ -1,3 +1,6 @@
+# Source-side migration Job template.
+# Rendered via envsubst by deploy/migrate.sh.
+# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -19,13 +22,20 @@ spec:
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            memory: 32Mi
         command: ["/bin/sh", "-c"]
         args:
           - >-
             modprobe sch_plug 2>/dev/null || true;
             modprobe ipip 2>/dev/null || true;
             modprobe ip6_tunnel 2>/dev/null || true;
-            modprobe ip_gre 2>/dev/null || true
+            modprobe ip_gre 2>/dev/null || true;
+            modprobe ip6_gre 2>/dev/null || true
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
@@ -46,9 +56,12 @@ spec:
       - name: run-vc
         hostPath:
           path: /run/vc
+          type: Directory
       - name: sys
         hostPath:
           path: /sys
+          type: Directory
       - name: lib-modules
         hostPath:
           path: /lib/modules
+          type: Directory

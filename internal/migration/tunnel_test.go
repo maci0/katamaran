@@ -25,8 +25,8 @@ func TestSetupTunnel_Validation(t *testing.T) {
 		vm      netip.Addr
 		wantErr string
 	}{
-		{"InvalidDest", netip.Addr{}, netip.MustParseAddr("10.0.0.1"), "invalid destination"},
-		{"InvalidVM", netip.MustParseAddr("10.0.0.1"), netip.Addr{}, "invalid destination"},
+		{"InvalidDest", netip.Addr{}, netip.MustParseAddr("10.0.0.1"), "invalid destination address:"},
+		{"InvalidVM", netip.MustParseAddr("10.0.0.1"), netip.Addr{}, "invalid VM address:"},
 		{"FamilyMismatch_v4v6", netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fd00::1"), "families must match"},
 		{"FamilyMismatch_v6v4", netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.1"), "families must match"},
 		{"MappedV4", netip.MustParseAddr("::ffff:192.168.1.1").Unmap(), netip.MustParseAddr("192.168.1.2"), ""},
@@ -35,7 +35,7 @@ func TestSetupTunnel_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := SetupTunnel(context.Background(), tt.dest, tt.vm, "ipip")
+			err := setupTunnel(context.Background(), tt.dest, tt.vm, "ipip", "test-tun")
 			if tt.wantErr == "" {
 				if err != nil && (strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch") || strings.Contains(err.Error(), "must match")) {
 					t.Fatalf("expected no validation error, got: %v", err)
@@ -66,10 +66,11 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := SetupTunnel(context.Background(),
+			err := setupTunnel(context.Background(),
 				netip.MustParseAddr(tt.dest),
 				netip.MustParseAddr(tt.vm),
 				tt.mode,
+				"test-tun",
 			)
 			if err != nil && (strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "mismatch")) {
 				t.Fatalf("should pass validation and fail at ip command, got: %v", err)
@@ -80,8 +81,8 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 
 func TestTeardownTunnel_NoTunnel(t *testing.T) {
 	t.Parallel()
-	// TeardownTunnel is best-effort and never panics, even with no tunnel.
-	TeardownTunnel(context.Background())
+	// teardownTunnel is best-effort and never panics, even with no tunnel.
+	teardownTunnel(context.Background(), "test-tun")
 }
 
 func TestSetupTunnel_ContextCancelled(t *testing.T) {
@@ -89,10 +90,11 @@ func TestSetupTunnel_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := SetupTunnel(ctx,
+	err := setupTunnel(ctx,
 		netip.MustParseAddr("10.0.0.1"),
 		netip.MustParseAddr("10.244.1.15"),
 		"ipip",
+		"test-tun",
 	)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")

@@ -8,9 +8,11 @@
 #                    or 'nfs' (NFS shared storage). 'local' exercises the full 3-phase
 #                    migration including storage mirroring. 'nfs' deploys an NFS server
 #                    pod and uses it as shared storage.
+# --kata-version <v> Kata Containers chart version (default: '3.24.0').
 # --method <name>    Orchestration method: 'job' (default) or 'direct'.
 # --ping-proof       Run continuous ping during migration and assert zero packet loss.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
+# --teardown         Tear down the cluster and exit.
 # --help             Show this help text.
 
 set -euo pipefail
@@ -18,15 +20,11 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+source "${SCRIPT_DIR}/lib.sh"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
-readonly KATA_CHART_VERSION="3.24.0"
-
-log() { echo -e "\n\033[1;34m>>> $1\033[0m"; }
-success() { echo -e "\033[1;32m  PASS: $1\033[0m"; }
-warn() { echo -e "\033[1;33m  WARN: $1\033[0m"; }
-error() { echo -e "\033[1;31m  ERROR: $1\033[0m" >&2; }
 
 PROVIDER="minikube"
+KATA_VERSION="3.24.0"
 CNI="auto"
 STORAGE="none"
 METHOD="job"
@@ -37,15 +35,16 @@ TEARDOWN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        teardown) TEARDOWN=true; shift ;;
+        --teardown) TEARDOWN=true; shift ;;
         --provider) PROVIDER="$2"; shift 2 ;;
         --cni) CNI="$2"; shift 2 ;;
         --storage) STORAGE="$2"; shift 2 ;;
+        --kata-version) KATA_VERSION="$2"; shift 2 ;;
         --method) METHOD="$2"; shift 2 ;;
         --ping-proof) PING_PROOF=true; shift ;;
         --env-only) ENV_ONLY=true; shift ;;
-        --help) grep "^# " "$0" | sed "s/^#//"; exit 0 ;;
-        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+        --help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
+        *) error "Unknown option: $1"; exit 1 ;;
     esac
 done
 
@@ -53,6 +52,23 @@ if [[ "${STORAGE}" != "none" && "${STORAGE}" != "local" && "${STORAGE}" != "nfs"
     error "--storage must be 'none', 'local', or 'nfs' (got '${STORAGE}')"
     exit 1
 fi
+
+if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
+    error "--provider must be 'minikube' or 'kind' (got '${PROVIDER}')"
+    exit 1
+fi
+
+if [[ "${METHOD}" != "job" && "${METHOD}" != "direct" ]]; then
+    error "--method must be 'job' or 'direct' (got '${METHOD}')"
+    exit 1
+fi
+
+case "${CNI}" in
+    auto|calico|cilium|flannel|ovn|kindnet) ;;
+    *) error "--cni must be 'auto', 'calico', 'cilium', 'flannel', 'ovn', or 'kindnet' (got '${CNI}')"; exit 1 ;;
+esac
+
+readonly KATA_CHART_VERSION="${KATA_VERSION}"
 
 if [[ "${PROVIDER}" == "kind" ]]; then SUDO=""; fi
 export SUDO
@@ -78,27 +94,7 @@ fi
 
 PROFILE="katamaran-e2e-${PROVIDER}-${CNI}-${STORAGE}-${METHOD}"
 
-node_exec() {
-    local node="$1"
-    shift
-    if [[ "${PROVIDER}" == "minikube" ]]; then
-        # Pipe through tr to strip carriage returns added by minikube's PTY.
-        minikube -p "${PROFILE}" ssh -n "$node" -- "$*" | tr -d '\r'
-    else
-        ${CE} exec "$node" bash -c "$*"
-    fi
-}
-
-node_cp_to() {
-    local node="$1"
-    local src="$2"
-    local dst="$3"
-    if [[ "${PROVIDER}" == "minikube" ]]; then
-        minikube -p "${PROFILE}" cp "${src}" "${node}:${dst}"
-    else
-        ${CE} cp "${src}" "${node}:${dst}"
-    fi
-}
+# node_exec and node_cp_to are provided by lib.sh.
 
 # qmp_hotplug_disk attaches a virtio-blk data disk to a running QEMU via QMP.
 # Uses a fixed PCI address (bus=pci-bridge-0,addr=0x8) so source and destination
@@ -206,7 +202,7 @@ else
     # Kata QEMU backs VM memory with /dev/shm.  Podman defaults to 63 MB,
     # which is far too small.  Remount with enough room (4 GB).
     for n in "${NODE1}" "${NODE2}"; do
-        ${CE} exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
+        "${CE}" exec "$n" mount -t tmpfs -o size=4g tmpfs /dev/shm
     done
 fi
 
@@ -270,22 +266,51 @@ if [[ "${CNI}" != "kindnet" && "${CNI}" != "calico" ]]; then
     kubectl --context "${CTX}" wait --for=condition=Ready node --all --timeout=300s
 fi
 
-log "Installing Kata Containers via Helm..."
+log "Installing Kata Containers via Helm (${KATA_CHART_VERSION})..."
+# Kata >=3.25.0 requires shims.disableAll to suppress non-qemu shims.
+# Kata <=3.24.x only supports per-shim flags.
+HELM_SETS=(--set shims.qemu.enabled=true)
+if [[ "${KATA_CHART_VERSION}" != "3.24."* ]]; then
+    HELM_SETS+=(--set shims.disableAll=true)
+fi
 helm upgrade --install kata-deploy "${KATA_CHART}" \
     --kube-context "${CTX}" --namespace kube-system \
     --version "${KATA_CHART_VERSION}" \
-    --set shims.qemu.enabled=true --wait=false
+    "${HELM_SETS[@]}" --wait=false
 kubectl --context "${CTX}" -n kube-system rollout status daemonset/kata-deploy --timeout=300s
 
 log "Applying Kata configuration overrides (QMP socket + high timeout)..."
-KATA_CFG="/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+# Kata >=3.25.0 moved configs into runtimes/qemu/ subdir. Auto-detect.
+KATA_CFG_CANDIDATES=(
+    "/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
+    "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+)
+KATA_CFG=""
 for node in "${NODE1}" "${NODE2}"; do
     log "Waiting for Kata configuration on node ${node}..."
     for i in $(seq 1 60); do
-        if node_exec "${node}" "[ -f ${KATA_CFG} ]"; then break; fi
+        for candidate in "${KATA_CFG_CANDIDATES[@]}"; do
+            if node_exec "${node}" "[ -f ${candidate} ]" 2>/dev/null; then
+                KATA_CFG="${candidate}"
+                break 2
+            fi
+        done
         sleep 2
     done
-    if ! node_exec "${node}" "[ -f ${KATA_CFG} ]"; then
+    if [[ -n "${KATA_CFG}" ]]; then break; fi
+done
+if [[ -z "${KATA_CFG}" ]]; then
+    error "Kata configuration not found on any node after waiting."
+    exit 1
+fi
+log "Detected Kata config: ${KATA_CFG}"
+for node in "${NODE1}" "${NODE2}"; do
+    # Ensure config exists on this node (kata-deploy may still be rolling out).
+    for i in $(seq 1 60); do
+        if node_exec "${node}" "[ -f ${KATA_CFG} ]" 2>/dev/null; then break; fi
+        sleep 2
+    done
+    if ! node_exec "${node}" "[ -f ${KATA_CFG} ]" 2>/dev/null; then
         error "Kata configuration not found on ${node} after waiting."
         exit 1
     fi
@@ -308,7 +333,7 @@ else
     kind load image-archive katamaran.tar --name "${PROFILE}"
 fi
 
-envsubst < "${PROJECT_ROOT}/deploy/daemonset.yaml" | kubectl --context "${CTX}" apply -f -
+kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/daemonset.yaml"
 kubectl --context "${CTX}" -n kube-system rollout status daemonset/katamaran-deploy --timeout=300s
 
 # --- Storage: deploy NFS server for shared storage test ---
@@ -324,14 +349,28 @@ if [[ "${STORAGE}" == "nfs" ]]; then
     NFS_SERVER_IP=$(kubectl --context "${CTX}" get pod nfs-server -o jsonpath='{.status.podIP}')
     success "NFS server running at ${NFS_SERVER_IP}"
 
+    # Ensure NFS client kernel modules are available.
+    if ! node_exec "${NODE1}" "${SUDO} modprobe nfs" 2>/dev/null; then
+        if [[ "${PROVIDER}" == "minikube" ]] && [[ -x "${SCRIPT_DIR}/build-minikube-modules.sh" ]]; then
+            log "NFS kernel modules not available. Building for minikube..."
+            "${SCRIPT_DIR}/build-minikube-modules.sh" "${PROFILE}" nfs || {
+                error "Failed to build NFS kernel modules."
+                exit 1
+            }
+            success "NFS kernel modules built and loaded."
+        else
+            error "NFS kernel modules not available. modprobe nfs failed on ${NODE1}."
+            exit 1
+        fi
+    fi
+
     # Mount NFS on both nodes and create the shared disk image.
     NFS_MNT="/mnt/nfs-katamaran"
     for node in "${NODE1}" "${NODE2}"; do
         node_exec "${node}" "${SUDO} mkdir -p ${NFS_MNT}"
-        if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
-            if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=3,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
-                error "NFS mount failed on ${node}. Kernel NFS client modules (nfs, sunrpc) may be missing."
-                error "For custom minikube ISOs, enable CONFIG_NFS_FS and CONFIG_SUNRPC in the kernel config."
+        if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=3,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
+            if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
+                error "NFS mount failed on ${node} (tried v3 and v4)."
                 exit 1
             fi
         fi
@@ -576,6 +615,7 @@ if [[ "${ENV_ONLY}" == "true" ]]; then
 fi
 
 if [[ "${METHOD}" == "job" ]]; then
+    # Both 'none' and 'nfs' skip NBD drive-mirror; only 'local' uses it.
     STORAGE_FLAGS=""
     if [[ "${STORAGE}" != "local" ]]; then
         STORAGE_FLAGS="--shared-storage"
@@ -592,7 +632,7 @@ if [[ "${METHOD}" == "job" ]]; then
             exit 1
         }
 else
-    error "SSH method not implemented."
+    error "Direct method not implemented."
     exit 1
 fi
 

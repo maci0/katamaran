@@ -32,6 +32,7 @@ katamaran --mode <source|dest> [flags]
 | `--drive-id` | no | `drive-virtio-disk0` | QEMU block device id |
 | `--shared-storage` | no | `false` | Skip NBD storage mirroring |
 | `--multifd-channels` | no | `4` | Parallel TCP channels for RAM migration (0 to disable) |
+| `--log-format` | no | `text` | Log output format: `text` or `json` |
 
 ### Source mode flags
 
@@ -171,4 +172,4 @@ deploy/migrate.sh --help
 - `migration did not complete`
   - check logs from source and destination jobs/services
 
-For the full error reference (`dialing QMP socket`, `failed to add plug qdisc`, storage/RAM timeouts, etc.), see the [Troubleshooting](../docs/TESTING.md#troubleshooting) table in the Testing Guide.
+For the full error reference (`dialing QMP socket`, `failed to add plug qdisc`, storage/RAM timeouts, etc.), see the [Troubleshooting](TESTING.md#troubleshooting) table in the Testing Guide.

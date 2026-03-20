@@ -14,22 +14,22 @@ func TestCleanupCtx(t *testing.T) {
 	parent, parentCancel := context.WithCancel(context.Background())
 	parentCancel()
 
-	ctx, cancel := CleanupCtx(parent)
+	ctx, cancel := cleanupCtx(parent)
 	defer cancel()
 
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		t.Fatal("CleanupCtx should have a deadline")
+		t.Fatal("cleanupCtx should have a deadline")
 	}
 
 	remaining := time.Until(deadline)
-	if remaining < 5*time.Second || remaining > CleanupTimeout+time.Second {
-		t.Fatalf("expected deadline ~%v from now, got %v", CleanupTimeout, remaining)
+	if remaining < 5*time.Second || remaining > cleanupTimeout+time.Second {
+		t.Fatalf("expected deadline ~%v from now, got %v", cleanupTimeout, remaining)
 	}
 
 	select {
 	case <-ctx.Done():
-		t.Fatal("CleanupCtx should not be cancelled when parent is")
+		t.Fatal("cleanupCtx should not be cancelled when parent is")
 	default:
 	}
 }
@@ -41,27 +41,23 @@ func TestRunCmd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	cancelledCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
 
 	tests := []struct {
 		name    string
-		ctx     context.Context
 		cmd     string
 		args    []string
 		wantErr string
 	}{
-		{"Success", ctx, "true", nil, ""},
-		{"Failure", ctx, "false", nil, "executing false"},
-		{"WithOutput", ctx, "sh", []string{"-c", "echo 'failure output' >&2; exit 1"}, "failure output"},
-		{"ContextCancelled", cancelledCtx, "sleep", []string{"30"}, "cancel"},
-		{"NotFound", ctx, "nonexistent-binary-xyz-123", nil, "executing nonexistent"},
+		{"Success", "true", nil, ""},
+		{"Failure", "false", nil, "executing false"},
+		{"WithOutput", "sh", []string{"-c", "echo 'failure output' >&2; exit 1"}, "failure output"},
+		{"NotFound", "nonexistent-binary-xyz-123", nil, "executing nonexistent"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := RunCmd(tt.ctx, tt.cmd, tt.args...)
+			err := runCmd(ctx, tt.cmd, tt.args...)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected success, got: %v", err)
@@ -76,15 +72,85 @@ func TestRunCmd(t *testing.T) {
 			}
 		})
 	}
+
+	// Context cancellation tested separately so the context is created
+	// inside the subtest — avoids the parent's 100ms timeout expiring
+	// before parallel subtests start.
+	t.Run("ContextCancelled", func(t *testing.T) {
+		t.Parallel()
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		err := runCmd(cancelCtx, "sleep", "30")
+		if err == nil {
+			t.Fatal("expected error for cancelled context")
+		}
+		if !strings.Contains(err.Error(), "cancel") {
+			t.Fatalf("expected error containing %q, got: %v", "cancel", err)
+		}
+	})
 }
 
 func TestConstants_Reasonable(t *testing.T) {
 	t.Parallel()
-	if NBDPort == "" || RAMMigrationPort == "" || PlugQdiscLimit == "" || TunnelName == "" {
-		t.Fatal("string constants should not be empty")
+
+	for name, val := range map[string]string{
+		"nbdPort":          nbdPort,
+		"ramMigrationPort": ramMigrationPort,
+		"plugQdiscLimit":   plugQdiscLimit,
+		"tunnelPrefix":     tunnelPrefix,
+	} {
+		if val == "" {
+			t.Errorf("%s must not be empty", name)
+		}
 	}
-	if MaxBandwidth <= 0 || EventWaitTimeout <= 0 || StoragePollInterval <= 0 || MigrationPollInterval <= 0 || PostMigrationTunnelDelay <= 0 || GARPRounds <= 0 || MigrationTimeout <= 0 || StorageSyncTimeout <= 0 || JobAppearTimeout <= 0 || CleanupTimeout <= 0 || DefaultMultiFDChannels <= 0 {
-		t.Fatal("numeric constants should be positive")
+
+	// Check each numeric/duration constant individually so failures
+	// identify exactly which constant is wrong.
+	for _, c := range []struct {
+		name string
+		ok   bool
+	}{
+		{"maxBandwidth", maxBandwidth > 0},
+		{"eventWaitTimeout", eventWaitTimeout > 0},
+		{"storagePollInterval", storagePollInterval > 0},
+		{"migrationPollInterval", migrationPollInterval > 0},
+		{"postMigrationTunnelDelay", postMigrationTunnelDelay > 0},
+		{"garpRounds", garpRounds > 0},
+		{"migrationTimeout", migrationTimeout > 0},
+		{"storageSyncTimeout", storageSyncTimeout > 0},
+		{"jobAppearTimeout", jobAppearTimeout > 0},
+		{"cleanupTimeout", cleanupTimeout > 0},
+		{"DefaultMultifdChannels", DefaultMultifdChannels > 0},
+		{"rttMultiplier", rttMultiplier > 0},
+		{"rttMinOverheadMS", rttMinOverheadMS > 0},
+	} {
+		if !c.ok {
+			t.Errorf("%s must be positive", c.name)
+		}
+	}
+}
+
+func TestGenerateTunnelName(t *testing.T) {
+	t.Parallel()
+	name, err := generateTunnelName()
+	if err != nil {
+		t.Fatalf("generateTunnelName: %v", err)
+	}
+	if !strings.HasPrefix(name, tunnelPrefix) {
+		t.Fatalf("expected prefix %q, got %q", tunnelPrefix, name)
+	}
+	// Linux IFNAMSIZ is 16 (15 chars + null). Name must fit.
+	if len(name) > 15 {
+		t.Fatalf("tunnel name %q exceeds 15 chars (IFNAMSIZ-1)", name)
+	}
+
+	// Names should be unique.
+	name2, err := generateTunnelName()
+	if err != nil {
+		t.Fatalf("second generateTunnelName: %v", err)
+	}
+	if name == name2 {
+		t.Fatalf("expected unique names, got %q twice", name)
 	}
 }
 
@@ -107,8 +173,8 @@ func FuzzFormatQEMUHost(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if result := FormatQEMUHost(addr); result == "" {
-			t.Fatal("FormatQEMUHost returned empty string for valid address")
+		if result := formatQEMUHost(addr); result == "" {
+			t.Fatal("formatQEMUHost returned empty string for valid address")
 		}
 	})
 }
@@ -130,8 +196,8 @@ func TestFormatQEMUHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := FormatQEMUHost(tt.addr); got != tt.want {
-				t.Errorf("FormatQEMUHost(%v) = %q, want %q", tt.addr, got, tt.want)
+			if got := formatQEMUHost(tt.addr); got != tt.want {
+				t.Errorf("formatQEMUHost(%v) = %q, want %q", tt.addr, got, tt.want)
 			}
 		})
 	}

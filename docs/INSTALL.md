@@ -51,7 +51,7 @@ sudo install -m 0755 ./bin/katamaran /usr/local/bin/katamaran
 Quick sanity check:
 
 ```bash
-katamaran -help
+katamaran --help
 ```
 
 ## Option 2: Build Container Image
@@ -71,12 +71,12 @@ podman build -t localhost/katamaran:dev .
 Sanity check:
 
 ```bash
-podman run --rm localhost/katamaran:dev -help
+podman run --rm localhost/katamaran:dev --help
 ```
 
 ## Option 3: Install on Kubernetes Nodes (DaemonSet)
 
-This installs `katamaran` onto `/usr/local/bin/katamaran` on nodes labeled for Kata runtime. The DaemonSet also configures the Kata QMP extra-monitor socket (required for migration) and loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `sch_plug`) on each node via an init container.
+This installs `katamaran` onto `/usr/local/bin/katamaran` on nodes labeled for Kata runtime. The DaemonSet also configures the Kata QMP extra-monitor socket (required for migration) and loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on each node via an init container.
 
 ### Step 1: Build image
 
@@ -117,7 +117,7 @@ Then on a target node:
 
 ```bash
 ls -l /usr/local/bin/katamaran
-/usr/local/bin/katamaran -help
+/usr/local/bin/katamaran --help
 ```
 
 ## Job-Based Migration Install (Optional)
@@ -166,4 +166,4 @@ podman rmi localhost/katamaran:dev
 - DaemonSet not scheduling
   - Check node label `katacontainers.io/kata-runtime=true`.
 
-For runtime errors (`dialing QMP socket`, `failed to add plug qdisc`, etc.), see the full [Troubleshooting](../docs/TESTING.md#troubleshooting) table in the Testing Guide.
+For runtime errors (`dialing QMP socket`, `failed to add plug qdisc`, etc.), see the full [Troubleshooting](TESTING.md#troubleshooting) table in the Testing Guide.

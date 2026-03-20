@@ -9,8 +9,8 @@ build:
 
 # Run go vet and gofmt checks
 vet:
-	go vet ./...
-	@test -z "$$(gofmt -l .)" || (echo "gofmt needed on:"; gofmt -l .; exit 1)
+	go vet ./cmd/... ./internal/...
+	@test -z "$$(gofmt -l cmd internal)" || (echo "gofmt needed on:"; gofmt -l cmd internal; exit 1)
 
 # Run unit tests with race detector
 test:
@@ -52,6 +52,7 @@ dashboard:
 # Remove build artifacts
 clean:
 	rm -rf bin/
+	rm -f katamaran.tar dashboard.tar coverage.out
 
 # Show available targets
 help:
