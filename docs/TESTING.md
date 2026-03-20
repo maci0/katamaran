@@ -9,6 +9,8 @@
 ./scripts/e2e.sh --provider minikube --cni cilium --ping-proof  # two-node + zero-drop proof (Cilium)
 ./scripts/e2e.sh --provider minikube --cni flannel --ping-proof # two-node + zero-drop proof (Flannel)
 ./scripts/e2e.sh --provider kind --ping-proof                   # two-node + zero-drop proof (Kind + Podman)
+./scripts/e2e.sh --provider minikube --cni calico --storage local --ping-proof  # NBD drive-mirror (full 3-phase)
+./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
@@ -210,6 +212,25 @@ The script:
 - QMP handshake and command execution on both nodes
 - Migration state matching between source and destination QEMU instances
 - Graceful cleanup on success and failure
+
+### Storage Modes
+
+The `--storage` flag controls how the E2E test handles block device migration:
+
+| Mode | Flag | What It Tests | Phases |
+|------|------|---------------|--------|
+| **none** (default) | `--storage none` | Skips storage mirroring (`--shared-storage`) | RAM + Network |
+| **local** | `--storage local` | NBD drive-mirror with local disk images | Storage + RAM + Network |
+| **nfs** | `--storage nfs` | Shared NFS-backed disk with `--shared-storage` | RAM + Network (shared disk verified) |
+
+The `local` mode is the most comprehensive: it adds a 64MB virtio-blk data disk to both
+QEMUs and runs katamaran without `--shared-storage`, exercising the full NBD drive-mirror
+synchronization loop (`waitForStorageSync`, `nbd-server-start/add/stop`, `drive-mirror`,
+`block-job-cancel`).
+
+**NFS kernel modules:** The `nfs` mode requires NFS client support in the node kernel
+(`CONFIG_NFS_FS`, `CONFIG_SUNRPC`). If using a custom minikube ISO, enable these in the
+kernel config alongside `CONFIG_NET_SCH_PLUG`.
 
 ## 5. Zero-Packet-Drop Proof — Full Worked Example
 
