@@ -928,26 +928,30 @@ func TestMaxBufferedEvents(t *testing.T) {
 	}
 	defer c.Close()
 
-	// Fill the buffer beyond the cap.
-	c.mu.Lock()
-	for i := 0; i < maxBufferedEvents+100; i++ {
-		c.events = append(c.events, response{Event: fmt.Sprintf("EVENT_%d", i)})
-	}
-	count := len(c.events)
-	c.mu.Unlock()
-
-	if count != maxBufferedEvents+100 {
-		t.Fatalf("expected %d events before cap enforcement, got %d", maxBufferedEvents+100, count)
-	}
-
-	// Seed one more event through the buffer cap path via WaitForEvent buffer check.
-	// The cap is enforced on append inside Execute/WaitForEvent, not retroactively.
-	// Verify the cap constant is exported and reasonable.
+	// Verify the cap constant is reasonable.
 	if maxBufferedEvents < 100 {
 		t.Fatal("maxBufferedEvents should be at least 100 for normal operation")
 	}
 	if maxBufferedEvents > 10000 {
 		t.Fatal("maxBufferedEvents should not exceed 10000 to prevent OOM")
+	}
+
+	// Fill the buffer to exactly the cap via bufferEvent.
+	for i := 0; i < maxBufferedEvents+10; i++ {
+		c.bufferEvent(response{Event: fmt.Sprintf("EVENT_%d", i)})
+	}
+
+	c.mu.Lock()
+	count := len(c.events)
+	first := c.events[0].Event
+	c.mu.Unlock()
+
+	if count != maxBufferedEvents {
+		t.Fatalf("expected buffer capped at %d, got %d", maxBufferedEvents, count)
+	}
+	// The oldest 10 events should have been dropped.
+	if first != "EVENT_10" {
+		t.Fatalf("expected oldest event to be EVENT_10 (first 10 dropped), got %s", first)
 	}
 }
 

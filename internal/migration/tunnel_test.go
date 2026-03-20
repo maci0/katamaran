@@ -80,10 +80,8 @@ func TestSetupTunnel_WithoutRoot(t *testing.T) {
 
 func TestTeardownTunnel_NoTunnel(t *testing.T) {
 	t.Parallel()
-	// TeardownTunnel is best-effort and always returns nil.
-	if err := TeardownTunnel(context.Background()); err != nil {
-		t.Fatalf("TeardownTunnel should always return nil, got: %v", err)
-	}
+	// TeardownTunnel is best-effort and never panics, even with no tunnel.
+	TeardownTunnel(context.Background())
 }
 
 func TestSetupTunnel_ContextCancelled(t *testing.T) {

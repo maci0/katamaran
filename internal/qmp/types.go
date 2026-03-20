@@ -41,7 +41,6 @@ type BlockJobStatus string
 const (
 	BlockJobStatusConcluded BlockJobStatus = "concluded"
 	BlockJobStatusNull      BlockJobStatus = "null"
-	// other statuses might exist, but these are the ones checked
 )
 
 // BlockJobInfo represents a single entry returned by query-block-jobs.

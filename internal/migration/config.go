@@ -32,14 +32,16 @@ const (
 	// StoragePollInterval is how often to check drive-mirror sync progress.
 	StoragePollInterval = 2 * time.Second
 
-	// MigrationPollInterval is how often to check RAM migration status.
+	// MigrationPollInterval is the interval for migration status polling.
+	// Used both as the STOP event wait timeout and the query-migrate poll rate.
 	MigrationPollInterval = 1 * time.Second
 
 	// PostMigrationTunnelDelay is how long to keep the IP tunnel alive
 	// after migration completes, allowing the CNI control plane to converge.
 	PostMigrationTunnelDelay = 5 * time.Second
 
-	// PlugQdiscLimit is the packet buffer size for the tc sch_plug qdisc.
+	// PlugQdiscLimit is the maximum number of packets the tc sch_plug qdisc
+	// will buffer before dropping. Passed as the "limit" argument to tc.
 	PlugQdiscLimit = "32768"
 
 	// GARPInitialMS is the initial delay before the first GARP announcement.

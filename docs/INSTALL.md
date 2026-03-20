@@ -19,6 +19,8 @@ This guide covers three install paths:
   - `ip_gre`
   - `ip6_gre`
 
+**AMD Zen 4+ hosts:** Disable AVIC before running Kata VMs. A known AMD errata (#1235) causes KVM crashes with nested virtualization when AVIC is enabled (default since Linux 6.18). See the [Testing Guide](TESTING.md#disable-avic-on-amd-zen-4-hosts) for details.
+
 For Kubernetes install paths:
 
 - Kubernetes cluster

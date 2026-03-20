@@ -10,6 +10,7 @@ import (
 )
 
 func TestValidTarget(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		target string
 		want   bool
@@ -33,6 +34,7 @@ func TestValidTarget(t *testing.T) {
 }
 
 func TestValidFormValue(t *testing.T) {
+	t.Parallel()
 	allowed := []string{"tap0", "10.0.0.1", "/run/vc/vm/sock", "katamaran:dev"}
 	for _, v := range allowed {
 		if !validFormValue(v) {
@@ -40,13 +42,13 @@ func TestValidFormValue(t *testing.T) {
 		}
 	}
 	rejected := []string{
-		"tap0;ls",       // semicolon
-		"val|cat",       // pipe
-		"val&bg",        // ampersand
-		"val$(cmd)",     // dollar
-		"val`cmd`",      // backtick
+		"tap0;ls",        // semicolon
+		"val|cat",        // pipe
+		"val&bg",         // ampersand
+		"val$(cmd)",      // dollar
+		"val`cmd`",       // backtick
 		"val with space", // space
-		"val\nnewline",  // newline
+		"val\nnewline",   // newline
 	}
 	for _, v := range rejected {
 		if validFormValue(v) {
@@ -56,6 +58,7 @@ func TestValidFormValue(t *testing.T) {
 }
 
 func TestHandleMigrate_DowntimeInjection(t *testing.T) {
+	t.Parallel()
 	// Regression test: downtime must be a strict integer to prevent
 	// command injection via migrate.sh → envsubst → /bin/sh -c.
 	payloads := []string{
@@ -139,7 +142,7 @@ func TestApp_API(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %v", w.Code)
 	}
-	app.handlePingStop(w, req)
+	app.handleLoadgenStop(w, req)
 
 	// Test handleHTTPStart with valid target
 	req = httptest.NewRequest(http.MethodPost, "/api/httpgen?target=1.1.1.1", nil)

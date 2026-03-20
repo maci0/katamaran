@@ -43,10 +43,10 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 	destStr := dest.String()
 	vmStr := vm.String()
 
-	// Remove any stale tunnel from a previous run. Errors are ignored
-	// because the tunnel typically doesn't exist (first run). On error,
-	// we log but continue — if there is a real problem (e.g., EPERM),
-	// it will surface when we attempt to create the new tunnel below.
+	// Remove any stale tunnel from a previous run. Errors are expected
+	// (tunnel typically doesn't exist on first run) and silently ignored.
+	// If there is a real problem (e.g., EPERM), it will surface when we
+	// attempt to create the new tunnel below.
 	cctx, ccancel := CleanupCtx(ctx)
 	if err := RunCmd(cctx, "ip", "link", "del", TunnelName); err == nil {
 		log.Printf("Removed stale tunnel %s from previous run.", TunnelName)
@@ -81,13 +81,7 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 	}
 
 	if err := RunCmd(ctx, "ip", "link", "set", TunnelName, "up"); err != nil {
-		cctx, ccancel := CleanupCtx(ctx)
-		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
-		ccancel()
-		if cleanupErr != nil {
-			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
-		}
-		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), cleanupErr)
+		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), rollbackTunnel(ctx))
 	}
 
 	// Add host route: "ip route replace" for IPv4, "ip -6 route replace" for IPv6.
@@ -99,15 +93,21 @@ func SetupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		err = RunCmd(ctx, "ip", "route", "replace", vmStr, "dev", TunnelName)
 	}
 	if err != nil {
-		cctx, ccancel := CleanupCtx(ctx)
-		cleanupErr := RunCmd(cctx, "ip", "link", "del", TunnelName)
-		ccancel()
-		if cleanupErr != nil {
-			log.Printf("Warning: failed to clean up tunnel: %v", cleanupErr)
-		}
-		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), cleanupErr)
+		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), rollbackTunnel(ctx))
 	}
 	return nil
+}
+
+// rollbackTunnel deletes the tunnel interface on partial setup failure.
+// Returns the error (if any) for callers to combine with errors.Join.
+func rollbackTunnel(ctx context.Context) error {
+	cctx, ccancel := CleanupCtx(ctx)
+	defer ccancel()
+	err := RunCmd(cctx, "ip", "link", "del", TunnelName)
+	if err != nil {
+		log.Printf("Warning: failed to clean up tunnel: %v", err)
+	}
+	return err
 }
 
 // IPFamily returns a human-readable label for the IP address family.
@@ -122,12 +122,11 @@ func IPFamily(addr netip.Addr) string {
 // Uses "ip link del" which works for all tunnel types (ipip, ip6tnl, gre, ip6gre).
 // Deleting the tunnel implicitly removes the associated host route.
 //
-// Best-effort: always returns nil. If the tunnel doesn't exist (expected after
-// a clean teardown or if setup was never reached), the error is swallowed.
-// Other errors (EPERM, context cancel) are logged but non-recoverable.
-func TeardownTunnel(ctx context.Context) error {
+// Best-effort: if the tunnel doesn't exist (expected after a clean teardown
+// or if setup was never reached), the error is swallowed. Other errors
+// (EPERM, context cancel) are logged but non-recoverable.
+func TeardownTunnel(ctx context.Context) {
 	if err := RunCmd(ctx, "ip", "link", "del", TunnelName); err != nil {
 		log.Printf("Warning: tunnel teardown: %v", err)
 	}
-	return nil
 }
