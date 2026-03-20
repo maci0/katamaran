@@ -51,6 +51,27 @@ cat /sys/module/kvm_intel/parameters/nested   # should print Y or 1
 cat /sys/module/kvm_amd/parameters/nested     # should print 1
 ```
 
+### Disable AVIC on AMD Zen 4+ Hosts
+
+AMD's AVIC (Advanced Virtual Interrupt Controller) is enabled by default on Zen 4/5 CPUs since Linux 6.18. A known errata (#1235) causes KVM page faults during nested guest initialization, which crashes Kata Container VMs with `kvm run failed Bad address` or internal-error exits.
+
+If you have an AMD Zen 4 or newer CPU (Ryzen 7000/9000, EPYC Genoa/Turin), **disable AVIC before running E2E tests**:
+
+```bash
+# Check current AVIC status
+cat /sys/module/kvm_amd/parameters/avic   # must print N or 0
+
+# If it prints Y or 1, disable it:
+sudo modprobe -r kvm_amd && sudo modprobe kvm_amd avic=0
+
+# Verify
+cat /sys/module/kvm_amd/parameters/avic   # should now print N
+```
+
+To make this persistent across reboots, add `kvm_amd.avic=0` to your kernel command line.
+
+> **Note:** Intel hosts are not affected. AMD Zen 3 and older are not affected (AVIC was not default-on).
+
 ## 1. Smoke Tests (No VMs Required)
 
 Validates Go source quality and CLI behavior without any VMs:
@@ -967,6 +988,7 @@ sequenceDiagram
 | `storage sync for job.*did not complete` | Drive-mirror never converged (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
 | `timed out waiting for QMP response` | QEMU unresponsive mid-command | Check QEMU process health; may need restart |
 | `connection is closed` | QMP command issued after socket was closed | Indicates a bug or QEMU crashed mid-operation; check QEMU logs |
+| `kvm run failed Bad address` or VM internal-error | AVIC enabled on AMD Zen 4/5 (errata #1235) | Disable AVIC: `modprobe -r kvm_amd && modprobe kvm_amd avic=0` |
 | minikube won't start | KVM not available or nested virt disabled | Check `/dev/kvm` exists and nested virt is enabled |
 | kata-deploy pod not starting | Image pull issues or resource constraints | Check pod events: `kubectl -n kube-system describe pod -l name=kata-deploy` |
 | No extra-monitor.sock found | extra_monitor_socket not configured | Verify `enable_debug = true` and `extra_monitor_socket = "qmp"` in Kata config |

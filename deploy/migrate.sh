@@ -47,7 +47,7 @@ usage() {
     echo "Required flags:"
     echo "  --source-node <name>    Name of the source K8s node"
     echo "  --dest-node <name>      Name of the destination K8s node"
-    echo "  --tap <iface>           Destination tap interface (required for zero-drop buffering)"
+    echo "  --tap <iface>           Destination tap interface for zero-drop buffering (use 'none' to skip)"
     echo "  --qmp-source <path>     Path to QMP socket on source node"
     echo "  --qmp-dest <path>       Path to QMP socket on destination node"
     echo "  --dest-ip <ip>          IP address of the destination node"
@@ -88,8 +88,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$SOURCE_NODE" || -z "$DEST_NODE" || -z "$TAP_IFACE" || -z "$QMP_SOURCE" || -z "$QMP_DEST" || -z "$DEST_IP" || -z "$VM_IP" || -z "$IMAGE_REF" ]]; then
-    echo "Error: Missing required arguments."
+missing_args=()
+[[ -z "$SOURCE_NODE" ]] && missing_args+=(--source-node)
+[[ -z "$DEST_NODE" ]] && missing_args+=(--dest-node)
+[[ -z "$TAP_IFACE" ]] && missing_args+=(--tap)
+[[ -z "$QMP_SOURCE" ]] && missing_args+=(--qmp-source)
+[[ -z "$QMP_DEST" ]] && missing_args+=(--qmp-dest)
+[[ -z "$DEST_IP" ]] && missing_args+=(--dest-ip)
+[[ -z "$VM_IP" ]] && missing_args+=(--vm-ip)
+[[ -z "$IMAGE_REF" ]] && missing_args+=(--image)
+if [[ ${#missing_args[@]} -gt 0 ]]; then
+    echo "Error: missing required flag(s): ${missing_args[*]}"
     usage
 fi
 
@@ -119,14 +128,14 @@ if [[ -n "$KUBECTL_CONTEXT" ]]; then
     KUBECTL+=(--context "$KUBECTL_CONTEXT")
 fi
 
-DEST_EXTRA_ARGS="-multifd-channels $MULTIFD_CHANNELS"
+DEST_EXTRA_ARGS="--multifd-channels $MULTIFD_CHANNELS"
 if [[ "$SHARED_STORAGE" == "true" ]]; then
-    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS -shared-storage"
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --shared-storage"
 fi
 
-SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS -tunnel-mode $TUNNEL_MODE -downtime $DOWNTIME"
+SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS --tunnel-mode $TUNNEL_MODE --downtime $DOWNTIME"
 if [[ "$AUTO_DOWNTIME" == "true" ]]; then
-    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS -auto-downtime"
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime"
 fi
 
 # Cleanup trap
@@ -167,9 +176,9 @@ export NODE_NAME="$DEST_NODE"
 export QMP_SOCKET="$QMP_DEST"
 export IMAGE="$IMAGE_REF"
 if [[ -n "${TAP_IFACE}" ]]; then
-    export EXTRA_ARGS="${DEST_EXTRA_ARGS} -tap ${TAP_IFACE}"
+    export EXTRA_ARGS="${DEST_EXTRA_ARGS} --tap ${TAP_IFACE}"
     if [[ -n "${TAP_NETNS}" ]]; then
-        export EXTRA_ARGS="${EXTRA_ARGS} -tap-netns ${TAP_NETNS}"
+        export EXTRA_ARGS="${EXTRA_ARGS} --tap-netns ${TAP_NETNS}"
     fi
 else
     export EXTRA_ARGS="${DEST_EXTRA_ARGS}"
@@ -178,7 +187,7 @@ fi
 envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
 echo ">>> Waiting for destination pod to appear..."
-for _i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest --no-headers 2>/dev/null | grep -q .; then
         break
     fi

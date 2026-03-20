@@ -57,6 +57,18 @@ type Client struct {
 	buf    []byte     // Unprocessed partial line data from timeouts.
 }
 
+// bufferEvent adds an asynchronous event to the internal queue.
+// The queue is capped at maxBufferedEvents; oldest events are dropped.
+func (c *Client) bufferEvent(ev response) {
+	c.mu.Lock()
+	if len(c.events) >= maxBufferedEvents {
+		c.events[0] = response{} // Clear reference for GC.
+		c.events = c.events[1:]
+	}
+	c.events = append(c.events, ev)
+	c.mu.Unlock()
+}
+
 // readLine reads a complete newline-terminated JSON message.
 // It safely accumulates partial reads if a timeout occurs, preventing data corruption.
 // The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
@@ -94,11 +106,10 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	}
 
 	// If the context is cancelled during the handshake, close the connection
-	// to unblock any in-progress reads. context.AfterFunc (Go 1.21+) provides
-	// an atomic stop() that guarantees the callback will NOT fire if stop()
-	// returns true — eliminating the race in the previous goroutine+channel
-	// pattern where select could non-deterministically pick ctx.Done() and
-	// close a successfully-returned connection.
+	// to unblock any in-progress reads. context.AfterFunc provides an atomic
+	// stop() that guarantees the callback will NOT fire if stop() returns
+	// true, preventing a race where ctx cancellation could close a
+	// successfully-returned connection.
 	stop := context.AfterFunc(ctx, func() {
 		conn.Close()
 	})
@@ -264,12 +275,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		// If we discard them here, WaitForEvent might hang forever waiting for an
 		// event that already arrived.
 		if resp.Event != "" {
-			c.mu.Lock()
-			if len(c.events) >= maxBufferedEvents {
-				c.events = c.events[1:]
-			}
-			c.events = append(c.events, resp)
-			c.mu.Unlock()
+			c.bufferEvent(resp)
 			continue
 		}
 
@@ -363,12 +369,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// events arriving between WaitForEvent calls would be silently
 		// dropped, causing subsequent WaitForEvent calls to hang.
 		if resp.Event != "" {
-			c.mu.Lock()
-			if len(c.events) >= maxBufferedEvents {
-				c.events = c.events[1:]
-			}
-			c.events = append(c.events, resp)
-			c.mu.Unlock()
+			c.bufferEvent(resp)
 		}
 	}
 }

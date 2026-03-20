@@ -176,6 +176,7 @@ func main() {
 		}
 		err = migration.RunSource(ctx, *qmpSocket, parsedDest, parsedVM, *driveID, *sharedStorage, tm, *downtimeLimit, *autoDowntime, *multifdChannels)
 	case "":
+		fmt.Fprintf(os.Stderr, "Error: --mode is required (valid: source, dest)\n\n")
 		printUsage()
 		os.Exit(1)
 	default:

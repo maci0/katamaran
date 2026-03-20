@@ -36,7 +36,7 @@ spec:
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
-        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran -mode dest -qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
+        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc

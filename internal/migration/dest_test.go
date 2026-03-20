@@ -128,6 +128,36 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunDestination_SharedStorage_Multifd(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, "migrate-incoming") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
+				continue
+			}
+			// migrate-set-capabilities, migrate-set-parameters, etc.
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	err := RunDestination(context.Background(), sock, "", "", "drive-virtio-disk0", true, 4)
+	if err != nil {
+		t.Fatalf("RunDestination with multifd: %v", err)
+	}
+}
+
 func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 	t.Parallel()
 

@@ -588,6 +588,42 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 	}
 }
 
+func TestRunSource_SharedStorage_Multifd(t *testing.T) {
+	t.Parallel()
+
+	sock := startFakeQMP(t, func(conn net.Conn) {
+		qmpHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}` + "\n"))
+				continue
+			}
+			// migrate-set-capabilities, migrate-set-parameters, etc.
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	destIP := netip.MustParseAddr("10.0.0.1")
+	vmIP := netip.MustParseAddr("10.244.1.15")
+	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 4)
+	if err != nil {
+		t.Fatalf("RunSource with multifd: %v", err)
+	}
+}
+
 func TestMeasureRTT(t *testing.T) {
 	t.Parallel()
 
