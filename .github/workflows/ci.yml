@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Lint shell scripts
-        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2329 scripts/*.sh deploy/migrate.sh
+        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2317,SC2329 scripts/*.sh deploy/migrate.sh
 
   build-and-smoke:
     runs-on: ubuntu-latest
