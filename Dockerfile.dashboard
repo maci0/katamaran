@@ -21,7 +21,7 @@ RUN apk add --no-cache bash gettext iputils
 ARG KUBECTL_VERSION=v1.32.3
 RUN wget -qO kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
     wget -qO kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
-    echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check && \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c && \
     chmod +x kubectl && \
     mv kubectl /usr/local/bin/ && \
     rm kubectl.sha256
