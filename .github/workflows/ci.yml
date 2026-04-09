@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Lint
+        run: make vet
+      - name: Unit tests
+        run: make test
+      - name: Fuzz seeds
+        run: make fuzz
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Lint shell scripts
+        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2329 scripts/*.sh deploy/migrate.sh
+
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        run: make all
+      - name: Smoke tests
+        run: make smoke
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [lint-and-test, build-and-smoke, shellcheck]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Build katamaran image
+        run: docker build --build-arg VERSION=${{ github.sha }} -t katamaran:ci .
+      - name: Build dashboard image
+        run: docker build --build-arg VERSION=${{ github.sha }} -t katamaran-dashboard:ci -f Dockerfile.dashboard .
+      - name: Smoke-test katamaran image
+        run: docker run --rm katamaran:ci --version
+      - name: Smoke-test dashboard image
+        run: docker run --rm katamaran-dashboard:ci ./dashboard --version

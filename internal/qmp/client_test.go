@@ -1,9 +1,13 @@
 package qmp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -81,8 +85,8 @@ func TestNewClient_BadSocket(t *testing.T) {
 func TestNewClient_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		// Hang forever — never send greeting.
-		time.Sleep(30 * time.Second)
+		// Block until client disconnects — never send greeting.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -126,14 +130,15 @@ func TestExecute_Success(t *testing.T) {
 
 func TestExecute_WithArgs(t *testing.T) {
 	t.Parallel()
-	var received []byte
+	receivedCh := make(chan []byte, 1)
 
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 4096)
 		n, _ := conn.Read(buf)
-		received = make([]byte, n)
-		copy(received, buf[:n])
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		receivedCh <- data
 		conn.Write([]byte(`{"return":{}}` + "\n"))
 	})
 
@@ -149,6 +154,7 @@ func TestExecute_WithArgs(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
+	received := <-receivedCh
 	if !strings.Contains(string(received), `"uri":"tcp:10.0.0.1:4444"`) {
 		t.Fatalf("expected URI in request, got: %s", string(received))
 	}
@@ -240,8 +246,8 @@ func TestExecute_ContextCancelled(t *testing.T) {
 		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 4096)
 		conn.Read(buf)
-		// Hang — never respond.
-		time.Sleep(30 * time.Second)
+		// Block until client disconnects — never respond.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx := context.Background()
@@ -358,7 +364,7 @@ func TestWaitForEvent_Timeout(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(5 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	})
 
 	ctx := context.Background()
@@ -372,8 +378,9 @@ func TestWaitForEvent_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("expected 'timeout' in error, got: %v", err)
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected net.Error timeout, got: %v", err)
 	}
 }
 
@@ -381,7 +388,8 @@ func TestWaitForEvent_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(30 * time.Second)
+		// Block until client disconnects.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx := context.Background()
@@ -692,8 +700,23 @@ func TestBlockJobInfo_Unmarshal(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(jobs))
 	}
 	j := jobs[0]
-	if j.Device != "mirror-virtio0" || j.Len != 1073741824 || j.Offset != 536870912 || j.Ready || j.Status != "running" || j.Type != "mirror" {
-		t.Fatalf("unexpected job: %+v", j)
+	if j.Device != "mirror-virtio0" {
+		t.Fatalf("Device = %q, want %q", j.Device, "mirror-virtio0")
+	}
+	if j.Len != 1073741824 {
+		t.Fatalf("Len = %d, want %d", j.Len, 1073741824)
+	}
+	if j.Offset != 536870912 {
+		t.Fatalf("Offset = %d, want %d", j.Offset, 536870912)
+	}
+	if j.Ready {
+		t.Fatal("Ready = true, want false")
+	}
+	if j.Status != "running" {
+		t.Fatalf("Status = %q, want %q", j.Status, "running")
+	}
+	if j.Type != "mirror" {
+		t.Fatalf("Type = %q, want %q", j.Type, "mirror")
 	}
 }
 
@@ -724,6 +747,34 @@ func TestMigrateInfo_Unmarshal(t *testing.T) {
 			}
 		})
 	}
+
+	// Verify numeric fields (RAM, timing stats) used in production logging.
+	t.Run("full_stats", func(t *testing.T) {
+		t.Parallel()
+		raw := `{"status":"completed","downtime":15,"setup-time":50,"total-time":1200,"ram":{"total":1073741824,"transferred":1073741824,"remaining":0}}`
+		var info MigrateInfo
+		if err := json.Unmarshal([]byte(raw), &info); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if info.Downtime != 15 {
+			t.Fatalf("Downtime = %d, want 15", info.Downtime)
+		}
+		if info.SetupTime != 50 {
+			t.Fatalf("SetupTime = %d, want 50", info.SetupTime)
+		}
+		if info.TotalTime != 1200 {
+			t.Fatalf("TotalTime = %d, want 1200", info.TotalTime)
+		}
+		if info.RAM.Total != 1073741824 {
+			t.Fatalf("RAM.Total = %d, want 1073741824", info.RAM.Total)
+		}
+		if info.RAM.Transferred != 1073741824 {
+			t.Fatalf("RAM.Transferred = %d, want 1073741824", info.RAM.Transferred)
+		}
+		if info.RAM.Remaining != 0 {
+			t.Fatalf("RAM.Remaining = %d, want 0", info.RAM.Remaining)
+		}
+	})
 }
 
 func TestNewClient_ReadGreetingError(t *testing.T) {
@@ -929,6 +980,30 @@ func TestMaxBufferedEvents(t *testing.T) {
 	// The oldest 10 events should have been dropped.
 	if first != "EVENT_10" {
 		t.Fatalf("expected oldest event to be EVENT_10 (first 10 dropped), got %s", first)
+	}
+}
+
+func TestReadLine_SlowPath(t *testing.T) {
+	t.Parallel()
+	// The slow path in readLine handles reassembly of partial data that was
+	// accumulated during a previous timeout (saved in c.buf). Verify that the
+	// accumulated prefix is correctly joined with new data from the next read.
+	rest := bytes.NewBufferString(`urn":{}}` + "\n")
+	c := &Client{
+		r:   bufio.NewReader(rest),
+		buf: []byte(`{"ret`),
+	}
+
+	line, err := c.readLine()
+	if err != nil {
+		t.Fatalf("readLine: %v", err)
+	}
+	want := `{"return":{}}` + "\n"
+	if string(line) != want {
+		t.Fatalf("readLine = %q, want %q", string(line), want)
+	}
+	if c.buf != nil {
+		t.Fatalf("buf should be nil after slow path reassembly, got %d bytes", len(c.buf))
 	}
 }
 

@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -6,16 +6,20 @@ ARG TARGETARCH=amd64
 WORKDIR /src
 COPY go.mod ./
 COPY cmd/dashboard/ cmd/dashboard/
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /dashboard ./cmd/dashboard/
+COPY internal/ internal/
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -o /dashboard ./cmd/dashboard/
 
 FROM alpine:3.20
 
 ARG TARGETARCH=amd64
 
 RUN apk add --no-cache bash gettext iputils
-# Install kubectl (multi-arch) — uses wget (built-in Alpine/BusyBox)
-RUN KUBECTL_VERSION=$(wget -qO- https://dl.k8s.io/release/stable.txt) && \
-    wget -qO kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
+# Install kubectl (multi-arch) — pinned version for reproducible builds.
+ARG KUBECTL_VERSION=v1.32.3
+RUN wget -qO kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
     wget -qO kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
     echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check && \
     chmod +x kubectl && \
@@ -35,4 +39,9 @@ USER dashboard
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -q --spider http://localhost:8080/healthz || exit 1
+ARG VERSION=dev
+LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.description="Katamaran migration dashboard" \
+      org.opencontainers.image.version="${VERSION}"
+
 CMD ["./dashboard"]

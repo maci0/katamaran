@@ -15,10 +15,15 @@
 #  11. Binary rejects single-missing-flag combinations (--dest-ip only, --vm-ip only)
 #  12. Binary validates IPv6 addresses (valid and invalid)
 #  13. Binary validates --tunnel-mode flag (valid values and rejection of invalid)
-#  14. Binary rejects cross-family IP combinations (IPv4 dest + IPv6 vm and vice versa)
-#  15. Binary normalizes IPv4-mapped IPv6 addresses (::ffff:10.0.0.1 treated as IPv4)
-#  16. Shell scripts have valid syntax (bash -n)
-#  17. Required project files exist
+#  14. Binary validates --downtime bounds (rejects negative and zero values)
+#  15. Binary rejects cross-family IP combinations (IPv4 dest + IPv6 vm and vice versa)
+#  16. Binary normalizes IPv4-mapped IPv6 addresses (::ffff:10.0.0.1 treated as IPv4)
+#  17. migrate.sh --help exits successfully
+#  18. migrate.sh rejects missing required arguments
+#  19. migrate.sh rejects invalid --tunnel-mode values
+#  20. migrate.sh validates --tap format (rejects spaces)
+#  21. Shell scripts have valid syntax (bash -n)
+#  22. Required project files exist
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,7 +33,7 @@ cd "${SCRIPT_DIR}"
 if command -v go &>/dev/null; then
     GO_CMD="go"
 else
-    echo "Error: Go not found. Install Go 1.22+ system-wide."
+    echo "Error: Go not found. Install Go 1.24+ system-wide."
     exit 1
 fi
 readonly GO_CMD
@@ -144,7 +149,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Invalid mode → should mention the invalid value in stderr
     INVALID_ERR=$("${BINARY}" --mode bogus 2>&1 || true)
-    if echo "${INVALID_ERR}" | grep -q "invalid mode"; then
+    if echo "${INVALID_ERR}" | grep -q "invalid --mode"; then
         pass "invalid mode error message includes 'invalid mode'"
     else
         fail "invalid mode error message should include 'invalid mode'"
@@ -172,7 +177,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "--help output should include --mode flag description"
     fi
 
-    for flag_name in dest-ip vm-ip qmp tap drive-id shared-storage tunnel-mode downtime multifd-channels; do
+    for flag_name in dest-ip vm-ip qmp tap tap-netns drive-id shared-storage tunnel-mode downtime auto-downtime multifd-channels log-format log-level; do
         if echo "${HELP_OUT}" | grep -q -- "--${flag_name}"; then
             pass "--help output includes --${flag_name} flag"
         else
@@ -347,7 +352,7 @@ if [[ -x "${MIGRATE_SCRIPT}" ]]; then
     fi
 
     BAD_TUN_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev --tunnel-mode bogus 2>&1 || true)
-    if echo "${BAD_TUN_ERR}" | grep -q -- "--tunnel-mode must be"; then
+    if echo "${BAD_TUN_ERR}" | grep -q -- "invalid --tunnel-mode"; then
         pass "migrate.sh rejects invalid --tunnel-mode"
     else
         fail "migrate.sh should reject invalid --tunnel-mode"

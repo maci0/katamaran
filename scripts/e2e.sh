@@ -3,17 +3,17 @@
 #
 # --provider <name>  Cluster provider: 'minikube' (default) or 'kind'.
 # --cni <name>       CNI plugin: 'auto' (default), 'calico', 'cilium', 'flannel',
-#                    'ovn', or 'kindnet'.
+#                    'ovn' (Kind only), or 'kindnet'.
 # --storage <mode>   Storage mode: 'none' (default, skip NBD), 'local' (NBD drive-mirror),
 #                    or 'nfs' (NFS shared storage). 'local' exercises the full 3-phase
 #                    migration including storage mirroring. 'nfs' deploys an NFS server
 #                    pod and uses it as shared storage.
 # --kata-version <v> Kata Containers chart version (default: '3.24.0').
 # --method <name>    Orchestration method: 'job' (default) or 'direct'.
-# --ping-proof       Run continuous ping during migration and assert zero packet loss.
+# --ping-proof       Verify zero-drop sch_plug buffering from migration logs.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
 # --teardown         Tear down the cluster and exit.
-# --help             Show this help text.
+# --help, -h         Show this help text.
 
 set -euo pipefail
 
@@ -36,15 +36,15 @@ TEARDOWN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --teardown) TEARDOWN=true; shift ;;
-        --provider) PROVIDER="$2"; shift 2 ;;
-        --cni) CNI="$2"; shift 2 ;;
-        --storage) STORAGE="$2"; shift 2 ;;
-        --kata-version) KATA_VERSION="$2"; shift 2 ;;
-        --method) METHOD="$2"; shift 2 ;;
+        --provider) need_arg "$1" "${2:-}"; PROVIDER="$2"; shift 2 ;;
+        --cni) need_arg "$1" "${2:-}"; CNI="$2"; shift 2 ;;
+        --storage) need_arg "$1" "${2:-}"; STORAGE="$2"; shift 2 ;;
+        --kata-version) need_arg "$1" "${2:-}"; KATA_VERSION="$2"; shift 2 ;;
+        --method) need_arg "$1" "${2:-}"; METHOD="$2"; shift 2 ;;
         --ping-proof) PING_PROOF=true; shift ;;
         --env-only) ENV_ONLY=true; shift ;;
-        --help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
-        *) error "Unknown option: $1"; exit 1 ;;
+        --help|-h) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
+        *) error "Unknown option: $1"; exit 2 ;;
     esac
 done
 
@@ -113,7 +113,7 @@ qmp_hotplug_disk() {
         sleep 0.2
         printf \"{\\\"execute\\\": \\\"device_add\\\", \\\"arguments\\\": {\\\"driver\\\": \\\"virtio-blk-pci\\\", \\\"drive\\\": \\\"drive-virtio-disk0\\\", \\\"id\\\": \\\"data-disk0\\\", \\\"bus\\\": \\\"pci-bridge-0\\\", \\\"addr\\\": \\\"0x8\\\"}}\\n\"
         sleep 0.3
-    ) | nc -U ${sock}'" 2>/dev/null
+    ) | nc -U \"${sock}\"'" 2>/dev/null
 }
 
 cleanup() {
@@ -209,7 +209,7 @@ fi
 log "Untainting nodes..."
 kubectl --context "${CTX}" taint nodes --all node-role.kubernetes.io/control-plane- || true
 log "Waiting for nodes to register..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     NODE_COUNT=$(kubectl --context "${CTX}" get nodes --no-headers 2>/dev/null | wc -l || echo 0)
     if [[ "${NODE_COUNT}" -ge 2 ]]; then break; fi
     sleep 5
@@ -288,7 +288,7 @@ KATA_CFG_CANDIDATES=(
 KATA_CFG=""
 for node in "${NODE1}" "${NODE2}"; do
     log "Waiting for Kata configuration on node ${node}..."
-    for i in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         for candidate in "${KATA_CFG_CANDIDATES[@]}"; do
             if node_exec "${node}" "[ -f ${candidate} ]" 2>/dev/null; then
                 KATA_CFG="${candidate}"
@@ -306,7 +306,7 @@ fi
 log "Detected Kata config: ${KATA_CFG}"
 for node in "${NODE1}" "${NODE2}"; do
     # Ensure config exists on this node (kata-deploy may still be rolling out).
-    for i in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         if node_exec "${node}" "[ -f ${KATA_CFG} ]" 2>/dev/null; then break; fi
         sleep 2
     done
@@ -411,7 +411,7 @@ success "Source pod IP: ${SRC_POD_IP}"
 
 log "Finding source QMP socket..."
 SRC_SOCK=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     SRC_SOCK=$(node_exec "${NODE1}" "${SUDO} find /run/vc 2>/dev/null -name extra-monitor.sock | head -n 1")
     if [[ -n "${SRC_SOCK}" ]]; then break; fi
     sleep 2
@@ -481,7 +481,7 @@ success "Helper pod IP: ${DST_POD_IP}"
 
 # Get the helper container's PID for nsenter.
 MIG_HELPER_PID=""
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     MIG_HELPER_PID=$(node_exec "${NODE2}" "${SUDO} crictl ps -q --label io.kubernetes.pod.name=mig-helper 2>/dev/null | head -1 | xargs -I{} ${SUDO} crictl inspect -o go-template --template '{{.info.pid}}' {} 2>/dev/null" 2>/dev/null || true)
     if [[ -n "${MIG_HELPER_PID}" && "${MIG_HELPER_PID}" =~ ^[0-9]+$ ]]; then break; fi
     sleep 1
@@ -538,7 +538,7 @@ DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
     | sed "s|,readonly=on||g; s|,readonly=true||g" \
 )
 [[ -n "${SRC_NVDIMM_PATH}" ]] && \
-    DST_CMDLINE=$(echo "${DST_CMDLINE}" | sed "s|${SRC_NVDIMM_PATH}|${DST_NVDIMM_IMG}|g")
+    DST_CMDLINE="${DST_CMDLINE//${SRC_NVDIMM_PATH}/${DST_NVDIMM_IMG}}"
 
 # Reconstruct the command: skip the QEMU binary (first arg), strip any
 # existing -incoming/-daemonize from source, then quote each argument for
@@ -560,7 +560,7 @@ DST_QEMU_CMD+=" -incoming defer -daemonize"
 node_exec "${NODE2}" "${SUDO} ${DST_QEMU_CMD}"
 
 # Wait for QMP socket to appear
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     if node_exec "${NODE2}" "[ -S ${DST_SOCK} ]" 2>/dev/null; then break; fi
     sleep 1
 done
@@ -606,7 +606,7 @@ DST_TAP_NETNS="/proc/${MIG_HELPER_PID}/ns/net"
 
 PING_PID=""
 if [[ "${PING_PROOF}" == "true" ]]; then
-    log "Ping probe will verify sch_plug operation after migration."
+    log "Will verify sch_plug zero-drop buffering from migration logs."
 fi
 
 if [[ "${ENV_ONLY}" == "true" ]]; then

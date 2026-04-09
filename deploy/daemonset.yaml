@@ -14,6 +14,7 @@ spec:
       labels:
         app: katamaran
     spec:
+      automountServiceAccountToken: false
       nodeSelector:
         katacontainers.io/kata-runtime: "true"
       hostPID: true
@@ -28,6 +29,7 @@ spec:
             cpu: 10m
             memory: 32Mi
           limits:
+            cpu: 100m
             memory: 64Mi
         command: ["/bin/sh", "-c"]
         args:
@@ -47,7 +49,8 @@ spec:
                 || echo "skipped $mod (not available)"
             done
 
-            # --- 3. Configure Kata QMP extra-monitor socket ---
+            # --- 3. Enable Kata debug mode and QMP extra-monitor socket ---
+            # Kata >=3.25.0 config path; older versions use a different path without runtimes/qemu/.
             KATA_CFG="/host/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
             if [ -f "${KATA_CFG}" ]; then
               if grep -q 'extra_monitor_socket = ""' "${KATA_CFG}" 2>/dev/null; then
@@ -55,7 +58,7 @@ spec:
                   s/^enable_debug = false/enable_debug = true/
                   s/^extra_monitor_socket = ""/extra_monitor_socket = "qmp"/
                 }' "${KATA_CFG}"
-                echo "Kata QMP extra-monitor socket enabled"
+                echo "Kata debug mode and QMP extra-monitor socket enabled"
               else
                 echo "Kata QMP extra-monitor socket already configured"
               fi
@@ -70,26 +73,35 @@ spec:
       - name: keepalive
         image: localhost/katamaran:dev
         imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
         resources:
           requests:
             cpu: 1m
             memory: 8Mi
           limits:
+            cpu: 10m
             memory: 16Mi
         command: ["/bin/sh", "-c"]
         args:
           - |
             echo "katamaran node setup complete"
-            trap 'rm -f /host/usr/local/bin/katamaran; echo "katamaran binary removed"' TERM
+            trap 'rm -f /host-bin/katamaran; echo "katamaran binary removed"' TERM
             sleep infinity &
             wait $!
         lifecycle:
           preStop:
             exec:
-              command: ["/bin/sh", "-c", "rm -f /host/usr/local/bin/katamaran"]
+              command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran"]
         volumeMounts:
         - name: host-root
-          mountPath: /host
+          mountPath: /host-bin
+          subPath: usr/local/bin
       terminationGracePeriodSeconds: 30
       volumes:
       - name: host-root

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -270,8 +270,8 @@ func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Never respond — force context timeout.
-		time.Sleep(30 * time.Second)
+		// Block until client disconnects — never respond.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -598,6 +598,50 @@ func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 	}
 }
 
+func TestMigrationTerminalError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		status    qmp.MigrateStatus
+		errorDesc string
+		terminal  bool
+		wantErr   error
+		wantDesc  string
+	}{
+		{"completed", qmp.MigrateStatusCompleted, "", true, nil, ""},
+		{"failed_with_desc", qmp.MigrateStatusFailed, "out of memory", true, errMigrationFailed, "out of memory"},
+		{"failed_no_desc", qmp.MigrateStatusFailed, "", true, errMigrationFailed, ""},
+		{"cancelled", qmp.MigrateStatusCancelled, "", true, errMigrationCancelled, ""},
+		{"active", "active", "", false, nil, ""},
+		{"setup", "setup", "", false, nil, ""},
+		{"empty", "", "", false, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			terminal, err := migrationTerminalError(tt.status, tt.errorDesc)
+			if terminal != tt.terminal {
+				t.Fatalf("terminal: got %v, want %v", terminal, tt.terminal)
+			}
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("expected nil error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected %v, got: %v", tt.wantErr, err)
+				}
+				if tt.wantDesc != "" && !strings.Contains(err.Error(), tt.wantDesc) {
+					t.Fatalf("expected error containing %q, got: %v", tt.wantDesc, err)
+				}
+			}
+		})
+	}
+}
+
 func TestMeasureRTT(t *testing.T) {
 	t.Parallel()
 
@@ -606,31 +650,6 @@ func TestMeasureRTT(t *testing.T) {
 	_, err := measureRTT(netip.MustParseAddr("192.0.2.1"))
 	if err == nil {
 		t.Fatal("expected error for unreachable address")
-	}
-}
-
-func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS != "linux" {
-		t.Skip("requires linux")
-	}
-	// With empty netnsPath, should delegate directly to runCmd.
-	if err := runCmdInNetns(context.Background(), "", "true"); err != nil {
-		t.Fatalf("expected success with empty netns, got: %v", err)
-	}
-}
-
-func TestRunCmdInNetns_WithNetns(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS != "linux" {
-		t.Skip("requires linux")
-	}
-	// nsenter with /proc/1/ns/net requires root; as non-root this errors.
-	// Either outcome is acceptable — the assertion verifies the nsenter code
-	// path is taken (error mentions "nsenter") and doesn't panic.
-	err := runCmdInNetns(context.Background(), "/proc/1/ns/net", "true")
-	if err != nil && !strings.Contains(err.Error(), "nsenter") {
-		t.Fatalf("expected nsenter-related error, got: %v", err)
 	}
 }
 
@@ -766,6 +785,40 @@ func TestRunSource_MigrateCommandFailure(t *testing.T) {
 	}
 }
 
+func TestRunSource_InvalidDriveID(t *testing.T) {
+	t.Parallel()
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         ";evil",
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid drive ID") {
+		t.Fatalf("expected drive ID validation error, got: %v", err)
+	}
+}
+
+func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
+	t.Parallel()
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         ";evil",
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	})
+	if err == nil {
+		t.Fatal("expected error (QMP connection should fail)")
+	}
+	if strings.Contains(err.Error(), "invalid drive ID") {
+		t.Fatalf("shared storage should skip drive ID validation, got: %v", err)
+	}
+}
+
 func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
 	t.Parallel()
 
@@ -810,8 +863,8 @@ func TestRunSource_ContextCancelled(t *testing.T) {
 
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Hang forever after handshake — force context cancellation.
-		time.Sleep(30 * time.Second)
+		// Block until client disconnects — force context cancellation.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

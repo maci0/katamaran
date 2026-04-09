@@ -3,7 +3,6 @@ package migration
 import (
 	"context"
 	"net/netip"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,62 +31,6 @@ func TestCleanupCtx(t *testing.T) {
 		t.Fatal("cleanupCtx should not be cancelled when parent is")
 	default:
 	}
-}
-
-func TestRunCmd(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS != "linux" {
-		t.Skip("requires linux")
-	}
-
-	ctx := context.Background()
-
-	tests := []struct {
-		name    string
-		cmd     string
-		args    []string
-		wantErr string
-	}{
-		{"Success", "true", nil, ""},
-		{"Failure", "false", nil, "executing false"},
-		{"WithOutput", "sh", []string{"-c", "echo 'failure output' >&2; exit 1"}, "failure output"},
-		{"NotFound", "nonexistent-binary-xyz-123", nil, "executing nonexistent"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := runCmd(ctx, tt.cmd, tt.args...)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected success, got: %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Fatalf("expected error containing %q", tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
-				}
-			}
-		})
-	}
-
-	// Context cancellation tested separately so the context is created
-	// inside the subtest — avoids the parent's 100ms timeout expiring
-	// before parallel subtests start.
-	t.Run("ContextCancelled", func(t *testing.T) {
-		t.Parallel()
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
-		err := runCmd(cancelCtx, "sleep", "30")
-		if err == nil {
-			t.Fatal("expected error for cancelled context")
-		}
-		if !strings.Contains(err.Error(), "cancel") {
-			t.Fatalf("expected error containing %q, got: %v", "cancel", err)
-		}
-	})
 }
 
 func TestConstants_Reasonable(t *testing.T) {
@@ -123,34 +66,42 @@ func TestConstants_Reasonable(t *testing.T) {
 		{"DefaultMultifdChannels", DefaultMultifdChannels > 0},
 		{"rttMultiplier", rttMultiplier > 0},
 		{"rttMinOverheadMS", rttMinOverheadMS > 0},
+		{"garpInitialMS", garpInitialMS > 0},
+		{"garpMaxMS", garpMaxMS > 0},
+		{"garpStepMS", garpStepMS > 0},
+		{"rttDialTimeout", rttDialTimeout > 0},
 	} {
 		if !c.ok {
 			t.Errorf("%s must be positive", c.name)
 		}
 	}
+
+	// Verify relationships between related constants. These catch
+	// misconfigurations where a timeout is accidentally swapped or
+	// a poll interval exceeds its parent timeout.
+	for _, rel := range []struct {
+		name string
+		ok   bool
+	}{
+		{"cleanupTimeout < migrationTimeout", cleanupTimeout < migrationTimeout},
+		{"storagePollInterval < storageSyncTimeout", storagePollInterval < storageSyncTimeout},
+		{"migrationPollInterval < migrationTimeout", migrationPollInterval < migrationTimeout},
+		{"jobAppearTimeout < storageSyncTimeout", jobAppearTimeout < storageSyncTimeout},
+		{"garpInitialMS < garpMaxMS", garpInitialMS < garpMaxMS},
+	} {
+		if !rel.ok {
+			t.Errorf("constant relationship violated: %s", rel.name)
+		}
+	}
 }
 
-func TestGenerateTunnelName(t *testing.T) {
+func TestIPFamily(t *testing.T) {
 	t.Parallel()
-	name, err := generateTunnelName()
-	if err != nil {
-		t.Fatalf("generateTunnelName: %v", err)
+	if got := IPFamily(netip.MustParseAddr("10.0.0.1")); got != "IPv4" {
+		t.Fatalf("got %q, want IPv4", got)
 	}
-	if !strings.HasPrefix(name, tunnelPrefix) {
-		t.Fatalf("expected prefix %q, got %q", tunnelPrefix, name)
-	}
-	// Linux IFNAMSIZ is 16 (15 chars + null). Name must fit.
-	if len(name) > 15 {
-		t.Fatalf("tunnel name %q exceeds 15 chars (IFNAMSIZ-1)", name)
-	}
-
-	// Names should be unique.
-	name2, err := generateTunnelName()
-	if err != nil {
-		t.Fatalf("second generateTunnelName: %v", err)
-	}
-	if name == name2 {
-		t.Fatalf("expected unique names, got %q twice", name)
+	if got := IPFamily(netip.MustParseAddr("fd00::1")); got != "IPv6" {
+		t.Fatalf("got %q, want IPv6", got)
 	}
 }
 
@@ -173,10 +124,109 @@ func FuzzFormatQEMUHost(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if result := formatQEMUHost(addr); result == "" {
+		result := formatQEMUHost(addr)
+		if result == "" {
 			t.Fatal("formatQEMUHost returned empty string for valid address")
 		}
+		// IPv6 addresses must be bracketed; IPv4 (including unmapped) must not.
+		unmapped := addr.Unmap()
+		if unmapped.Is6() {
+			if result[0] != '[' || result[len(result)-1] != ']' {
+				t.Fatalf("IPv6 address %v not bracketed: %q", addr, result)
+			}
+		} else {
+			if strings.Contains(result, "[") || strings.Contains(result, "]") {
+				t.Fatalf("IPv4 address %v should not be bracketed: %q", addr, result)
+			}
+		}
 	})
+}
+
+func TestValidateTapIface(t *testing.T) {
+	t.Parallel()
+	valid := []string{"eth0", "tap0_kata", "br-abc123", "lo", "veth1234abc", "ens3", "docker0", "a"}
+	for _, name := range valid {
+		if err := validateTapIface(name); err != nil {
+			t.Errorf("expected %q to be valid, got: %v", name, err)
+		}
+	}
+	invalid := []string{
+		"",                 // empty
+		".hidden",          // starts with dot
+		"-flag",            // starts with hyphen
+		"a234567890123456", // 16 chars, exceeds IFNAMSIZ-1
+		"eth0;rm -rf /",    // shell injection
+		"eth0\nlo",         // newline
+		"tap$(id)",         // command substitution
+		"/proc/1/ns/net",   // path, not interface name
+		"eth0 lo",          // space
+	}
+	for _, name := range invalid {
+		if err := validateTapIface(name); err == nil {
+			t.Errorf("expected %q to be invalid", name)
+		}
+	}
+}
+
+func TestValidateTapNetns(t *testing.T) {
+	t.Parallel()
+	valid := []string{
+		"/proc/1234/ns/net",
+		"/proc/1/ns/net",
+		"/var/run/netns/blue",
+		"/run/netns/test-ns",
+	}
+	for _, path := range valid {
+		if err := validateTapNetns(path); err != nil {
+			t.Errorf("expected %q to be valid, got: %v", path, err)
+		}
+	}
+	invalid := []string{
+		"",                        // empty
+		"relative/path",           // not absolute
+		"/proc/../etc/passwd",     // path traversal
+		"/proc/1/ns/net;id",       // shell injection
+		"/proc/1/ns/net\x00evil",  // null byte
+		"/proc/1/ns/net$(whoami)", // command substitution
+		"/ space/in/path",         // space
+	}
+	for _, path := range invalid {
+		if err := validateTapNetns(path); err == nil {
+			t.Errorf("expected %q to be invalid", path)
+		}
+	}
+
+	// Path length limit.
+	long := "/" + strings.Repeat("a", 256)
+	if err := validateTapNetns(long); err == nil {
+		t.Error("expected overlong path to be rejected")
+	}
+}
+
+func TestValidateDriveID(t *testing.T) {
+	t.Parallel()
+	valid := []string{"drive-virtio-disk0", "drive0", "virtio-blk-pci0", "a", "mirror-drive-virtio-disk0"}
+	for _, id := range valid {
+		if err := validateDriveID(id); err != nil {
+			t.Errorf("expected %q to be valid, got: %v", id, err)
+		}
+	}
+	invalid := []string{
+		"",                       // empty
+		"-leading-hyphen",        // starts with hyphen
+		".leading-dot",           // starts with dot
+		"drive;rm -rf /",         // shell injection
+		"drive$(id)",             // command substitution
+		"drive id",               // space
+		"drive\nid",              // newline
+		"drive:colon",            // colon (NBD URI delimiter)
+		strings.Repeat("a", 257), // too long
+	}
+	for _, id := range invalid {
+		if err := validateDriveID(id); err == nil {
+			t.Errorf("expected %q to be invalid", id)
+		}
+	}
 }
 
 func TestFormatQEMUHost(t *testing.T) {
@@ -191,7 +241,7 @@ func TestFormatQEMUHost(t *testing.T) {
 		{"ipv6 full", netip.MustParseAddr("fd00::1"), "[fd00::1]"},
 		{"ipv6 loopback", netip.MustParseAddr("::1"), "[::1]"},
 		{"ipv6 long", netip.MustParseAddr("2001:db8::1"), "[2001:db8::1]"},
-		{"ipv4-mapped ipv6", netip.MustParseAddr("::ffff:10.0.0.1"), "::ffff:10.0.0.1"},
+		{"ipv4-mapped ipv6", netip.MustParseAddr("::ffff:10.0.0.1"), "10.0.0.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

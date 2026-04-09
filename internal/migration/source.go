@@ -22,9 +22,9 @@ var (
 
 // RunSource initiates live migration from the source node to the destination.
 //
-// Deferred cleanups ensure the drive-mirror job and tunnel are torn down on
-// any early return, preventing resource leaks. They are disarmed on the
-// success path.
+// A deferred cleanup ensures the drive-mirror job is torn down on any early
+// return, preventing resource leaks. It is disarmed on the success path.
+// The IP tunnel is torn down inline after migration completes.
 //
 // Sequentially it:
 //   - Starts a drive-mirror job to synchronize storage via NBD (unless shared-storage mode)
@@ -35,13 +35,23 @@ var (
 //   - Polls for the STOP event (VM pause), checking for migration failures
 //   - Creates an IP tunnel to forward in-flight traffic to the destination
 //   - Waits for migration to complete (query-migrate polling)
-//   - Cancels the drive-mirror block job
-//   - Tears down the IP tunnel after a CNI convergence delay
+//   - If migration failed, cancels it via QMP migrate-cancel
+//   - Cancels the drive-mirror block job (disarms the deferred cleanup)
+//   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	if !cfg.SharedStorage {
+		if err := validateDriveID(cfg.DriveID); err != nil {
+			return fmt.Errorf("validating drive ID: %w", err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout+storageSyncTimeout)
 	defer cancel()
 
+	migrationStart := time.Now()
+
 	slog.Info("Starting live migration",
+		"qmp_socket", cfg.QMPSocket,
 		"dest_ip", cfg.DestIP,
 		"vm_ip", cfg.VMIP,
 		"tunnel_mode", string(cfg.TunnelMode),
@@ -64,18 +74,18 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	jobID := "mirror-" + cfg.DriveID
 	mirrorStarted := false
 	downtimeLimitMS := cfg.DowntimeLimitMS
-	multifdChannels := cfg.MultifdChannels
 
 	if !cfg.SharedStorage {
-		slog.Info("Initiating storage mirror (drive-mirror)")
 		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", formatQEMUHost(cfg.DestIP), nbdPort, cfg.DriveID)
+		slog.Info("Initiating storage mirror (drive-mirror)", "target", targetNBD, "drive_id", cfg.DriveID)
 		if _, err = client.Execute(ctx, "drive-mirror", qmp.DriveMirrorArgs{
 			Device: cfg.DriveID,
 			Target: targetNBD,
 			Sync:   "full",
-			Mode:   "existing",
+			Mode:   "existing", // target is an NBD export, not a new file
 			JobID:  jobID,
 		}); err != nil {
+			slog.Error("Drive-mirror failed", "target", targetNBD, "drive_id", cfg.DriveID, "error", err)
 			return fmt.Errorf("starting drive-mirror: %w", err)
 		}
 		mirrorStarted = true
@@ -94,9 +104,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}()
 
 		slog.Info("Waiting for storage mirror to synchronize")
+		storageSyncStart := time.Now()
 		if err = waitForStorageSync(ctx, client, jobID); err != nil {
-			return fmt.Errorf("storage sync failed: %w", err)
+			return fmt.Errorf("storage sync failed after %s: %w", time.Since(storageSyncStart).Round(time.Millisecond), err)
 		}
+		slog.Info("Storage mirror synchronized", "elapsed", time.Since(storageSyncStart).Round(time.Millisecond))
 	} else {
 		slog.Info("Shared storage mode: skipping drive-mirror")
 	}
@@ -108,9 +120,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	caps := []qmp.MigrationCapability{
 		{Capability: "auto-converge", State: true},
 	}
-	if multifdChannels > 0 {
+	if cfg.MultifdChannels > 0 {
 		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
-		slog.Info("Multifd enabled", "channels", multifdChannels)
+		slog.Info("Multifd enabled", "channels", cfg.MultifdChannels)
 	}
 	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
 		Capabilities: caps,
@@ -132,7 +144,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
 		MaxBandwidth:    maxBandwidth,
-		MultifdChannels: int64(multifdChannels),
+		MultifdChannels: int64(cfg.MultifdChannels),
 	}); err != nil {
 		return fmt.Errorf("setting migration parameters: %w", err)
 	}
@@ -147,6 +159,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// We poll migration status sequentially in the same loop rather than using a
 	// separate goroutine for WaitForEvent vs query-migrate. This prevents QMP
 	// socket data races and ensures we detect silent migration failures.
+	var lastLoggedStatus qmp.MigrateStatus
+	var lastLoggedRemaining int64
+	var queryErrors int
 stopLoop:
 	for {
 		err = client.WaitForEvent(ctx, "STOP", migrationPollInterval)
@@ -159,25 +174,42 @@ stopLoop:
 			// Check if the background migration process failed.
 			raw, qerr := client.Execute(ctx, "query-migrate", nil)
 			if qerr != nil {
-				slog.Warn("Transient query-migrate error during STOP polling", "error", qerr)
+				queryErrors++
+				lvl := slog.LevelDebug
+				if queryErrors >= 10 {
+					lvl = slog.LevelWarn
+				}
+				slog.Log(ctx, lvl, "Transient query-migrate error during STOP polling", "error", qerr, "consecutive_errors", queryErrors)
 				continue
 			}
 			var info qmp.MigrateInfo
 			if err := json.Unmarshal(raw, &info); err != nil {
-				slog.Warn("Failed to parse query-migrate response", "error", err)
+				queryErrors++
+				lvl := slog.LevelDebug
+				if queryErrors >= 10 {
+					lvl = slog.LevelWarn
+				}
+				slog.Log(ctx, lvl, "Failed to parse query-migrate response", "error", err, "consecutive_errors", queryErrors)
 				continue
 			}
-			slog.Info("Migration progress", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
-			switch info.Status {
-			case qmp.MigrateStatusFailed:
-				if info.ErrorDesc != "" {
-					return fmt.Errorf("%w: %s", errMigrationFailed, info.ErrorDesc)
+			queryErrors = 0
+			// Log only on status change or significant progress (remaining bytes halved).
+			statusChanged := info.Status != lastLoggedStatus
+			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
+			if statusChanged || remainingChanged {
+				var pct float64
+				if info.RAM.Total > 0 {
+					pct = float64(info.RAM.Transferred) / float64(info.RAM.Total) * 100
 				}
-				return errMigrationFailed
-			case qmp.MigrateStatusCancelled:
-				return errMigrationCancelled
-			case qmp.MigrateStatusCompleted:
-				slog.Info("Migration completed without explicit STOP event")
+				slog.Info("Migration progress", "status", info.Status, "progress_pct", pct, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+				lastLoggedStatus = info.Status
+				lastLoggedRemaining = info.RAM.Remaining
+			}
+			if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
+				if termErr != nil {
+					return fmt.Errorf("during STOP polling: %w", termErr)
+				}
+				slog.Warn("Migration completed without explicit STOP event", "status", info.Status)
 				break stopLoop
 			}
 			continue
@@ -206,10 +238,15 @@ stopLoop:
 
 	if migrationErr == nil {
 		// Capture actual migration metrics from QEMU.
-		if raw, err := client.Execute(ctx, "query-migrate", nil); err == nil {
+		raw, qerr := client.Execute(ctx, "query-migrate", nil)
+		if qerr != nil {
+			slog.Warn("Failed to capture migration metrics", "error", qerr)
+		} else {
 			var info qmp.MigrateInfo
-			if err := json.Unmarshal(raw, &info); err == nil {
-				slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime)
+			if err := json.Unmarshal(raw, &info); err != nil {
+				slog.Warn("Failed to parse migration metrics", "error", err)
+			} else {
+				slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
 			}
 		}
 	}
@@ -217,8 +254,10 @@ stopLoop:
 	if migrationErr != nil {
 		cctx, ccancel := cleanupCtx(ctx)
 		defer ccancel()
-		if _, cancelErr := client.Execute(cctx, "migrate_cancel", nil); cancelErr != nil {
+		if _, cancelErr := client.Execute(cctx, "migrate-cancel", nil); cancelErr != nil {
 			slog.Warn("Failed to cancel migration", "error", cancelErr)
+		} else {
+			slog.Info("Migration cancelled via QMP")
 		}
 	}
 
@@ -254,16 +293,17 @@ stopLoop:
 	}
 
 	if migrationErr != nil {
-		return fmt.Errorf("migration failed: %w", migrationErr)
+		slog.Error("Migration failed", "error", migrationErr, "elapsed", time.Since(migrationStart).Round(time.Millisecond))
+		return migrationErr
 	}
 
-	slog.Info("Source cleanup complete. Migration succeeded")
+	slog.Info("Source cleanup complete. Migration succeeded", "elapsed", time.Since(migrationStart).Round(time.Millisecond))
 	return nil
 }
 
 // measureRTT estimates network round-trip time to the destination by performing
-// TCP handshake timing against the RAM migration port. Returns the best (lowest)
-// of 3 samples.
+// TCP handshake timing against the RAM migration port, used for auto-downtime
+// calculation. Returns the best (lowest) of 3 samples.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	const samples = 3
 	addr := net.JoinHostPort(destIP.String(), ramMigrationPort)
@@ -271,13 +311,15 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 
 	for i := 0; i < samples; i++ {
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		conn, err := net.DialTimeout("tcp", addr, rttDialTimeout)
 		if err != nil {
 			return 0, fmt.Errorf("RTT sample %d/%d failed: %w", i+1, samples, err)
 		}
 		rtt := time.Since(start)
-		conn.Close()
-		slog.Info("RTT sample", "sample", i+1, "of", samples, "rtt", rtt)
+		if cerr := conn.Close(); cerr != nil {
+			slog.Debug("RTT probe connection close error", "sample", i+1, "error", cerr)
+		}
+		slog.Debug("RTT sample", "sample", i+1, "of", samples, "rtt", rtt)
 		if i == 0 || rtt < best {
 			best = rtt
 		}
@@ -285,6 +327,24 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 
 	slog.Info("RTT measurement complete", "best", best, "samples", samples)
 	return best, nil
+}
+
+// migrationTerminalError checks if a migration status indicates a terminal
+// state. Returns (true, nil) for completed, (true, err) for failed/cancelled,
+// and (false, nil) for in-progress states.
+func migrationTerminalError(status qmp.MigrateStatus, errorDesc string) (bool, error) {
+	switch status {
+	case qmp.MigrateStatusCompleted:
+		return true, nil
+	case qmp.MigrateStatusFailed:
+		if errorDesc != "" {
+			return true, fmt.Errorf("%w: %s", errMigrationFailed, errorDesc)
+		}
+		return true, errMigrationFailed
+	case qmp.MigrateStatusCancelled:
+		return true, errMigrationCancelled
+	}
+	return false, nil
 }
 
 // waitForStorageSync polls query-block-jobs until the drive-mirror job reaches
@@ -299,8 +359,13 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) e
 	ticker := time.NewTicker(storagePollInterval)
 	defer ticker.Stop()
 
+	lastLoggedPct := -1.0
+	var lastLoggedOffset int64
+	var lastLoggedTime time.Time
+
 	for {
 		if ctx.Err() != nil {
+			slog.Warn("Storage sync timed out", "job_id", jobID)
 			return fmt.Errorf("storage sync: %w", ctx.Err())
 		}
 
@@ -329,15 +394,30 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) e
 		} else {
 			jobSeen = true
 			if job.Ready {
-				slog.Info("Storage mirror synchronized", "progress_pct", 100.0)
 				return nil
 			}
 			if job.Len > 0 {
 				pct := float64(job.Offset) / float64(job.Len) * 100
-				slog.Info("Storage sync progress", "progress_pct", fmt.Sprintf("%.2f", pct), "offset", job.Offset, "len", job.Len)
+				if pct-lastLoggedPct >= 5 || lastLoggedPct < 0 {
+					attrs := []any{"job_id", jobID, "progress_pct", pct, "offset", job.Offset, "len", job.Len}
+					if !lastLoggedTime.IsZero() && job.Offset > lastLoggedOffset {
+						dt := time.Since(lastLoggedTime).Seconds()
+						if dt > 0 {
+							mbps := float64(job.Offset-lastLoggedOffset) / dt / (1024 * 1024)
+							attrs = append(attrs, "throughput_mbps", mbps)
+						}
+					}
+					if job.Speed > 0 {
+						attrs = append(attrs, "speed_limit", job.Speed)
+					}
+					slog.Info("Storage sync progress", attrs...)
+					lastLoggedPct = pct
+					lastLoggedOffset = job.Offset
+					lastLoggedTime = time.Now()
+				}
 			}
 			if job.Status == qmp.BlockJobStatusConcluded || job.Status == qmp.BlockJobStatusNull {
-				return fmt.Errorf("block mirror job %q failed", jobID)
+				return fmt.Errorf("block mirror job %q failed (status=%s)", jobID, job.Status)
 			}
 		}
 		select {
@@ -357,14 +437,19 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 	ticker := time.NewTicker(migrationPollInterval)
 	defer ticker.Stop()
 
+	var prevStatus qmp.MigrateStatus
+	var lastLoggedRemaining int64
+
 	for {
 		if ctx.Err() != nil {
+			slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
 			return fmt.Errorf("migration: %w", ctx.Err())
 		}
 
 		raw, err := client.Execute(ctx, "query-migrate", nil)
 		if err != nil {
 			if ctx.Err() != nil {
+				slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
 				return fmt.Errorf("migration: %w", ctx.Err())
 			}
 			return fmt.Errorf("querying migration status: %w", err)
@@ -373,17 +458,15 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 		if err = json.Unmarshal(raw, &info); err != nil {
 			return fmt.Errorf("unmarshaling migration status: %w", err)
 		}
-		slog.Info("Migration status", "status", info.Status)
-		switch info.Status {
-		case qmp.MigrateStatusCompleted:
-			return nil
-		case qmp.MigrateStatusFailed:
-			if info.ErrorDesc != "" {
-				return fmt.Errorf("%w: %s", errMigrationFailed, info.ErrorDesc)
-			}
-			return errMigrationFailed
-		case qmp.MigrateStatusCancelled:
-			return errMigrationCancelled
+		statusChanged := info.Status != prevStatus
+		remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
+		if statusChanged || remainingChanged {
+			slog.Info("Migration status", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+			prevStatus = info.Status
+			lastLoggedRemaining = info.RAM.Remaining
+		}
+		if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
+			return termErr
 		}
 		select {
 		case <-ctx.Done():

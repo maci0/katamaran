@@ -12,6 +12,7 @@ spec:
   ttlSecondsAfterFinished: 300
   template:
     spec:
+      automountServiceAccountToken: false
       nodeName: ${NODE_NAME}
       hostNetwork: true
       hostPID: true
@@ -27,6 +28,7 @@ spec:
             cpu: 10m
             memory: 16Mi
           limits:
+            cpu: 100m
             memory: 32Mi
         command: ["/bin/sh", "-c"]
         args:
@@ -46,6 +48,13 @@ spec:
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: "1"
+            memory: 256Mi
         command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc

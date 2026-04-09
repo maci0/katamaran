@@ -41,18 +41,19 @@ func QMPHandshake(conn net.Conn) {
 	conn.Write([]byte(`{"return":{}}` + "\n"))
 }
 
-// ConsumeCommand reads one command from the connection and discards it.
+// ConsumeCommand reads and discards one QMP command from the connection,
+// used in tests to skip expected intermediate commands during handshake flows.
 func ConsumeCommand(conn net.Conn) {
 	buf := make([]byte, 4096)
 	conn.Read(buf)
 }
 
 // IsMigrateCommand returns true if line contains the "migrate" QMP command,
-// excluding "migrate-set-*", "migrate-incoming", "query-migrate", and "migrate_cancel".
+// excluding "migrate-set-*", "migrate-incoming", "query-migrate", and "migrate-cancel".
 func IsMigrateCommand(line string) bool {
 	return strings.Contains(line, `"migrate"`) &&
 		!strings.Contains(line, "migrate-set") &&
 		!strings.Contains(line, "migrate-incoming") &&
 		!strings.Contains(line, "query-migrate") &&
-		!strings.Contains(line, "migrate_cancel")
+		!strings.Contains(line, "migrate-cancel")
 }
