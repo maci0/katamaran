@@ -15,15 +15,15 @@ Usage: ./scripts/cleanup.sh [--keep-logs] [--help]
 
 Options:
   --keep-logs   Keep /tmp/katamaran-*.log files
-  --help        Show this help message
+  --help, -h    Show this help message
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-logs) KEEP_LOGS=true; shift ;;
-        --help) usage; exit 0 ;;
-        *) echo "Error: unknown option: $1" >&2; usage >&2; exit 1 ;;
+        --help|-h) usage; exit 0 ;;
+        *) error "Unknown option: $1"; usage >&2; exit 2 ;;
     esac
 done
 

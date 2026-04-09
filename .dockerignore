@@ -1,8 +1,11 @@
 .git/
+.github/
 .gitignore
 .opencode/
 .sisyphus/
 .minikube-build/
+Dockerfile
+Dockerfile.*
 scripts/
 
 docs/
@@ -18,7 +21,14 @@ demo/
 sweep-results/
 .claude/
 internal/qmptest/
-docs/superpowers/
 Makefile
 coverage.out
+*_cover.out
 *.log
+*.orig
+*.patch
+.env*
+
+# Root-level build artifacts (match .gitignore)
+/katamaran
+/dashboard

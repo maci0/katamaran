@@ -8,6 +8,17 @@
 #   SUDO      — 'sudo' or '' (empty for kind)
 #   CE        — container engine: 'podman' or 'docker'
 
+# --- Argument helpers ---
+
+# need_arg checks that a flag has a non-empty value following it.
+# Usage: need_arg "$1" "${2:-}"
+need_arg() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: $1 requires a value" >&2
+        exit 2
+    fi
+}
+
 # --- Output helpers ---
 
 log()     { echo -e "\n\033[1;34m>>> $1\033[0m"; }

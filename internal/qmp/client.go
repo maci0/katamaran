@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"sync"
@@ -26,8 +27,8 @@ const (
 	dialTimeout = 10 * time.Second
 
 	// greetingTimeout is the maximum time to wait for the QMP greeting banner
-	// during initial connection. If QEMU was started with wait=off on the
-	// chardev, no greeting is sent and we proceed after this timeout elapses.
+	// during initial connection. If no greeting arrives (e.g. the greeting was
+	// already consumed by a prior connection), we proceed after this timeout.
 	greetingTimeout = 1 * time.Second
 
 	// executeTimeout is the maximum time to wait for a synchronous QMP
@@ -55,6 +56,7 @@ type Client struct {
 	r      *bufio.Reader
 	events []response // Buffered events received during synchronous command execution.
 	buf    []byte     // Unprocessed partial line data from timeouts.
+	socket string     // Socket path for diagnostic logging.
 }
 
 // bufferEvent adds an asynchronous event to the internal queue.
@@ -62,8 +64,8 @@ type Client struct {
 func (c *Client) bufferEvent(ev response) {
 	c.mu.Lock()
 	if len(c.events) >= maxBufferedEvents {
-		c.events[0] = response{} // Clear reference for GC.
-		c.events = c.events[1:]
+		slog.Error("QMP event buffer full, dropping oldest event", "dropped", c.events[0].Event, "incoming", ev.Event, "queued", len(c.events), "socket", c.socket)
+		c.events = slices.Delete(c.events, 0, 1)
 	}
 	c.events = append(c.events, ev)
 	c.mu.Unlock()
@@ -83,7 +85,7 @@ func (c *Client) readLine() ([]byte, error) {
 			c.buf = nil
 			return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
 		}
-		return nil, err
+		return nil, fmt.Errorf("reading QMP line: %w", err)
 	}
 	// Fast path: no prior partial data from a timeout — return the line
 	// directly from ReadBytes without copying into the accumulation buffer.
@@ -109,8 +111,9 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	}
 
 	c := &Client{
-		conn: conn,
-		r:    bufio.NewReader(conn),
+		conn:   conn,
+		r:      bufio.NewReader(conn),
+		socket: socketPath,
 	}
 
 	// If the context is cancelled during the handshake, close the connection
@@ -172,9 +175,10 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	// Atomically prevent the AfterFunc from closing the connection.
 	// If stop() returns false, the callback already fired — conn is closed.
 	if !stop() {
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("QMP handshake interrupted for %s: %w", socketPath, ctx.Err())
 	}
 
+	slog.Debug("QMP client connected", "socket", socketPath)
 	return c, nil
 }
 
@@ -190,7 +194,11 @@ func (c *Client) Close() error {
 	}
 	err := c.conn.Close()
 	c.conn = nil
-	return err
+	slog.Debug("QMP client disconnected", "socket", c.socket)
+	if err != nil {
+		return fmt.Errorf("closing QMP connection: %w", err)
+	}
+	return nil
 }
 
 // Execute sends a synchronous QMP command and returns the raw JSON response.
@@ -237,7 +245,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 
 	// On context cancellation, shorten the deadline to unblock in-progress reads
 	// rather than closing the connection. This preserves the socket for deferred
-	// cleanup commands (migrate_cancel, block-job-cancel) that run after the main
+	// cleanup commands (migrate-cancel, block-job-cancel) that run after the main
 	// context is cancelled.
 	//
 	// callbackDone synchronizes the context.AfterFunc callback with our deferred
@@ -254,9 +262,11 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		}
 	}()
 
+	cmdStart := time.Now()
+	slog.Debug("QMP execute", "cmd", cmd)
 	if _, err = conn.Write(append(b, '\n')); err != nil {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("QMP command %q interrupted: %w", cmd, ctx.Err())
 		}
 		return nil, fmt.Errorf("writing QMP command %q: %w", cmd, err)
 	}
@@ -265,11 +275,14 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		line, err := c.readLine()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("QMP command %q interrupted: %w", cmd, ctx.Err())
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, executeTimeout, err)
+			}
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("QEMU closed the QMP connection unexpectedly during %q (did QEMU crash?): %w", cmd, err)
 			}
 			return nil, fmt.Errorf("reading QMP response for %q: %w", cmd, err)
 		}
@@ -291,6 +304,12 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 			return nil, fmt.Errorf("QMP command %q failed: %w", cmd, resp.Error)
 		}
 
+		elapsed := time.Since(cmdStart)
+		if elapsed >= 1*time.Second {
+			slog.Warn("Slow QMP command", "cmd", cmd, "elapsed", elapsed.Round(time.Millisecond))
+		} else {
+			slog.Debug("QMP command completed", "cmd", cmd, "elapsed", elapsed.Round(time.Millisecond))
+		}
 		return resp.Return, nil
 	}
 }
@@ -353,11 +372,11 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		line, err := c.readLine()
 		if err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return fmt.Errorf("waiting for QMP event %q interrupted: %w", eventName, ctx.Err())
 			}
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return err
+				return fmt.Errorf("timed out waiting for QMP event %q after %v: %w", eventName, timeout, err)
 			}
 			if errors.Is(err, io.EOF) {
 				return fmt.Errorf("QEMU closed the QMP connection unexpectedly while waiting for %q (did QEMU crash?): %w", eventName, err)
@@ -378,6 +397,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// events arriving between WaitForEvent calls would be silently
 		// dropped, causing subsequent WaitForEvent calls to hang.
 		if resp.Event != "" {
+			slog.Debug("Buffered non-matching QMP event", "received", resp.Event, "waiting_for", eventName)
 			c.bufferEvent(resp)
 		}
 	}

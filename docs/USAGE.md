@@ -33,6 +33,8 @@ katamaran --mode <source|dest> [flags]
 | `--shared-storage` | no | `false` | Skip NBD storage mirroring |
 | `--multifd-channels` | no | `4` | Parallel TCP channels for RAM migration (0 to disable) |
 | `--log-format` | no | `text` | Log output format: `text` or `json` |
+| `--log-level` | no | `info` | Log level: `debug`, `info`, `warn`, or `error` |
+| `--version`, `-v` | no | — | Show version and exit |
 
 ### Source mode flags
 
@@ -41,7 +43,7 @@ katamaran --mode <source|dest> [flags]
 | `--dest-ip` | yes | `""` | Destination node IP |
 | `--vm-ip` | yes | `""` | VM pod IP used for route/tunnel cutover |
 | `--tunnel-mode` | no | `ipip` | `ipip`, `gre`, or `none` |
-| `--downtime` | no | `25` | Maximum allowed downtime during VM pause (ms) |
+| `--downtime` | no | `25` | Maximum allowed downtime during VM pause, 1-60000 (ms) |
 | `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |
 
 ### Destination mode flags
@@ -149,12 +151,18 @@ Show orchestrator help:
 deploy/migrate.sh --help
 ```
 
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `KATAMARAN_MIGRATION_ID` | Correlation ID added to all log entries (set by the dashboard) |
+
 ## Validation Rules
 
 - `--dest-ip` and `--vm-ip` are required in `source` mode
 - `--dest-ip` and `--vm-ip` must be the same address family
 - `--tunnel-mode` must be `ipip`, `gre`, or `none`
-- `--downtime` must be a positive integer
+- `--downtime` must be between 1 and 60000
 - Source-only flags in dest mode (and vice versa) produce warnings
 - Job orchestration requires `--tap` for zero-drop buffering path
 

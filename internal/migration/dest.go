@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
 )
@@ -32,9 +33,34 @@ import (
 //  6. Flushes all buffered packets via release_indefinite (skipped if no qdisc installed)
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
-func RunDestination(ctx context.Context, cfg DestConfig) error {
+func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
+	if cfg.TapIface != "" {
+		if err := validateTapIface(cfg.TapIface); err != nil {
+			return fmt.Errorf("validating tap interface: %w", err)
+		}
+	}
+	if cfg.TapNetns != "" {
+		if err := validateTapNetns(cfg.TapNetns); err != nil {
+			return fmt.Errorf("validating tap netns: %w", err)
+		}
+	}
+	if !cfg.SharedStorage {
+		if err := validateDriveID(cfg.DriveID); err != nil {
+			return fmt.Errorf("validating drive ID: %w", err)
+		}
+	}
+
+	destStart := time.Now()
+	defer func() {
+		if retErr != nil {
+			slog.Error("Destination setup failed", "error", retErr, "elapsed", time.Since(destStart).Round(time.Millisecond))
+		}
+	}()
+
 	slog.Info("Setting up destination node",
+		"qmp_socket", cfg.QMPSocket,
 		"tap_iface", cfg.TapIface,
+		"tap_netns", cfg.TapNetns,
 		"shared_storage", cfg.SharedStorage,
 		"multifd_channels", cfg.MultifdChannels,
 		"drive_id", cfg.DriveID,
@@ -83,7 +109,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) error {
 			cctx, ccancel := cleanupCtx(ctx)
 			defer ccancel()
 			if err := runCmdInNetns(cctx, tapNetns, "tc", "qdisc", "del", "dev", tapIface, "root"); err != nil {
-				slog.Warn("Failed to remove qdisc", "error", err)
+				slog.Warn("Failed to remove qdisc", "tap_iface", tapIface, "error", err)
 			}
 		}
 	}()
@@ -120,18 +146,21 @@ func RunDestination(ctx context.Context, cfg DestConfig) error {
 	// Starting QEMU with -incoming is incompatible with Kata's sandbox lifecycle
 	// (Kata kills the QEMU because kata-agent never connects via vsock in
 	// incoming mode), so we use a QMP command on the already-running instance.
-	incomingURI := fmt.Sprintf("tcp:0.0.0.0:%s", ramMigrationPort)
+	incomingURI := fmt.Sprintf("tcp:[::]:%s", ramMigrationPort)
 	slog.Info("Opening incoming migration listener", "uri", incomingURI)
 	if _, err = client.Execute(ctx, "migrate-incoming", qmp.MigrateArgs{URI: incomingURI}); err != nil {
 		return fmt.Errorf("configuring incoming migration listener: %w", err)
 	}
+	slog.Info("Incoming migration listener ready", "uri", incomingURI)
 
 	nbdStarted := false
 	if !cfg.SharedStorage {
 		// Step 3: Start NBD server to receive storage mirroring from the source.
-		slog.Info("Starting NBD server for storage migration")
+		slog.Info("Starting NBD server for storage migration", "drive_id", cfg.DriveID)
 		// Idempotency: attempt to stop any existing NBD server first, ignore errors.
-		_, _ = client.Execute(ctx, "nbd-server-stop", nil)
+		if _, err := client.Execute(ctx, "nbd-server-stop", nil); err != nil {
+			slog.Debug("Pre-clearing NBD server (expected if none exists)", "error", err)
+		}
 
 		if _, err = client.Execute(ctx, "nbd-server-start", qmp.NBDServerStartArgs{
 			Addr: qmp.NBDServerAddr{
@@ -238,6 +267,6 @@ func RunDestination(ctx context.Context, cfg DestConfig) error {
 	}
 	slog.Info("GARP announce-self scheduled", "rounds", garpRounds)
 
-	slog.Info("Destination setup complete")
+	slog.Info("Destination setup complete", "elapsed", time.Since(destStart).Round(time.Millisecond))
 	return nil
 }

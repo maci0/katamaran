@@ -31,8 +31,8 @@
 
 set -euo pipefail
 
-if [[ $# -lt 1 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
-    cat >&2 <<USAGE
+usage() {
+    cat <<USAGE
 Usage: $0 <minikube-profile> [sch_plug|nfs ...]
 
 Module groups:
@@ -44,13 +44,20 @@ Examples:
   $0 my-profile nfs          # nfs only
   $0 my-profile sch_plug nfs # both
 USAGE
-    if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then exit 0; fi
+}
+
+if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+    usage >&2
     exit 1
 fi
 
 PROFILE="$1"
 shift
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf "${BUILD_DIR}"' EXIT
 

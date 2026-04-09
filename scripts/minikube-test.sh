@@ -47,7 +47,7 @@ for arg in "$@"; do
             echo "  --help      Show this help message"
             exit 0
             ;;
-        *) echo "Error: unknown option: ${arg}" >&2; exit 1 ;;
+        *) echo "Error: unknown option: ${arg}" >&2; exit 2 ;;
     esac
 done
 readonly KEEP

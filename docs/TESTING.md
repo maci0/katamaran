@@ -13,7 +13,7 @@
 ./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
-All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
+All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.24+.
 
 > **Note:** E2E tests now build a container image and deploy the katamaran binary to nodes via a DaemonSet. A pre-built binary is no longer required for E2E tests; only `podman` and the Go source are needed.
 
@@ -41,7 +41,7 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 
 - Linux host with KVM support (`/dev/kvm` must exist)
 - Nested virtualization enabled (required for Kata Containers inside minikube)
-- Go 1.22+ (install system-wide)
+- Go 1.24+ (install system-wide)
 
 ### Verify Nested Virtualization
 
@@ -338,7 +338,7 @@ Expected output (destination blocks at "Waiting for QEMU RESUME event"):
 time=... level=INFO msg="Setting up destination node"
 time=... level=INFO msg="Preparing network queue" tap_iface=tap0_kata
 time=... level=INFO msg="Network queue installed (pass-through, not plugged yet)" tap_iface=tap0_kata
-time=... level=INFO msg="Opening incoming migration listener" uri="tcp:0.0.0.0:4444"
+time=... level=INFO msg="Opening incoming migration listener" uri="tcp:[::]:4444"
 time=... level=INFO msg="Shared storage mode: skipping NBD server setup"
 time=... level=INFO msg="Network queue plugged. Buffering in-flight packets" tap_iface=tap0_kata
 time=... level=INFO msg="Waiting for QEMU RESUME event"
@@ -350,7 +350,7 @@ time=... level=INFO msg="Waiting for QEMU RESUME event"
 |------|---------|--------|
 | 1a | `tc qdisc add dev tap0_kata root plug limit 32768` | Install sch_plug qdisc |
 | 1b | `tc qdisc change dev tap0_kata root plug release_indefinite` | Set to pass-through (traffic flows normally) |
-| 3 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode — all arriving packets are queued |
+| 4 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode — all arriving packets are queued |
 
 At this point, any packets that arrive at the destination's tap interface are **buffered in the kernel**, not dropped and not delivered. The destination is ready.
 
@@ -576,7 +576,7 @@ time=... level=INFO msg="Storage sync progress" progress_pct=12.50 offset=... le
 time=... level=INFO msg="Storage sync progress" progress_pct=25.00 offset=... len=...
 time=... level=INFO msg="Storage sync progress" progress_pct=50.00 offset=... len=...
 time=... level=INFO msg="Storage sync progress" progress_pct=75.00 offset=... len=...
-time=... level=INFO msg="Storage mirror synchronized" progress_pct=100
+time=... level=INFO msg="Storage mirror synchronized" elapsed=...
 time=... level=INFO msg="Configuring RAM migration"
 time=... level=INFO msg="RAM migration started. Waiting for VM to pause (STOP event)"
 time=... level=INFO msg="VM paused. Redirecting in-flight packets to destination"
@@ -596,7 +596,7 @@ And the destination output includes the NBD server:
 time=... level=INFO msg="Setting up destination node"
 time=... level=INFO msg="Preparing network queue" tap_iface=tap0_kata
 time=... level=INFO msg="Network queue installed (pass-through, not plugged yet)" tap_iface=tap0_kata
-time=... level=INFO msg="Opening incoming migration listener" uri="tcp:0.0.0.0:4444"
+time=... level=INFO msg="Opening incoming migration listener" uri="tcp:[::]:4444"
 time=... level=INFO msg="Starting NBD server for storage migration"
 time=... level=INFO msg="NBD server listening" addr="[::]" port=10809
 time=... level=INFO msg="Network queue plugged. Buffering in-flight packets" tap_iface=tap0_kata
@@ -692,9 +692,8 @@ The script produces a structured report at the end:
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)
 
@@ -855,9 +854,8 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
 
@@ -925,9 +923,8 @@ All other E2E scripts use `--shared-storage` as a convenience flag to skip the s
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)
 
@@ -986,7 +983,7 @@ sequenceDiagram
 | Source execution | K8s Job (`deploy/job-source.yaml`) — privileged pod on source node |
 | Orchestration | `deploy/migrate.sh` — renders templates via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
-| Log collection | `kubectl logs job/katamaran-source`, `kubectl logs job/katamaran-dest` |
+| Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
 
 ## Troubleshooting
 

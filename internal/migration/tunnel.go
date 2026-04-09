@@ -2,16 +2,24 @@ package migration
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"time"
 )
 
 // TunnelMode specifies the encapsulation protocol for the migration IP tunnel.
 type TunnelMode string
 
 const (
+	// tunnelPrefix is the prefix for the IP tunnel interface name created
+	// during migration to forward in-flight traffic from source to destination.
+	// Each migration generates a unique suffix to support parallel migrations.
+	tunnelPrefix = "mig-"
+
 	// TunnelModeIPIP uses IPIP (IPv4) or IP6IP6 (IPv6). Minimal overhead.
 	TunnelModeIPIP TunnelMode = "ipip"
 	// TunnelModeGRE uses GRE (IPv4) or IP6GRE (IPv6). Supported by cloud middleboxes.
@@ -19,6 +27,17 @@ const (
 	// TunnelModeNone skips tunnel creation.
 	TunnelModeNone TunnelMode = "none"
 )
+
+// generateTunnelName returns a unique tunnel interface name for this migration.
+// Uses tunnelPrefix with a random hex suffix. The result is 14 characters,
+// within the Linux IFNAMSIZ limit (15 chars + null terminator).
+func generateTunnelName() (string, error) {
+	var b [5]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating tunnel name: %w", err)
+	}
+	return tunnelPrefix + hex.EncodeToString(b[:]), nil // "mig-" (4) + 10 hex = 14 chars
+}
 
 // setupTunnel creates an IP tunnel to the destination node and installs
 // a host route for the VM IP through it. This ensures packets arriving at the
@@ -32,6 +51,7 @@ const (
 // On partial failure (e.g., route add fails after tunnel is created), the
 // tunnel is cleaned up before returning the error to prevent resource leaks.
 func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode, tunnelName string) error {
+	tunnelStart := time.Now()
 	if !dest.IsValid() {
 		return fmt.Errorf("invalid destination address: %s", dest)
 	}
@@ -71,6 +91,8 @@ func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		mode = "ipip"
 	}
 
+	slog.Debug("Selected tunnel encapsulation", "mode", mode, "tunnel", tunnelName, "dest", destStr, "vm", vmStr)
+
 	var err error
 	if dest.Is6() {
 		err = runCmd(ctx, "ip", "-6", "tunnel", "add", tunnelName,
@@ -98,6 +120,7 @@ func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 	if err != nil {
 		return errors.Join(fmt.Errorf("adding route for %s through tunnel: %w", vmStr, err), rollbackTunnel(ctx, tunnelName))
 	}
+	slog.Info("Tunnel setup complete", "tunnel", tunnelName, "mode", mode, "dest", destStr, "vm", vmStr, "elapsed", time.Since(tunnelStart).Round(time.Millisecond))
 	return nil
 }
 
@@ -113,21 +136,12 @@ func rollbackTunnel(ctx context.Context, tunnelName string) error {
 	return err
 }
 
-// IPFamily returns a human-readable label for the IP address family.
-func IPFamily(addr netip.Addr) string {
-	if addr.Is4() {
-		return "IPv4"
-	}
-	return "IPv6"
-}
-
 // teardownTunnel removes the IP tunnel created during migration.
 // Uses "ip link del" which works for all tunnel types (ipip, ip6ip6, gre, ip6gre).
 // Deleting the tunnel implicitly removes the associated host route.
 //
-// Best-effort: if the tunnel doesn't exist (expected after a clean teardown
-// or if setup was never reached), the error is swallowed. Other errors
-// (EPERM, context cancel) are logged but non-recoverable.
+// Best-effort: all errors are logged as warnings but otherwise ignored,
+// since this runs during cleanup where the tunnel may already be gone.
 func teardownTunnel(ctx context.Context, tunnelName string) {
 	if err := runCmd(ctx, "ip", "link", "del", tunnelName); err != nil {
 		slog.Warn("Tunnel teardown failed", "tunnel", tunnelName, "error", err)

@@ -56,7 +56,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** in-flight IPv4 packets are forwarded to the destination during CNI convergence.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
+- [x] `setupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
 - [x] Host route uses `ip route replace <vmIP> dev <tunnel>`
 - [x] Both `--dest-ip` and `--vm-ip` are validated with `netip.ParseAddr`
 
@@ -67,7 +67,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** IPv6-only workloads can be live-migrated with the same zero-drop guarantee.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
+- [x] `setupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
 - [x] Host route uses `ip -6 route replace <vmIP> dev <tunnel>`
 - [x] Mixed address families (IPv4 dest + IPv6 vm or vice versa) are rejected with a clear error
 - [x] IPv6 addresses are validated at the CLI level before migration begins
@@ -95,7 +95,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** stale resources from a previous run are cleaned up automatically before creating new ones.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` deletes any existing tunnel with the same name before creation
+- [x] `setupTunnel` deletes any existing tunnel with the same name before creation
 - [x] Destination qdisc setup removes any existing root qdisc before adding a new one
 - [x] NBD server setup stops any existing server before starting a new one
 
@@ -127,7 +127,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] `failed` status includes QEMU's `error-desc` when available
 - [x] `cancelled` status returns a distinct sentinel error
 - [x] Migration polling is bounded by `migrationTimeout` (1h) to prevent infinite loops
-- [x] On failure, `migrate_cancel` is sent to QEMU to resume the source VM
+- [x] On failure, `migrate-cancel` is sent to QEMU to resume the source VM
 
 ### US-10: Validate CLI inputs before migration begins
 

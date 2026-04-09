@@ -17,6 +17,8 @@
 #     [--downtime <ms>] \
 #     [--auto-downtime] \
 #     [--multifd-channels <n>] \
+#     [--log-level debug|info|warn|error] \
+#     [--log-format text|json] \
 #     [--context <kubectl-context>]
 
 set -euo pipefail
@@ -29,7 +31,10 @@ TUNNEL_MODE="ipip"
 DOWNTIME="25"
 AUTO_DOWNTIME=false
 MULTIFD_CHANNELS="4"
+DOWNTIME_SET=false
 KUBECTL_CONTEXT=""
+LOG_LEVEL=""
+LOG_FORMAT=""
 MIG_SUCCESS=false
 SOURCE_NODE=""
 DEST_NODE=""
@@ -42,49 +47,78 @@ VM_IP=""
 IMAGE_REF=""
 
 usage() {
-    echo "Usage: $0 [options]"
-    echo ""
-    echo "Required flags:"
-    echo "  --source-node <name>    Name of the source K8s node"
-    echo "  --dest-node <name>      Name of the destination K8s node"
-    echo "  --tap <iface>           Destination tap interface for zero-drop buffering (use 'none' to skip)"
-    echo "  --qmp-source <path>     Path to QMP socket on source node"
-    echo "  --qmp-dest <path>       Path to QMP socket on destination node"
-    echo "  --dest-ip <ip>          IP address of the destination (must be reachable from source QEMU)"
-    echo "  --vm-ip <ip>            IP address of the VM (pod IP)"
-    echo "  --image <image>         Katamaran container image to use"
-    echo ""
-    echo "Optional flags:"
-    echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
-    echo "  --shared-storage        Enable shared storage mode"
-    echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
-    echo "  --downtime <ms>         Max allowed downtime in milliseconds (default: 25)"
-    echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
-    echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 4, 0 to disable)"
-    echo "  --context <context>     Kubectl context to use"
-    echo "  --help                  Show this help message"
-    exit "${1:-1}"
+    local code="${1:-1}"
+    local fd=2
+    [[ "$code" -eq 0 ]] && fd=1
+    {
+        echo "Usage: $0 [options]"
+        echo ""
+        echo "Required flags:"
+        echo "  --source-node <name>    Name of the source K8s node"
+        echo "  --dest-node <name>      Name of the destination K8s node"
+        echo "  --tap <iface>           Destination tap interface for zero-drop buffering (use 'none' to skip)"
+        echo "  --qmp-source <path>     Path to QMP socket on source node"
+        echo "  --qmp-dest <path>       Path to QMP socket on destination node"
+        echo "  --dest-ip <ip>          IP address of the destination (must be reachable from source QEMU)"
+        echo "  --vm-ip <ip>            IP address of the VM (pod IP)"
+        echo "  --image <image>         Katamaran container image to use"
+        echo ""
+        echo "Optional flags:"
+        echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
+        echo "  --shared-storage        Enable shared storage mode"
+        echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
+        echo "  --downtime <ms>         Max allowed downtime in milliseconds, 1-60000 (default: 25)"
+        echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
+        echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 4, 0 to disable)"
+        echo "  --log-level <level>     Log level for katamaran: debug, info, warn, error"
+        echo "  --log-format <fmt>      Log output format for katamaran: text or json"
+        echo "  --context <context>     Kubectl context to use"
+        echo ""
+        echo "Other:"
+        echo "  --help, -h              Show this help message"
+        echo ""
+        echo "Environment variables:"
+        echo "  KATAMARAN_KEEP_JOBS=true   Keep migration jobs after completion (skip cleanup)"
+        echo ""
+        echo "Example:"
+        echo "  $0 \\"
+        echo "    --source-node node1 --dest-node node2 \\"
+        echo "    --tap tap0_kata --qmp-source /run/vc/vm/ID/extra-monitor.sock \\"
+        echo "    --qmp-dest /run/vc/vm/ID/extra-monitor.sock \\"
+        echo "    --dest-ip 10.0.0.2 --vm-ip 10.244.1.5 \\"
+        echo "    --image localhost/katamaran:dev"
+    } >&"$fd"
+    exit "$code"
+}
+
+need_arg() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Error: $1 requires a value" >&2
+        usage 2
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --source-node) SOURCE_NODE="$2"; shift 2 ;;
-        --dest-node) DEST_NODE="$2"; shift 2 ;;
-        --tap) TAP_IFACE="$2"; shift 2 ;;
-        --tap-netns) TAP_NETNS="$2"; shift 2 ;;
-        --qmp-source) QMP_SOURCE="$2"; shift 2 ;;
-        --qmp-dest) QMP_DEST="$2"; shift 2 ;;
-        --dest-ip) DEST_IP="$2"; shift 2 ;;
-        --vm-ip) VM_IP="$2"; shift 2 ;;
-        --image) IMAGE_REF="$2"; shift 2 ;;
+        --source-node) need_arg "$1" "${2:-}"; SOURCE_NODE="$2"; shift 2 ;;
+        --dest-node) need_arg "$1" "${2:-}"; DEST_NODE="$2"; shift 2 ;;
+        --tap) need_arg "$1" "${2:-}"; TAP_IFACE="$2"; shift 2 ;;
+        --tap-netns) need_arg "$1" "${2:-}"; TAP_NETNS="$2"; shift 2 ;;
+        --qmp-source) need_arg "$1" "${2:-}"; QMP_SOURCE="$2"; shift 2 ;;
+        --qmp-dest) need_arg "$1" "${2:-}"; QMP_DEST="$2"; shift 2 ;;
+        --dest-ip) need_arg "$1" "${2:-}"; DEST_IP="$2"; shift 2 ;;
+        --vm-ip) need_arg "$1" "${2:-}"; VM_IP="$2"; shift 2 ;;
+        --image) need_arg "$1" "${2:-}"; IMAGE_REF="$2"; shift 2 ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
-        --tunnel-mode) TUNNEL_MODE="$2"; shift 2 ;;
-        --downtime) DOWNTIME="$2"; shift 2 ;;
-        --multifd-channels) MULTIFD_CHANNELS="$2"; shift 2 ;;
-        --context) KUBECTL_CONTEXT="$2"; shift 2 ;;
-        --help) usage 0 ;;
-        *) echo "Error: unknown option: $1" >&2; usage ;;
+        --tunnel-mode) need_arg "$1" "${2:-}"; TUNNEL_MODE="$2"; shift 2 ;;
+        --downtime) need_arg "$1" "${2:-}"; DOWNTIME="$2"; DOWNTIME_SET=true; shift 2 ;;
+        --multifd-channels) need_arg "$1" "${2:-}"; MULTIFD_CHANNELS="$2"; shift 2 ;;
+        --log-level) need_arg "$1" "${2:-}"; LOG_LEVEL="$2"; shift 2 ;;
+        --log-format) need_arg "$1" "${2:-}"; LOG_FORMAT="$2"; shift 2 ;;
+        --context) need_arg "$1" "${2:-}"; KUBECTL_CONTEXT="$2"; shift 2 ;;
+        --help|-h) usage 0 ;;
+        *) echo "Error: unknown option: $1" >&2; usage 2 ;;
     esac
 done
 
@@ -99,30 +133,50 @@ missing_args=()
 [[ -z "$IMAGE_REF" ]] && missing_args+=(--image)
 if [[ ${#missing_args[@]} -gt 0 ]]; then
     echo "Error: missing required flag(s): ${missing_args[*]}" >&2
-    usage
+    usage 2
 fi
 
 if [[ "$TAP_IFACE" == "none" ]]; then
     TAP_IFACE=""
 fi
 
+# Normalize enum flags for case-insensitive matching (aligned with katamaran binary).
+TUNNEL_MODE="${TUNNEL_MODE,,}"
+LOG_LEVEL="${LOG_LEVEL,,}"
+LOG_FORMAT="${LOG_FORMAT,,}"
+
 if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
-    echo "Error: --tunnel-mode must be 'ipip', 'gre', or 'none'." >&2
+    echo "Error: invalid --tunnel-mode '$TUNNEL_MODE' (valid: ipip, gre, none)" >&2
     exit 1
 fi
 
 if [[ "$TAP_IFACE" == *[[:space:]]* ]]; then
-    echo "Error: --tap must be a single interface name without spaces." >&2
+    echo "Error: --tap must be a single interface name without spaces" >&2
     exit 1
 fi
 
 if [[ ! "$DOWNTIME" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Error: --downtime must be a positive integer." >&2
+    echo "Error: --downtime must be a positive integer, got '$DOWNTIME'" >&2
+    exit 1
+fi
+
+if [[ "$DOWNTIME" -gt 60000 ]]; then
+    echo "Error: --downtime must be between 1 and 60000, got '$DOWNTIME'" >&2
     exit 1
 fi
 
 if [[ ! "$MULTIFD_CHANNELS" =~ ^[0-9]+$ ]]; then
-    echo "Error: --multifd-channels must be a non-negative integer." >&2
+    echo "Error: --multifd-channels must be a non-negative integer, got '$MULTIFD_CHANNELS'" >&2
+    exit 1
+fi
+
+if [[ -n "$LOG_LEVEL" && "$LOG_LEVEL" != "debug" && "$LOG_LEVEL" != "info" && "$LOG_LEVEL" != "warn" && "$LOG_LEVEL" != "error" ]]; then
+    echo "Error: invalid --log-level '$LOG_LEVEL' (valid: debug, info, warn, error)" >&2
+    exit 1
+fi
+
+if [[ -n "$LOG_FORMAT" && "$LOG_FORMAT" != "text" && "$LOG_FORMAT" != "json" ]]; then
+    echo "Error: invalid --log-format '$LOG_FORMAT' (valid: text, json)" >&2
     exit 1
 fi
 
@@ -135,7 +189,7 @@ for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DE
     if [[ -n "$val" && ! "$val" =~ $shell_safe_re ]]; then
         flag_name="${var_name,,}"
         flag_name="${flag_name//_/-}"
-        echo "Error: --${flag_name} contains invalid characters: $val" >&2
+        echo "Error: --${flag_name} contains invalid characters" >&2
         exit 1
     fi
 done
@@ -156,8 +210,17 @@ DEST_EXTRA_ARGS="--multifd-channels $MULTIFD_CHANNELS"
 if [[ "$SHARED_STORAGE" == "true" ]]; then
     DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --shared-storage"
 fi
+if [[ -n "$LOG_LEVEL" ]]; then
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --log-level $LOG_LEVEL"
+fi
+if [[ -n "$LOG_FORMAT" ]]; then
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --log-format $LOG_FORMAT"
+fi
 
-SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS --tunnel-mode $TUNNEL_MODE --downtime $DOWNTIME"
+SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS --tunnel-mode $TUNNEL_MODE"
+if [[ "$DOWNTIME_SET" == "true" ]]; then
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --downtime $DOWNTIME"
+fi
 if [[ "$AUTO_DOWNTIME" == "true" ]]; then
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime"
 fi

@@ -4,13 +4,10 @@
 package migration
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -58,11 +55,6 @@ const (
 	// garpStepMS is the delay increase added after each announcement.
 	garpStepMS = 100
 
-	// tunnelPrefix is the prefix for the IP tunnel interface name created
-	// during migration to forward in-flight traffic from source to destination.
-	// Each migration generates a unique suffix to support parallel migrations.
-	tunnelPrefix = "mig-"
-
 	// migrationTimeout is the maximum wall-clock time allowed for the entire
 	// RAM migration polling loop (query-migrate). Prevents infinite polling
 	// if migration never converges (e.g., perpetual dirty page churn with
@@ -99,6 +91,10 @@ const (
 	// RTT-based downtime estimate. Accounts for QEMU processing latency
 	// that is independent of network RTT.
 	rttMinOverheadMS = 10
+
+	// rttDialTimeout is the maximum time to wait for each TCP handshake
+	// when measuring round-trip time to the destination.
+	rttDialTimeout = 5 * time.Second
 )
 
 // SourceConfig holds all parameters for RunSource.
@@ -133,58 +129,64 @@ func cleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(baseCtx), cleanupTimeout)
 }
 
-// generateTunnelName returns a unique tunnel interface name for this migration.
-// Uses tunnelPrefix with a random hex suffix. The result is 14 characters,
-// within the Linux IFNAMSIZ limit (15 chars + null terminator).
-func generateTunnelName() (string, error) {
-	var b [5]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generating tunnel name: %w", err)
+// IPFamily returns a human-readable label for the IP address family.
+func IPFamily(addr netip.Addr) string {
+	if addr.Is4() {
+		return "IPv4"
 	}
-	return tunnelPrefix + hex.EncodeToString(b[:]), nil // "mig-" (4) + 10 hex = 14 chars
+	return "IPv6"
+}
+
+// validIfaceName matches Linux network interface names. IFNAMSIZ is 16 (15 usable
+// chars). Allows alphanumerics, dots, hyphens, underscores, colons, and @ (VLAN).
+var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@:\-]{0,14}$`)
+
+// validNetnsPath matches safe network namespace paths such as /proc/<pid>/ns/net
+// or /var/run/netns/<name>. Only allows alphanumerics and common path characters.
+var validNetnsPath = regexp.MustCompile(`^/[a-zA-Z0-9][a-zA-Z0-9/_.\-]*$`)
+
+// validateTapIface checks that name is a valid Linux network interface name.
+func validateTapIface(name string) error {
+	if !validIfaceName.MatchString(name) {
+		return fmt.Errorf("invalid tap interface name: %q", name)
+	}
+	return nil
+}
+
+// validateTapNetns checks that path is a safe network namespace path.
+func validateTapNetns(path string) error {
+	if len(path) > 256 {
+		return fmt.Errorf("netns path too long: %d chars", len(path))
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("netns path contains path traversal: %q", path)
+	}
+	if !validNetnsPath.MatchString(path) {
+		return fmt.Errorf("invalid netns path: %q", path)
+	}
+	return nil
+}
+
+// validDriveID matches QEMU block device IDs (e.g., "drive-virtio-disk0").
+// Only allows alphanumerics, hyphens, underscores, and dots.
+var validDriveID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$`)
+
+// validateDriveID checks that id is a safe QEMU block device identifier.
+func validateDriveID(id string) error {
+	if !validDriveID.MatchString(id) {
+		return fmt.Errorf("invalid drive ID: %q", id)
+	}
+	return nil
 }
 
 // formatQEMUHost returns the IP address formatted for use in QEMU's
 // colon-delimited URIs (e.g., nbd:host:port, tcp:host:port). IPv6 addresses
 // are wrapped in square brackets to avoid ambiguity with URI field separators.
-// IPv4 addresses are returned unchanged.
+// IPv4 addresses (including IPv4-mapped IPv6) are returned unchanged.
 func formatQEMUHost(addr netip.Addr) string {
-	s := addr.String()
-	if addr.Is6() && !addr.Is4In6() {
-		return "[" + s + "]"
+	addr = addr.Unmap()
+	if addr.Is6() {
+		return "[" + addr.String() + "]"
 	}
-	return s
-}
-
-// runCmdInNetns executes a command inside the given network namespace.
-// If netnsPath is empty, it runs the command in the current namespace.
-func runCmdInNetns(ctx context.Context, netnsPath string, name string, args ...string) error {
-	if netnsPath == "" {
-		return runCmd(ctx, name, args...)
-	}
-	nsArgs := append([]string{"--net=" + netnsPath, name}, args...)
-	return runCmd(ctx, "nsenter", nsArgs...)
-}
-
-// runCmd executes an external command. It captures combined stdout/stderr and
-// returns a wrapped error including the full command line and output on failure.
-// If the context was cancelled, the returned error wraps context.Canceled so
-// callers can detect graceful shutdown with errors.Is(err, context.Canceled).
-func runCmd(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("command cancelled: %s %v: %w", name, args, ctx.Err())
-		}
-		errMsg := strings.TrimSpace(out.String())
-		if errMsg == "" {
-			return fmt.Errorf("executing %s %v: %w", name, args, err)
-		}
-		return fmt.Errorf("executing %s %v: %s: %w", name, args, errMsg, err)
-	}
-	return nil
+	return addr.String()
 }

@@ -18,24 +18,24 @@ PROVIDER="minikube"
 # Parse flags (before positional downtime args).
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --provider) PROVIDER="$2"; shift 2 ;;
-        --help)
-            echo "Usage: $0 [--provider minikube|kind] <downtime1> [downtime2 ... | auto]"
+        --provider) need_arg "$1" "${2:-}"; PROVIDER="$2"; shift 2 ;;
+        --help|-h)
+            echo "Usage: $0 [--provider minikube|kind] [--help] <downtime1> [downtime2 ... | auto]"
             echo "Example: $0 10 25 50 auto"
             echo "Example: $0 --provider kind 10 25 auto"
             echo ""
             echo "Use 'auto' to test RTT-based auto-downtime calculation."
             exit 0
             ;;
-        --*) echo "Error: unknown option: $1" >&2; exit 1 ;;
+        --*) error "Unknown option: $1"; exit 2 ;;
         *) break ;;  # First non-flag arg starts the downtime list.
     esac
 done
 
 if [[ $# -eq 0 ]]; then
-    echo "Error: at least one downtime value is required." >&2
+    error "At least one downtime value is required"
     echo "Usage: $0 [--provider minikube|kind] <downtime1> [downtime2 ... | auto]" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
@@ -107,16 +107,16 @@ get_qmp_socket() {
 }
 
 # Extract actual migration metrics from source job logs.
-# Looks for the log line: "Migration completed: actual_downtime=Xms total_time=Yms setup_time=Zms"
+# Looks for slog key=value pairs: actual_downtime_ms=X total_time_ms=Y setup_time_ms=Z
 extract_metrics() {
     local logfile="$1"
     local metric_line
-    metric_line=$(grep -o 'actual_downtime=[0-9]*ms total_time=[0-9]*ms setup_time=[0-9]*ms' "$logfile" 2>/dev/null || true)
+    metric_line=$(grep 'actual_downtime_ms=' "$logfile" 2>/dev/null | tail -1 || true)
     if [[ -n "$metric_line" ]]; then
         local actual_dt total_t setup_t
-        actual_dt=$(echo "$metric_line" | grep -o 'actual_downtime=[0-9]*' | cut -d= -f2)
-        total_t=$(echo "$metric_line" | grep -o 'total_time=[0-9]*' | cut -d= -f2)
-        setup_t=$(echo "$metric_line" | grep -o 'setup_time=[0-9]*' | cut -d= -f2)
+        actual_dt=$(echo "$metric_line" | grep -o 'actual_downtime_ms=[0-9]*' | cut -d= -f2)
+        total_t=$(echo "$metric_line" | grep -o 'total_time_ms=[0-9]*' | cut -d= -f2)
+        setup_t=$(echo "$metric_line" | grep -o 'setup_time_ms=[0-9]*' | cut -d= -f2)
         echo "${actual_dt}	${total_t}	${setup_t}"
     else
         echo "-	-	-"
