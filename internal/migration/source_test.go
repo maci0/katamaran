@@ -4,27 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
+	"github.com/maci0/katamaran/internal/qmptest"
+)
+
+// Common test addresses used across source migration tests.
+var (
+	testDestIP = netip.MustParseAddr("10.0.0.1")
+	testVMIP   = netip.MustParseAddr("10.244.1.15")
 )
 
 func TestErrMigrationFailed_Exists(t *testing.T) {
 	t.Parallel()
-	if ErrMigrationFailed == nil || !errors.Is(ErrMigrationFailed, ErrMigrationFailed) {
-		t.Fatal("ErrMigrationFailed should be valid and matchable")
+	if errMigrationFailed == nil || !errors.Is(errMigrationFailed, errMigrationFailed) {
+		t.Fatal("errMigrationFailed should be valid and matchable")
 	}
-	if ErrMigrationCancelled == nil || !errors.Is(ErrMigrationCancelled, ErrMigrationCancelled) {
-		t.Fatal("ErrMigrationCancelled should be valid and matchable")
+	if errMigrationCancelled == nil || !errors.Is(errMigrationCancelled, errMigrationCancelled) {
+		t.Fatal("errMigrationCancelled should be valid and matchable")
 	}
-	if errors.Is(ErrMigrationFailed, ErrMigrationCancelled) {
-		t.Fatal("ErrMigrationFailed and ErrMigrationCancelled should be distinct")
+	if errors.Is(errMigrationFailed, errMigrationCancelled) {
+		t.Fatal("errMigrationFailed and errMigrationCancelled should be distinct")
 	}
 }
 
@@ -40,24 +46,18 @@ func TestRunSource_Failures(t *testing.T) {
 		{"NonShared_BadQMPSocket", false, TunnelModeGRE},
 	}
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := RunSource(
-				context.Background(),
-				"/nonexistent/qmp.sock",
-				destIP,
-				vmIP,
-				"drive-virtio-disk0",
-				tt.sharedStorage,
-				tt.tunnelMode,
-				25,
-				false,
-				0,
-			)
+			err := RunSource(context.Background(), SourceConfig{
+				QMPSocket:       "/nonexistent/qmp.sock",
+				DestIP:          testDestIP,
+				VMIP:            testVMIP,
+				DriveID:         "drive-virtio-disk0",
+				SharedStorage:   tt.sharedStorage,
+				TunnelMode:      tt.tunnelMode,
+				DowntimeLimitMS: 25,
+			})
 			if err == nil {
 				t.Fatal("expected error for nonexistent QMP socket")
 			}
@@ -68,48 +68,14 @@ func TestRunSource_Failures(t *testing.T) {
 	}
 }
 
-// startFakeQMP creates a Unix listener that accepts one connection and runs handler.
-func startFakeQMP(t *testing.T, handler func(conn net.Conn)) string {
-	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "qmp.sock")
-	l, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { l.Close() })
-
-	go func() {
-		conn, err := l.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		handler(conn)
-	}()
-	return socketPath
-}
-
-// qmpHandshake performs the server side of the QMP greeting + capabilities handshake.
-func qmpHandshake(conn net.Conn) {
-	greeting := `{"QMP":{"version":{"qemu":{"micro":0,"minor":2,"major":6}}}}`
-	conn.Write([]byte(greeting + "\n"))
-	buf := make([]byte, 4096)
-	conn.Read(buf)
-	conn.Write([]byte(`{"return":{}}` + "\n"))
-}
-
-// consumeCommand reads one command from the connection and discards it.
-func consumeCommand(conn net.Conn) {
-	buf := make([]byte, 4096)
-	conn.Read(buf)
-}
+// QMP test helpers (StartFakeQMP, QMPHandshake, ConsumeCommand) are in internal/qmptest.
 
 func TestWaitForStorageSync_JobReady(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		// First poll: job running at 50%.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		jobs := []qmp.BlockJobInfo{{
 			Device: "mirror-drive0",
 			Len:    1000,
@@ -121,7 +87,7 @@ func TestWaitForStorageSync_JobReady(t *testing.T) {
 		b, _ := json.Marshal(jobs)
 		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
 		// Second poll: job ready.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		jobs[0].Ready = true
 		jobs[0].Offset = 1000
 		b, _ = json.Marshal(jobs)
@@ -143,15 +109,15 @@ func TestWaitForStorageSync_JobReady(t *testing.T) {
 
 func TestWaitForStorageSync_JobDisappears(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		// First poll: job present.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		jobs := []qmp.BlockJobInfo{{Device: "mirror-drive0", Len: 1000, Offset: 500, Status: "running", Type: "mirror"}}
 		b, _ := json.Marshal(jobs)
 		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
 		// Second poll: job gone.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":[]}` + "\n"))
 	})
 
@@ -174,12 +140,12 @@ func TestWaitForStorageSync_JobDisappears(t *testing.T) {
 func TestWaitForStorageSync_JobNeverAppears(t *testing.T) {
 	t.Parallel()
 
-	// Override JobAppearTimeout for faster test. We can't do that without
+	// Override jobAppearTimeout for faster test. We can't do that without
 	// changing the constant, so just verify context cancellation works.
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		for {
-			consumeCommand(conn)
+			qmptest.ConsumeCommand(conn)
 			conn.Write([]byte(`{"return":[]}` + "\n"))
 		}
 	})
@@ -200,9 +166,9 @@ func TestWaitForStorageSync_JobNeverAppears(t *testing.T) {
 
 func TestWaitForStorageSync_JobFailed(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
-		consumeCommand(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		qmptest.ConsumeCommand(conn)
 		jobs := []qmp.BlockJobInfo{{Device: "mirror-drive0", Len: 1000, Offset: 0, Status: "concluded", Type: "mirror"}}
 		b, _ := json.Marshal(jobs)
 		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
@@ -226,13 +192,13 @@ func TestWaitForStorageSync_JobFailed(t *testing.T) {
 
 func TestWaitForMigrationComplete_Completed(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		// First poll: active.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":{"status":"active","ram":{"total":1000,"transferred":500,"remaining":500}}}` + "\n"))
 		// Second poll: completed.
-		consumeCommand(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":{"status":"completed"}}` + "\n"))
 	})
 
@@ -251,9 +217,9 @@ func TestWaitForMigrationComplete_Completed(t *testing.T) {
 
 func TestWaitForMigrationComplete_Failed(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
-		consumeCommand(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":{"status":"failed","error-desc":"out of memory"}}` + "\n"))
 	})
 
@@ -268,8 +234,8 @@ func TestWaitForMigrationComplete_Failed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
-	if !errors.Is(err, ErrMigrationFailed) {
-		t.Fatalf("expected ErrMigrationFailed, got: %v", err)
+	if !errors.Is(err, errMigrationFailed) {
+		t.Fatalf("expected errMigrationFailed, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "out of memory") {
 		t.Fatalf("expected error description in message, got: %v", err)
@@ -278,9 +244,9 @@ func TestWaitForMigrationComplete_Failed(t *testing.T) {
 
 func TestWaitForMigrationComplete_Cancelled(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
-		consumeCommand(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":{"status":"cancelled"}}` + "\n"))
 	})
 
@@ -295,17 +261,17 @@ func TestWaitForMigrationComplete_Cancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for cancelled migration")
 	}
-	if !errors.Is(err, ErrMigrationCancelled) {
-		t.Fatalf("expected ErrMigrationCancelled, got: %v", err)
+	if !errors.Is(err, errMigrationCancelled) {
+		t.Fatalf("expected errMigrationCancelled, got: %v", err)
 	}
 }
 
 func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
-		// Never respond — force context timeout.
-		time.Sleep(30 * time.Second)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		// Block until client disconnects — never respond.
+		io.Copy(io.Discard, conn)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -324,9 +290,9 @@ func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 
 func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 	t.Parallel()
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
-		consumeCommand(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		qmptest.ConsumeCommand(conn)
 		conn.Write([]byte(`{"return":{"status":"failed"}}` + "\n"))
 	})
 
@@ -341,8 +307,8 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
-	if !errors.Is(err, ErrMigrationFailed) {
-		t.Fatalf("expected ErrMigrationFailed, got: %v", err)
+	if !errors.Is(err, errMigrationFailed) {
+		t.Fatalf("expected errMigrationFailed, got: %v", err)
 	}
 }
 
@@ -352,13 +318,11 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 	handlers := map[string]string{
 		"migrate-set-capabilities": `{"return":{}}`,
 		"migrate-set-parameters":   `{"return":{}}`,
-		"migrate":                  `{"return":{}}`,
 		"query-migrate":            `{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50}}`,
-		"block-job-cancel":         `{"return":{}}`,
 	}
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -367,8 +331,8 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			// After "migrate" command, inject STOP event before the response.
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			// After "migrate" command, send response then inject STOP event.
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				// Give the client a moment then send STOP event.
 				time.Sleep(10 * time.Millisecond)
@@ -390,9 +354,10 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err != nil {
 		t.Fatalf("RunSource shared-storage happy path: %v", err)
 	}
@@ -401,8 +366,8 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -411,7 +376,7 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
@@ -425,9 +390,10 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
@@ -440,8 +406,8 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 	t.Parallel()
 	callCount := 0
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -459,7 +425,7 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 				}
 				continue
 			}
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
@@ -473,9 +439,10 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err != nil {
 		t.Fatalf("RunSource non-shared happy path: %v", err)
 	}
@@ -484,8 +451,8 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -494,11 +461,11 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				continue
 			}
-			// During STOP polling, report migration as failed.
+			// While waiting for STOP event, query-migrate returns failed status.
 			if strings.Contains(line, "query-migrate") {
 				conn.Write([]byte(`{"return":{"status":"failed","error-desc":"RAM migration failed"}}` + "\n"))
 				continue
@@ -507,11 +474,15 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error when migration fails during STOP polling")
+	}
+	if !errors.Is(err, errMigrationFailed) {
+		t.Fatalf("expected errMigrationFailed, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "RAM migration failed") {
 		t.Fatalf("expected error description, got: %v", err)
@@ -521,8 +492,8 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -531,7 +502,7 @@ func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				continue
 			}
@@ -543,22 +514,23 @@ func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error when migration cancelled during STOP polling")
 	}
-	if !errors.Is(err, ErrMigrationCancelled) {
-		t.Fatalf("expected ErrMigrationCancelled, got: %v", err)
+	if !errors.Is(err, errMigrationCancelled) {
+		t.Fatalf("expected errMigrationCancelled, got: %v", err)
 	}
 }
 
 func TestRunSource_CompletedDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -567,7 +539,7 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				continue
 			}
@@ -580,9 +552,10 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err != nil {
 		t.Fatalf("RunSource completed-during-polling: %v", err)
 	}
@@ -591,8 +564,8 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -601,7 +574,7 @@ func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") && !strings.Contains(line, "query-migrate") && !strings.Contains(line, "migrate_cancel") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
 				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
@@ -616,18 +589,63 @@ func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 4)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25, MultifdChannels: 4,
+	})
 	if err != nil {
 		t.Fatalf("RunSource with multifd: %v", err)
+	}
+}
+
+func TestMigrationTerminalError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		status    qmp.MigrateStatus
+		errorDesc string
+		terminal  bool
+		wantErr   error
+		wantDesc  string
+	}{
+		{"completed", qmp.MigrateStatusCompleted, "", true, nil, ""},
+		{"failed_with_desc", qmp.MigrateStatusFailed, "out of memory", true, errMigrationFailed, "out of memory"},
+		{"failed_no_desc", qmp.MigrateStatusFailed, "", true, errMigrationFailed, ""},
+		{"cancelled", qmp.MigrateStatusCancelled, "", true, errMigrationCancelled, ""},
+		{"active", "active", "", false, nil, ""},
+		{"setup", "setup", "", false, nil, ""},
+		{"empty", "", "", false, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			terminal, err := migrationTerminalError(tt.status, tt.errorDesc)
+			if terminal != tt.terminal {
+				t.Fatalf("terminal: got %v, want %v", terminal, tt.terminal)
+			}
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("expected nil error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected %v, got: %v", tt.wantErr, err)
+				}
+				if tt.wantDesc != "" && !strings.Contains(err.Error(), tt.wantDesc) {
+					t.Fatalf("expected error containing %q, got: %v", tt.wantDesc, err)
+				}
+			}
+		})
 	}
 }
 
 func TestMeasureRTT(t *testing.T) {
 	t.Parallel()
 
-	// measureRTT hardcodes RAMMigrationPort, so we can only test the error
+	// measureRTT hardcodes ramMigrationPort, so we can only test the error
 	// path with an unreachable address (RFC 5737 TEST-NET).
 	_, err := measureRTT(netip.MustParseAddr("192.0.2.1"))
 	if err == nil {
@@ -635,32 +653,11 @@ func TestMeasureRTT(t *testing.T) {
 	}
 }
 
-func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS != "linux" {
-		t.Skip("requires linux")
-	}
-	// With empty netnsPath, should delegate directly to RunCmd.
-	if err := RunCmdInNetns(context.Background(), "", "true"); err != nil {
-		t.Fatalf("expected success with empty netns, got: %v", err)
-	}
-}
-
-func TestRunCmdInNetns_WithNetns(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS != "linux" {
-		t.Skip("requires linux")
-	}
-	// nsenter with /proc/1/ns/net requires root; verify the nsenter code path
-	// runs without panic. It succeeds as root, errors otherwise — both OK.
-	_ = RunCmdInNetns(context.Background(), "/proc/1/ns/net", "true")
-}
-
 func TestRunSource_DriveMirrorFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -677,9 +674,10 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", false, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error for drive-mirror failure")
 	}
@@ -691,8 +689,8 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -709,9 +707,10 @@ func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error for capabilities failure")
 	}
@@ -723,8 +722,8 @@ func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 func TestRunSource_SetParametersFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -741,9 +740,10 @@ func TestRunSource_SetParametersFailure(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error for parameters failure")
 	}
@@ -755,8 +755,8 @@ func TestRunSource_SetParametersFailure(t *testing.T) {
 func TestRunSource_MigrateCommandFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := startFakeQMP(t, func(conn net.Conn) {
-		qmpHandshake(conn)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -765,7 +765,7 @@ func TestRunSource_MigrateCommandFailure(t *testing.T) {
 			}
 			line := string(buf[:n])
 
-			if strings.Contains(line, `"migrate"`) && !strings.Contains(line, "migrate-set") {
+			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"migrate failed"}}` + "\n"))
 				continue
 			}
@@ -773,13 +773,108 @@ func TestRunSource_MigrateCommandFailure(t *testing.T) {
 		}
 	})
 
-	destIP := netip.MustParseAddr("10.0.0.1")
-	vmIP := netip.MustParseAddr("10.244.1.15")
-	err := RunSource(context.Background(), sock, destIP, vmIP, "drive-virtio-disk0", true, "none", 25, false, 0)
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
 	if err == nil {
 		t.Fatal("expected error for migrate command failure")
 	}
 	if !strings.Contains(err.Error(), "RAM migration") {
 		t.Fatalf("expected 'RAM migration' in error, got: %v", err)
+	}
+}
+
+func TestRunSource_InvalidDriveID(t *testing.T) {
+	t.Parallel()
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         ";evil",
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid drive ID") {
+		t.Fatalf("expected drive ID validation error, got: %v", err)
+	}
+}
+
+func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
+	t.Parallel()
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         ";evil",
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	})
+	if err == nil {
+		t.Fatal("expected error (QMP connection should fail)")
+	}
+	if strings.Contains(err.Error(), "invalid drive ID") {
+		t.Fatalf("shared storage should skip drive ID validation, got: %v", err)
+	}
+}
+
+func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
+	t.Parallel()
+
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+
+			if qmptest.IsMigrateCommand(line) {
+				conn.Write([]byte(`{"return":{}}` + "\n"))
+				time.Sleep(10 * time.Millisecond)
+				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+				continue
+			}
+			if strings.Contains(line, "query-migrate") {
+				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}` + "\n"))
+				continue
+			}
+			conn.Write([]byte(`{"return":{}}` + "\n"))
+		}
+	})
+
+	// Use TEST-NET address (RFC 5737) — guaranteed unreachable, so measureRTT
+	// fails and the code falls back to the provided DowntimeLimitMS.
+	unreachableIP := netip.MustParseAddr("192.0.2.1")
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: unreachableIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25, AutoDowntime: true,
+	})
+	if err != nil {
+		t.Fatalf("RunSource with auto-downtime fallback: %v", err)
+	}
+}
+
+func TestRunSource_ContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		// Block until client disconnects — force context cancellation.
+		io.Copy(io.Discard, conn)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := RunSource(ctx, SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
 	}
 }

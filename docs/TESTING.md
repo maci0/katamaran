@@ -13,7 +13,7 @@
 ./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
-All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.22+.
+All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.24+.
 
 > **Note:** E2E tests now build a container image and deploy the katamaran binary to nodes via a DaemonSet. A pre-built binary is no longer required for E2E tests; only `podman` and the Go source are needed.
 
@@ -41,7 +41,7 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 
 - Linux host with KVM support (`/dev/kvm` must exist)
 - Nested virtualization enabled (required for Kata Containers inside minikube)
-- Go 1.22+ (install system-wide)
+- Go 1.24+ (install system-wide)
 
 ### Verify Nested Virtualization
 
@@ -86,19 +86,19 @@ This validates:
 - Go source compiles cleanly (`go vet` + `gofmt` + `go build`)
 - Binary rejects invalid invocations (missing flags, bad socket, unexpected args, invalid mode)
 - Invalid mode produces a specific error message (not just generic usage)
-- Source mode missing-flags error mentions `-dest-ip` and `-vm-ip` specifically
+- Source mode missing-flags error mentions `--dest-ip` and `--vm-ip` specifically
 - Dest mode QMP error mentions the socket path for debuggability
 - Empty mode prints a "Usage" message
-- `-help` flag prints descriptions for all eight flags
-- `-shared-storage` flag combinations work correctly
-- Invalid IP addresses for `-dest-ip` and `-vm-ip` are rejected with specific error messages
+- `--help` flag prints descriptions for all flags
+- `--shared-storage` flag combinations work correctly
+- Invalid IP addresses for `--dest-ip` and `--vm-ip` are rejected with specific error messages
 - Valid IP addresses pass validation (fail later at QMP connect, not at validation)
 - Shell scripts have valid syntax
 - Required project files exist
 
 ## 2. Fuzz Tests (Go Native Fuzzing)
 
-Go native fuzz tests (Go 1.18+) cover the QMP protocol parsing layer and configuration formatting — the primary attack surface for untrusted input from QEMU sockets.
+Go native fuzz tests cover the QMP protocol parsing layer and configuration formatting — the primary attack surface for untrusted input from QEMU sockets.
 
 ### Run Seed Corpus (Unit Test Mode)
 
@@ -135,7 +135,7 @@ go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
 | `FuzzErrorFormat` | `internal/qmp` | `Error.Error()` formatting with arbitrary class/desc strings |
 | `FuzzClientProtocol` | `internal/qmp` | Full QMP wire protocol: handshake + command execution with arbitrary socket data |
 | `FuzzArgsSerialization` | `internal/qmp` | JSON marshaling round-trip for all QMP argument types |
-| `FuzzFormatQEMUHost` | `internal/migration` | `FormatQEMUHost` with arbitrary IP addresses (IPv4/IPv6 bracket formatting) |
+| `FuzzFormatQEMUHost` | `internal/migration` | `formatQEMUHost` with arbitrary IP addresses (IPv4/IPv6 bracket formatting) |
 
 ## 3. Minikube Smoke Test (Single-Node, Real QMP)
 
@@ -190,7 +190,7 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 
 ```bash
 ./scripts/e2e.sh --provider minikube --cni calico           # run full e2e, clean up on exit
-./scripts/e2e.sh teardown --provider minikube --cni calico  # destroy cluster only
+./scripts/e2e.sh --teardown --provider minikube --cni calico  # destroy cluster only
 ./scripts/e2e.sh --provider minikube --cni calico --env-only # stop after environment setup
 ```
 
@@ -200,17 +200,17 @@ The script:
 3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
 4. Applies E2E-specific Kata timeout settings on both nodes
 5. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
-6. Extracts QEMU state (UUID, vsock, chardev) from the source VM
-7. Installs a state-matching QEMU wrapper on Node 2 (so the destination VM accepts the incoming migration)
-8. Deploys a destination pod on Node 2
-9. Runs katamaran in dest mode on Node 2, then source mode on Node 1
+6. Removes tc mirred redirect on source pod eth0
+7. Deploys a lightweight non-Kata helper pod on Node 2 for network namespace
+8. Replays source QEMU command line on Node 2 with path substitutions and `-incoming defer`
+9. Runs migration via `deploy/migrate.sh`
 10. Reports migration results and destination logs
 
 ### What This Validates
 
 - Full live migration pipeline (RAM pre-copy with auto-converge)
 - QMP handshake and command execution on both nodes
-- Migration state matching between source and destination QEMU instances
+- QEMU command line replay between source and destination
 - Graceful cleanup on success and failure
 
 ### Storage Modes
@@ -315,10 +315,10 @@ Leave this running in its own terminal. We will check the final summary after mi
 This is optional but provides visual proof that packets arriving at the source after STOP are forwarded through the IPIP tunnel to the destination.
 
 ```bash
-node1$ sudo tcpdump -i mig-tun -nn -c 50 2>&1 | tee /tmp/tunnel-capture.log &
+node1$ sudo tcpdump -i mig-a1b2c3d4e5 -nn -c 50 2>&1 | tee /tmp/tunnel-capture.log &
 ```
 
-This will capture packets on the `mig-tun` tunnel interface once it is created in Step 5.
+Replace `mig-a1b2c3d4e5` with the actual tunnel name from the katamaran source log (the name is generated with `mig-` prefix + random hex suffix). This capture must be started **after** the tunnel is created in Step 5 — you can find the name in the source log line "IP tunnel established."
 
 ### Step 3: Start katamaran on the Destination (Node 2)
 
@@ -326,20 +326,22 @@ Run the destination side first. It installs the `sch_plug` qdisc, connects to QM
 
 ```bash
 node2$ sudo katamaran \
-  -mode dest \
-  -qmp /run/vc/vm/789xyz000111/extra-monitor.sock \
-  -tap tap0_kata \
-  -shared-storage
+  --mode dest \
+  --qmp /run/vc/vm/789xyz000111/extra-monitor.sock \
+  --tap tap0_kata \
+  --shared-storage
 ```
 
-Expected output (destination blocks at "Waiting for QEMU RESUME event..."):
+Expected output (destination blocks at "Waiting for QEMU RESUME event"):
 
 ```text
-2026/02/26 04:30:01 Preparing network queue on tap0_kata...
-2026/02/26 04:30:01 Network queue installed (pass-through, not plugged yet).
-2026/02/26 04:30:01 Shared storage mode: skipping NBD server setup.
-2026/02/26 04:30:01 Network queue plugged. Buffering in-flight packets...
-2026/02/26 04:30:01 Waiting for QEMU RESUME event...
+time=... level=INFO msg="Setting up destination node"
+time=... level=INFO msg="Preparing network queue" tap_iface=tap0_kata
+time=... level=INFO msg="Network queue installed (pass-through, not plugged yet)" tap_iface=tap0_kata
+time=... level=INFO msg="Opening incoming migration listener" uri="tcp:[::]:4444"
+time=... level=INFO msg="Shared storage mode: skipping NBD server setup"
+time=... level=INFO msg="Network queue plugged. Buffering in-flight packets" tap_iface=tap0_kata
+time=... level=INFO msg="Waiting for QEMU RESUME event"
 ```
 
 **What happened so far on Node 2:**
@@ -348,7 +350,7 @@ Expected output (destination blocks at "Waiting for QEMU RESUME event..."):
 |------|---------|--------|
 | 1a | `tc qdisc add dev tap0_kata root plug limit 32768` | Install sch_plug qdisc |
 | 1b | `tc qdisc change dev tap0_kata root plug release_indefinite` | Set to pass-through (traffic flows normally) |
-| 3 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode — all arriving packets are queued |
+| 4 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode — all arriving packets are queued |
 
 At this point, any packets that arrive at the destination's tap interface are **buffered in the kernel**, not dropped and not delivered. The destination is ready.
 
@@ -356,27 +358,28 @@ At this point, any packets that arrive at the destination's tap interface are **
 
 ```bash
 node1$ sudo katamaran \
-  -mode source \
-  -qmp /run/vc/vm/abc123def456/extra-monitor.sock \
-  -dest-ip 192.168.1.20 \
-  -vm-ip 10.244.1.5 \
-  -shared-storage
+  --mode source \
+  --qmp /run/vc/vm/abc123def456/extra-monitor.sock \
+  --dest-ip 192.168.1.20 \
+  --vm-ip 10.244.1.5 \
+  --shared-storage
 ```
 
-Expected output (with `-shared-storage`, phases 1-2 are skipped):
+Expected output (with `--shared-storage`, phase 1 — storage mirroring — is skipped):
 
 ```text
-2026/02/26 04:30:05 Starting live migration to 192.168.1.20...
-2026/02/26 04:30:05 Shared storage mode: skipping drive-mirror.
-2026/02/26 04:30:05 Configuring RAM migration...
-2026/02/26 04:30:05 RAM migration started. Waiting for VM to pause (STOP event)...
-2026/02/26 04:30:08 VM paused. Redirecting in-flight packets to destination...
-2026/02/26 04:30:08 IP tunnel established. Traffic redirected.
-2026/02/26 04:30:08 Waiting for migration to complete...
-2026/02/26 04:30:08 Migration status: active
-2026/02/26 04:30:09 Migration status: completed
-2026/02/26 04:30:09 Waiting 5s for CNI convergence...
-2026/02/26 04:30:14 Source cleanup complete. Migration succeeded.
+time=... level=INFO msg="Starting live migration" dest_ip=192.168.1.20
+time=... level=INFO msg="Shared storage mode: skipping drive-mirror"
+time=... level=INFO msg="Configuring RAM migration"
+time=... level=INFO msg="RAM migration started. Waiting for VM to pause (STOP event)"
+time=... level=INFO msg="Migration progress" status=active ram_transferred=... ram_total=... ram_remaining=...
+time=... level=INFO msg="VM paused. Redirecting in-flight packets to destination"
+time=... level=INFO msg="IP tunnel established. Traffic redirected" tunnel=mig-a1b2c3d4e5
+time=... level=INFO msg="Waiting for migration to complete"
+time=... level=INFO msg="Migration status" status=completed
+time=... level=INFO msg="Migration completed" actual_downtime_ms=... total_time_ms=... setup_time_ms=...
+time=... level=INFO msg="Waiting for CNI convergence" delay=5s
+time=... level=INFO msg="Source cleanup complete. Migration succeeded"
 ```
 
 ### Step 5: What Happened During the Critical Window
@@ -395,9 +398,9 @@ sequenceDiagram
 
     rect rgb(245, 158, 11, 0.1)
     Note over S,D: T=1–3ms — Tunnel setup
-    S->>S: ip tunnel add mig-tun mode ipip remote 192.168.1.20
-    S->>S: ip link set mig-tun up
-    S->>S: ip route add 10.244.1.5 dev mig-tun
+    S->>S: ip tunnel add mig-<id> mode ipip remote 192.168.1.20
+    S->>S: ip link set mig-<id> up
+    S->>S: ip route replace 10.244.1.5 dev mig-<id>
     Note over S: Packets for VM now forwarded via tunnel
     end
 
@@ -417,18 +420,18 @@ sequenceDiagram
     Note over D: Switches learn VM MAC on Node 2
 
     Note over S: T≈5050ms — CNI converged
-    S->>S: ip link del mig-tun
+    S->>S: ip link del mig-<id>
     C->>D: Traffic flows directly to Node 2
 ```
 
 Meanwhile, on the destination side, the output completes:
 
 ```text
-2026/02/26 04:30:08 VM resumed. Flushing buffered packets...
-2026/02/26 04:30:08 Queue unplugged. Buffered packets delivered. Zero drops achieved.
-2026/02/26 04:30:08 Broadcasting Gratuitous ARP via QEMU announce-self...
-2026/02/26 04:30:08 GARP announce-self scheduled (5 rounds).
-2026/02/26 04:30:08 Destination setup complete.
+time=... level=INFO msg="VM resumed. Flushing buffered packets"
+time=... level=INFO msg="Queue unplugged. Buffered packets delivered. Zero drops achieved"
+time=... level=INFO msg="Broadcasting Gratuitous ARP via QEMU announce-self"
+time=... level=INFO msg="GARP announce-self scheduled" rounds=5
+time=... level=INFO msg="Destination setup complete"
 ```
 
 ### Step 6: Check the Ping Results (THE PROOF)
@@ -488,7 +491,7 @@ Expected output:
 
 ```text
 tcpdump: verbose output suppressed, use -v for full protocol decode
-listening on mig-tun, link-type RAW (Raw IP), capture size 262144 bytes
+listening on mig-a1b2c3d4e5, link-type RAW (Raw IP), capture size 262144 bytes
 04:30:08.001234 IP 192.168.1.99 > 10.244.1.5: ICMP echo request, id 12345, seq 309, length 64
 04:30:08.011235 IP 192.168.1.99 > 10.244.1.5: ICMP echo request, id 12345, seq 310, length 64
 04:30:08.021236 IP 192.168.1.99 > 10.244.1.5: ICMP echo request, id 12345, seq 311, length 64
@@ -525,7 +528,7 @@ After migration, verify no tunnel or qdisc artifacts remain:
 ```bash
 # Node 1: tunnel should be gone
 node1$ ip tunnel show
-# (no mig-tun entry)
+# (no mig-* entry)
 
 node1$ ip route show 10.244.1.5
 # (no route — tunnel was torn down)
@@ -558,53 +561,52 @@ With local storage, the output includes the additional NBD drive-mirror phase. T
 
 ```bash
 node1$ sudo katamaran \
-  -mode source \
-  -qmp /run/vc/vm/abc123def456/extra-monitor.sock \
-  -dest-ip 192.168.1.20 \
-  -vm-ip 10.244.1.5 \
-  -drive-id drive-virtio-disk0
+  --mode source \
+  --qmp /run/vc/vm/abc123def456/extra-monitor.sock \
+  --dest-ip 192.168.1.20 \
+  --vm-ip 10.244.1.5 \
+  --drive-id drive-virtio-disk0
 ```
 
 ```text
-2026/02/26 04:30:05 Starting live migration to 192.168.1.20...
-2026/02/26 04:30:05 Initiating storage mirror (drive-mirror)...
-2026/02/26 04:30:07 Waiting for storage mirror to synchronize...
-2026/02/26 04:30:09 Storage sync progress: 12.50%
-2026/02/26 04:30:11 Storage sync progress: 25.00%
-2026/02/26 04:30:13 Storage sync progress: 37.50%
-2026/02/26 04:30:15 Storage sync progress: 50.00%
-2026/02/26 04:30:17 Storage sync progress: 62.50%
-2026/02/26 04:30:19 Storage sync progress: 75.00%
-2026/02/26 04:30:21 Storage sync progress: 87.50%
-2026/02/26 04:30:23 Storage sync progress: 100.00%
-2026/02/26 04:30:23 Storage mirror synchronized.
-2026/02/26 04:30:23 Configuring RAM migration...
-2026/02/26 04:30:23 RAM migration started. Waiting for VM to pause (STOP event)...
-2026/02/26 04:30:26 VM paused. Redirecting in-flight packets to destination...
-2026/02/26 04:30:26 IP tunnel established. Traffic redirected.
-2026/02/26 04:30:26 Waiting for migration to complete...
-2026/02/26 04:30:26 Migration status: active
-2026/02/26 04:30:27 Migration status: completed
-2026/02/26 04:30:27 Storage mirror cancelled.
-2026/02/26 04:30:27 Waiting 5s for CNI convergence...
-2026/02/26 04:30:32 Source cleanup complete. Migration succeeded.
+time=... level=INFO msg="Starting live migration" dest_ip=192.168.1.20
+time=... level=INFO msg="Initiating storage mirror (drive-mirror)"
+time=... level=INFO msg="Waiting for storage mirror to synchronize"
+time=... level=INFO msg="Storage sync progress" progress_pct=12.50 offset=... len=...
+time=... level=INFO msg="Storage sync progress" progress_pct=25.00 offset=... len=...
+time=... level=INFO msg="Storage sync progress" progress_pct=50.00 offset=... len=...
+time=... level=INFO msg="Storage sync progress" progress_pct=75.00 offset=... len=...
+time=... level=INFO msg="Storage mirror synchronized" elapsed=...
+time=... level=INFO msg="Configuring RAM migration"
+time=... level=INFO msg="RAM migration started. Waiting for VM to pause (STOP event)"
+time=... level=INFO msg="VM paused. Redirecting in-flight packets to destination"
+time=... level=INFO msg="IP tunnel established. Traffic redirected" tunnel=mig-a1b2c3d4e5
+time=... level=INFO msg="Waiting for migration to complete"
+time=... level=INFO msg="Migration status" status=active
+time=... level=INFO msg="Migration status" status=completed
+time=... level=INFO msg="Migration completed" actual_downtime_ms=... total_time_ms=... setup_time_ms=...
+time=... level=INFO msg="Storage mirror cancelled"
+time=... level=INFO msg="Waiting for CNI convergence" delay=5s
+time=... level=INFO msg="Source cleanup complete. Migration succeeded"
 ```
 
 And the destination output includes the NBD server:
 
 ```text
-2026/02/26 04:30:01 Preparing network queue on tap0_kata...
-2026/02/26 04:30:01 Network queue installed (pass-through, not plugged yet).
-2026/02/26 04:30:01 Starting NBD server for storage migration...
-2026/02/26 04:30:01 NBD server listening on [::]:10809
-2026/02/26 04:30:01 Network queue plugged. Buffering in-flight packets...
-2026/02/26 04:30:01 Waiting for QEMU RESUME event...
-2026/02/26 04:30:26 VM resumed. Flushing buffered packets...
-2026/02/26 04:30:26 Queue unplugged. Buffered packets delivered. Zero drops achieved.
-2026/02/26 04:30:26 NBD server stopped.
-2026/02/26 04:30:26 Broadcasting Gratuitous ARP via QEMU announce-self...
-2026/02/26 04:30:26 GARP announce-self scheduled (5 rounds).
-2026/02/26 04:30:26 Destination setup complete.
+time=... level=INFO msg="Setting up destination node"
+time=... level=INFO msg="Preparing network queue" tap_iface=tap0_kata
+time=... level=INFO msg="Network queue installed (pass-through, not plugged yet)" tap_iface=tap0_kata
+time=... level=INFO msg="Opening incoming migration listener" uri="tcp:[::]:4444"
+time=... level=INFO msg="Starting NBD server for storage migration"
+time=... level=INFO msg="NBD server listening" addr="[::]" port=10809
+time=... level=INFO msg="Network queue plugged. Buffering in-flight packets" tap_iface=tap0_kata
+time=... level=INFO msg="Waiting for QEMU RESUME event"
+time=... level=INFO msg="VM resumed. Flushing buffered packets"
+time=... level=INFO msg="Queue unplugged. Buffered packets delivered. Zero drops achieved"
+time=... level=INFO msg="NBD server stopped"
+time=... level=INFO msg="Broadcasting Gratuitous ARP via QEMU announce-self"
+time=... level=INFO msg="GARP announce-self scheduled" rounds=5
+time=... level=INFO msg="Destination setup complete"
 ```
 
 The zero-drop behavior is identical — the tunnel and qdisc protect the network cutover regardless of whether storage was mirrored via NBD or shared.
@@ -615,7 +617,7 @@ The zero-drop behavior is identical — the tunnel and qdisc protect the network
 |----------|----------|----------------|
 | Ping summary | Client terminal | `0% packet loss` — no drops |
 | Ping RTT spike | `icmp_seq` 309-312 | Packets were buffered (~24ms), not dropped |
-| tcpdump on mig-tun | `/tmp/tunnel-capture.log` | Packets were forwarded via IPIP tunnel |
+| tcpdump on mig-\<id\> | `/tmp/tunnel-capture.log` | Packets were forwarded via IPIP tunnel |
 | tc qdisc stats | `tc -s qdisc show` | `dropped 0`, `backlog 0` — buffer worked |
 | katamaran dest log | `Queue unplugged. Buffered packets delivered.` | Flush succeeded |
 | katamaran source log | `IP tunnel established. Traffic redirected.` | Tunnel was created |
@@ -648,7 +650,7 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 
 ```bash
 ./scripts/e2e.sh --provider minikube --cni ovn --ping-proof
-./scripts/e2e.sh teardown --provider minikube --cni ovn
+./scripts/e2e.sh --teardown --provider minikube --cni ovn
 ```
 
 ### What the Script Does
@@ -660,13 +662,11 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
 6. Applies E2E-specific Kata timeout settings on both nodes
 7. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
-8. Extracts QEMU state (UUID, vsock, chardev) and installs the state-matching wrapper on Node 2
-9. Deploys a destination pod on Node 2
-10. **Starts a continuous ping** (10 pings/sec) to the pod IP before migration begins
-11. Runs katamaran dest on Node 2, then source on Node 1
-12. **Stops the ping and analyzes results** — reports transmitted, received, loss %, and RTT statistics
-13. Shows packets with elevated RTT (buffered during cutover)
-14. Reports OVN-K pod status and logical switch port state
+8. Removes tc mirred redirect on source pod eth0
+9. Deploys a lightweight helper pod on Node 2 and replays source QEMU command line
+10. Runs migration via `deploy/migrate.sh`
+11. Verifies zero-drop proof via `--ping-proof` log pattern checks
+12. Reports OVN-K pod status
 
 ### Expected Output
 
@@ -692,9 +692,8 @@ The script produces a structured report at the end:
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)
 
@@ -711,10 +710,10 @@ Cilium's eBPF datapath reconverges after the destination endpoint is registered.
 
 ```bash
 ./scripts/e2e.sh --provider minikube --cni cilium --ping-proof
-./scripts/e2e.sh teardown --provider minikube --cni cilium
+./scripts/e2e.sh --teardown --provider minikube --cni cilium
 
 ./scripts/e2e.sh --provider kind --cni cilium --ping-proof
-./scripts/e2e.sh teardown --provider kind --cni cilium
+./scripts/e2e.sh --teardown --provider kind --cni cilium
 ```
 
 ### What the Script Does
@@ -742,10 +741,10 @@ Flannel's VXLAN FDB entries are updated via GARP after migration. The IPIP tunne
 
 ```bash
 ./scripts/e2e.sh --provider minikube --cni flannel --ping-proof
-./scripts/e2e.sh teardown --provider minikube --cni flannel
+./scripts/e2e.sh --teardown --provider minikube --cni flannel
 
 ./scripts/e2e.sh --provider kind --cni flannel --ping-proof
-./scripts/e2e.sh teardown --provider kind --cni flannel
+./scripts/e2e.sh --teardown --provider kind --cni flannel
 ```
 
 ### What the Script Does
@@ -787,7 +786,7 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 
 ```bash
 ./scripts/e2e.sh --provider kind --ping-proof
-./scripts/e2e.sh teardown --provider kind
+./scripts/e2e.sh --teardown --provider kind
 ```
 
 ### What the Script Does
@@ -797,12 +796,11 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 3. Installs Kata Containers via Helm (qemu shim only)
 4. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
 5. Applies E2E-specific Kata timeout settings on both nodes
-6. Deploys source pod on control-plane, extracts QEMU state (UUID, vsock, CID)
-7. Installs state-matching QEMU wrapper on worker node
-8. Deploys destination pod on worker node
-9. Starts continuous ping (10/sec) for zero-drop proof
-10. Runs katamaran migration (shared-storage mode)
-11. Reports migration result and ping statistics
+6. Deploys source pod on control-plane, removes tc mirred redirect
+7. Deploys helper pod on worker node and replays source QEMU command line
+8. Runs migration via `deploy/migrate.sh`
+9. Verifies zero-drop proof via `--ping-proof` log pattern checks
+10. Reports migration result
 
 ### Key Differences from Minikube Scripts
 
@@ -856,19 +854,16 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
 
-> **Status: Not yet implemented.** The NFS manifests (`scripts/manifests/nfs-pv.yaml`, `scripts/manifests/nfs-server.yaml`) exist, but `e2e.sh` does not yet deploy or configure them. Running `--storage nfs` will exit with an error. This section describes the planned behavior.
-
-Validates katamaran's `-shared-storage` mode with a real NFS server running in-cluster. This is the only E2E test that exercises shared storage backed by an actual network filesystem, proving the production workflow for Ceph RBD / NFS backends where NBD drive-mirror is skipped entirely.
+Validates katamaran's `--shared-storage` mode with a real NFS server running in-cluster. This is the only E2E test that exercises shared storage backed by an actual network filesystem, proving the production workflow for Ceph RBD / NFS backends where NBD drive-mirror is skipped entirely.
 
 ### Why Test with NFS?
 
-All other E2E scripts use `-shared-storage` as a convenience flag to skip the storage phase. This test actually deploys an NFS server pod, creates a PV/PVC backed by it, and mounts the NFS volume into both source and destination Kata pods. It proves:
+All other E2E scripts use `--shared-storage` as a convenience flag to skip the storage phase. This test actually deploys an NFS server pod, creates a PV/PVC backed by it, and mounts the NFS volume into both source and destination Kata pods. It proves:
 
 - The NFS PVC is accessible from both nodes simultaneously (`ReadWriteMany`)
 - Data written before migration survives the cutover
@@ -885,7 +880,7 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 
 ```bash
 ./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof
-./scripts/e2e.sh teardown --provider minikube --cni calico --storage nfs
+./scripts/e2e.sh --teardown --provider minikube --cni calico --storage nfs
 ```
 
 ### What the Script Does
@@ -896,19 +891,18 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 4. Installs Kata Containers via Helm (qemu shim only)
 5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
 6. Applies E2E-specific Kata timeout settings and loads NFS kernel modules on both nodes
-7. Deploys source Kata pod on Node 1 with the NFS PVC mounted at `/mnt/shared`
-8. Writes test data to NFS from inside the source VM
-9. Extracts QEMU state, installs state-matching wrapper on Node 2
-10. Deploys destination Kata pod on Node 2 with the same NFS PVC
-11. Starts continuous ping (10/sec) for zero-drop proof
-12. Runs katamaran migration with `-shared-storage` (skips NBD)
-13. Verifies test data is intact on the NFS server after migration
-14. Reports migration result, NFS verification, and ping statistics
+7. Deploys source Kata pod on Node 1
+8. Mounts NFS on both nodes, creates shared disk image on NFS
+9. Removes tc mirred redirect on source pod eth0
+10. Deploys helper pod on Node 2 and replays source QEMU command line
+11. Runs katamaran migration with `--shared-storage` (skips NBD)
+12. Verifies zero-drop proof via `--ping-proof` log pattern checks
+13. Reports migration result
 
 ### Expected Output
 
 ```
->>> Starting katamaran SOURCE on Node 1 (migrating to 192.168.39.12) with -shared-storage...
+>>> Starting katamaran SOURCE on Node 1 (migrating to 192.168.39.12) with --shared-storage...
   Starting live migration to 192.168.39.12...
   Shared storage mode: skipping drive-mirror.
   Configuring RAM migration...
@@ -929,9 +923,8 @@ All other E2E scripts use `-shared-storage` as a convenience flag to skip the st
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs job/katamaran-dest` | Full destination-side katamaran output |
-| Ping log | `/tmp/katamaran-ping.log` | Complete ping output with timestamps |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
 ## 11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)
 
@@ -945,7 +938,7 @@ Same as Kind + Podman test (Section 9).
 
 ```bash
 ./scripts/e2e.sh --provider kind --ping-proof
-./scripts/e2e.sh teardown --provider kind
+./scripts/e2e.sh --teardown --provider kind
 ```
 
 ### Job Orchestration Topology
@@ -976,12 +969,11 @@ sequenceDiagram
 2. Installs Kata Containers via Helm
 3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
 4. Applies E2E-specific Kata timeout settings on both nodes
-5. Deploys source pod & extracts QEMU state
-6. Installs state-matching QEMU wrapper on destination node
-7. Deploys destination pod
-8. Starts continuous ping for zero-drop proof
-9. Executes migration via `deploy/migrate.sh` (K8s Jobs)
-10. Collects results and reports zero-drop proof
+5. Deploys source pod, removes tc mirred redirect
+6. Deploys helper pod on destination node and replays source QEMU command line
+7. Executes migration via `deploy/migrate.sh` (K8s Jobs)
+8. Verifies zero-drop proof via `--ping-proof` log pattern checks
+9. Collects results and reports
 
 ### Job Orchestration Details
 
@@ -991,7 +983,7 @@ sequenceDiagram
 | Source execution | K8s Job (`deploy/job-source.yaml`) — privileged pod on source node |
 | Orchestration | `deploy/migrate.sh` — renders templates via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
-| Log collection | `kubectl logs job/katamaran-source`, `kubectl logs job/katamaran-dest` |
+| Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
 
 ## Troubleshooting
 
@@ -1005,8 +997,8 @@ sequenceDiagram
 | `starting NBD server` | Port 10809 already in use | Check `ss -tlnp \| grep 10809` |
 | `starting drive-mirror` | Destination NBD not ready | Ensure dest mode is running first |
 | `migration failed` | Insufficient resources or network issue | Check QEMU logs; verify dest is reachable on port 4444 |
-| `migration did not complete within` | Migration never converged (dirty page churn) | Reduce VM workload or increase `migrationTimeout` constant |
-| `storage sync for job.*did not complete` | Drive-mirror never converged (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
+| `migration: context deadline exceeded` | Migration never converged within `migrationTimeout` (dirty page churn) | Reduce VM workload or increase `migrationTimeout` constant |
+| `storage sync: context deadline exceeded` | Drive-mirror never converged within `storageSyncTimeout` (VM write rate too high) | Reduce VM disk I/O or increase `storageSyncTimeout` constant |
 | `timed out waiting for QMP response` | QEMU unresponsive mid-command | Check QEMU process health; may need restart |
 | `connection is closed` | QMP command issued after socket was closed | Indicates a bug or QEMU crashed mid-operation; check QEMU logs |
 | `kvm run failed Bad address` or VM internal-error | AVIC enabled on AMD Zen 4/5 (errata #1235) | Disable AVIC: `modprobe -r kvm_amd && modprobe kvm_amd avic=0` |

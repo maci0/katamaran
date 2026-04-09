@@ -36,7 +36,7 @@ func FuzzResponseUnmarshal(f *testing.F) {
 }
 
 // FuzzBlockJobInfoUnmarshal targets query-block-jobs parsing, polled
-// continuously during drive-mirror sync in waitForStorageSync.
+// periodically during drive-mirror sync in waitForStorageSync.
 func FuzzBlockJobInfoUnmarshal(f *testing.F) {
 	f.Add([]byte(`[{"device":"mirror-virtio0","len":1073741824,"offset":536870912,"ready":false,"status":"running","type":"mirror"}]`))
 	f.Add([]byte(`[]`))
@@ -62,7 +62,7 @@ func FuzzBlockJobInfoUnmarshal(f *testing.F) {
 }
 
 // FuzzMigrateInfoUnmarshal exercises the parsing of query-migrate output.
-// The source migration loop polls this continuously during RAM pre-copy.
+// The source migration loop polls this periodically during RAM pre-copy.
 func FuzzMigrateInfoUnmarshal(f *testing.F) {
 	f.Add([]byte(`{"status":"completed"}`))
 	f.Add([]byte(`{"status":"failed","error-desc":"out of memory"}`))

@@ -48,6 +48,7 @@ type BlockJobInfo struct {
 	Device string         `json:"device"`
 	Len    int64          `json:"len"`
 	Offset int64          `json:"offset"`
+	Speed  int64          `json:"speed"`
 	Ready  bool           `json:"ready"`
 	Status BlockJobStatus `json:"status"`
 	Type   string         `json:"type"`
@@ -113,7 +114,7 @@ type DriveMirrorArgs struct {
 
 // BlockJobCancelArgs are the arguments for the block-job-cancel command.
 type BlockJobCancelArgs struct {
-	Device string `json:"device"`
+	Device string `json:"device"` // accepts either a device name or job-id
 	Force  bool   `json:"force"`
 }
 
@@ -132,7 +133,7 @@ type MigrationCapability struct {
 type MigrateSetParametersArgs struct {
 	DowntimeLimit   int64 `json:"downtime-limit,omitempty"`
 	MaxBandwidth    int64 `json:"max-bandwidth,omitempty"`
-	MultiFDChannels int64 `json:"multifd-channels,omitempty"`
+	MultifdChannels int64 `json:"multifd-channels,omitempty"`
 }
 
 // MigrateArgs are the arguments for the migrate command.
@@ -142,14 +143,12 @@ type MigrateArgs struct {
 
 // AnnounceSelfArgs are the arguments for the announce-self command.
 type AnnounceSelfArgs struct {
-	Initial int `json:"initial"`
-	Max     int `json:"max"`
-	Rounds  int `json:"rounds"`
-	Step    int `json:"step"`
+	Initial int `json:"initial"` // Delay before first announcement (ms).
+	Max     int `json:"max"`     // Maximum delay between announcements (ms).
+	Rounds  int `json:"rounds"`  // Number of announcements to send.
+	Step    int `json:"step"`    // Delay increase per round (ms).
 }
 
-// Seal Args to this package. Each argument struct must implement the
-// unexported marker method so the compiler rejects arbitrary types.
 func (NBDServerStartArgs) qmpArgs()         {}
 func (NBDServerAddArgs) qmpArgs()           {}
 func (DriveMirrorArgs) qmpArgs()            {}

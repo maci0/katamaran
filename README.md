@@ -6,14 +6,10 @@
 
 Zero-packet-drop live migration for [Kata Containers](https://katacontainers.io/).
 
-### Recent Updates
-
-* **Correctness & Safety:** Fixed context cancellation data races and concurrent state access issues across all migration phases.
-
 ### TL;DR
 
 ```bash
-make                # builds bin/katamaran
+make                # builds bin/katamaran and bin/katamaran-dashboard
 
 # Destination node (run first)
 sudo ./bin/katamaran --mode dest --qmp /run/vc/vm/<id>/extra-monitor.sock --tap tap0_kata
@@ -49,7 +45,7 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Dashboard](#dashboard)
 - [Testing](#testing)
 
-See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](dashboard/README.md)**
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/dashboard/README.md)**
 
 ---
 
@@ -59,7 +55,7 @@ This section walks you through building katamaran, setting up a two-node cluster
 
 ### Tutorial Requirements
 
-In addition to the [runtime prerequisites](#prerequisites) (QEMU 6.2+, Kata 3.x, iproute2, Go 1.22+), the tutorial requires:
+In addition to the [runtime prerequisites](#prerequisites) (QEMU 6.2+, Kata 3.x, iproute2, Go 1.24+), the tutorial requires:
 
 - Linux host with KVM (`/dev/kvm` must exist)
 - `minikube`, `kubectl`, `helm` installed
@@ -86,7 +82,7 @@ make
 Run the smoke tests (no VMs required):
 
 ```bash
-make smoke    # 66 tests, validates compilation, CLI behavior, project structure
+make smoke    # validates compilation, CLI behavior, project structure
 ```
 
 ### 2. Create a Two-Node Minikube Cluster
@@ -125,7 +121,7 @@ kubectl get runtimeclass kata-qemu
 
 ### 4. Deploy katamaran on Both Nodes
 
-Build the container image and deploy via DaemonSet. This automatically installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `sch_plug`) on both nodes:
+Build the container image and deploy via DaemonSet. This automatically installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on both nodes:
 
 ```bash
 make image
@@ -163,19 +159,23 @@ curl http://$NODE_IP:30081
 To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. You apply these manifests manually, passing the required state through environment variables:
 
 ```bash
-export POD_IP=$(kubectl get pod nginx-kata -o jsonpath='{.status.podIP}')
+export VM_IP=$(kubectl get pod nginx-kata -o jsonpath='{.status.podIP}')
 export DEST_IP=$(kubectl get node katamaran-demo-m02 -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-export NODE_NAME="katamaran-demo-m02"
 export IMAGE="localhost/katamaran:dev"
+export EXTRA_ARGS=""
+
 # Find the QMP sockets using the container runtime (crictl works for containerd/cri-o):
-# export SRC_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo -- sudo crictl pods --name nginx-kata -q)
-export QMP_SOURCE="/run/vc/vm/<src-id>/extra-monitor.sock"
+# SRC_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo -- sudo crictl pods --name nginx-kata -q)
+# DEST_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo-m02 -- sudo crictl pods --name nginx-kata-dest -q)
 
-# export DEST_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo-m02 -- sudo crictl pods --name nginx-kata-dest -q)
-export QMP_DEST="/run/vc/vm/<dest-id>/extra-monitor.sock"
-
-# Apply the jobs
+# Apply the destination job first (it waits for incoming migration)
+export NODE_NAME="katamaran-demo-m02"
+export QMP_SOCKET="/run/vc/vm/<dest-id>/extra-monitor.sock"
 envsubst < deploy/job-dest.yaml | kubectl apply -f -
+
+# Then apply the source job to initiate the migration
+export NODE_NAME="katamaran-demo"
+export QMP_SOCKET="/run/vc/vm/<src-id>/extra-monitor.sock"
 envsubst < deploy/job-source.yaml | kubectl apply -f -
 ```
 
@@ -193,7 +193,7 @@ envsubst < deploy/job-source.yaml | kubectl apply -f -
 > **Tip:** For a faster setup (~30s instead of ~5min), use Kind + Podman instead of minikube:
 > ```bash
 > ./scripts/e2e.sh --provider kind --ping-proof
-> ./scripts/e2e.sh teardown --provider kind
+> ./scripts/e2e.sh --teardown --provider kind
 > ```
 
 ---
@@ -238,14 +238,14 @@ Once storage is synchronized, the source starts standard QEMU RAM pre-copy migra
 
 To achieve true "zero downtime" perception, `katamaran` explicitly configures QEMU with a strict **25ms downtime limit** and uncaps the migration bandwidth to 10GB/s. This forces QEMU to keep iterating until the remaining dirty RAM can be transferred in under 25 milliseconds.
 
-Once the remaining dirty RAM set is small enough to transfer within this 25ms budget, the VM pauses (emitting the `STOP` event). **At this very last bit, QEMU performs a final incremental copy** of the remaining dirty RAM pages and in-flight storage blocks. Only after this final incremental copy completes does the destination VM resume (emitting the `RESUME` event).
+Once the remaining dirty RAM set is small enough to transfer within this 25ms budget, the VM pauses (emitting the `STOP` event). **At this very last bit, QEMU performs a final incremental copy** of the remaining dirty RAM pages and device state. Only after this final copy completes does the destination VM resume (emitting the `RESUME` event).
 
 ### Phase 3 — Zero-Drop Network Cutover (tc sch_plug + IP Tunnel)
 
 The critical downtime window — between `STOP` on the source and `RESUME` on the destination — is where packets would normally be lost. `katamaran` eliminates this:
 
 1. **Source side**: Immediately after `STOP`, an IP tunnel is created pointing at the destination node. The tunnel encapsulation is selected by `--tunnel-mode`: with the default `ipip`, an IPIP tunnel is used for IPv4 (`mode ipip`) and an ip6tnl tunnel for IPv6 (`mode ip6ip6`); with `gre`, a GRE tunnel is used for IPv4 (`mode gre`) and an ip6gre tunnel for IPv6. GRE is recommended on cloud VPCs (AWS, GCP, Azure) where IPIP (IP protocol 4/41) is often blocked by security groups, while GRE (IP protocol 47) is widely permitted. A host route for the VM IP is added through the tunnel, forwarding any packets that arrive at the (now stale) source to the destination.
-2. **Destination side**: A `tc sch_plug` qdisc on the destination tap interface buffers all arriving packets (including those forwarded through the tunnel). The qdisc is installed in pass-through mode (`release_indefinite`) and only switched to buffering (`block`) just before the expected RESUME. When the VM resumes, the queue is unplugged with `release_indefinite`, flushing all buffered packets into the now-running VM in order. QEMU's `announce-self` QMP command then broadcasts Gratuitous ARP using the guest's actual MAC address, ensuring switches learn the correct port binding immediately.
+2. **Destination side**: A `tc sch_plug` qdisc on the destination tap interface buffers all arriving packets (including those forwarded through the tunnel). The qdisc is installed in pass-through mode (`release_indefinite`) and switched to buffering (`block`) before waiting for RESUME. When the VM resumes, the queue is unplugged with `release_indefinite`, flushing all buffered packets into the now-running VM in order. QEMU's `announce-self` QMP command then broadcasts Gratuitous ARP using the guest's actual MAC address, ensuring switches learn the correct port binding immediately.
 
 The result: packets that arrive during the switchover are queued, not dropped. After the CNI control plane converges (seconds later), new traffic flows directly to the destination and the tunnel is torn down.
 
@@ -253,7 +253,7 @@ The result: packets that arrive during the switchover are queued, not dropped. A
 
 To ensure absolute safety during orchestration, `katamaran` implements strict concurrency constraints designed to avoid race conditions and resource leaks:
 
-1. **Context Cancellation Trade-offs**: When the main context cancels (e.g. from `SIGINT` or a timeout), `katamaran` does *not* immediately close the QMP connection. Instead, it uses `context.AfterFunc` to shorten the socket deadline, cleanly interrupting any blocking reads without causing a data race. This keeps the QMP connection alive just long enough to execute deferred cleanup commands (like `migrate_cancel` or `block-job-cancel`) before exit.
+1. **Context Cancellation Trade-offs**: When the main context cancels (e.g. from `SIGINT` or a timeout), `katamaran` does *not* immediately close the QMP connection. Instead, it uses `context.AfterFunc` to shorten the socket deadline, cleanly interrupting any blocking reads without causing a data race. This keeps the QMP connection alive just long enough to execute deferred cleanup commands (like `migrate-cancel` or `block-job-cancel`) before exit.
 2. **Cancellation-Detached Cleanup**: Operations running in `defer` blocks use `context.WithoutCancel`. This detaches the cleanup step from the main cancellation tree (so it isn't instantly aborted) but preserves critical values like logging traces or metrics attached to the original context.
 3. **Sequential Polling vs Concurrent Races**: Instead of spawning background goroutines that listen for asynchronous QMP events while concurrently polling status endpoints, `katamaran` executes a unified sequential polling loop. This explicitly eliminates the risk of concurrent state access issues across all migration phases, avoiding missed `STOP` events or silent QEMU failures.
 
@@ -266,7 +266,7 @@ To ensure absolute safety during orchestration, `katamaran` implements strict co
 | **QEMU** | 6.2+ | Must support `drive-mirror`, `nbd-server-start`, `announce-self`, QMP |
 | **Kata Containers** | 3.x | QMP socket must be accessible |
 | **iproute2** | any | `tc` (sch_plug qdisc) + `ip tunnel` (IPIP/GRE/ip6tnl/ip6gre) |
-| **Go** | 1.22+ | Install system-wide |
+| **Go** | 1.24+ | Install system-wide |
 
 For CNI compatibility details (OVN-Kubernetes, Cilium, Calico, Flannel, and others), see [Networking: CNI Compatibility](#networking-cni-compatibility) under Kubernetes Integration.
 
@@ -278,17 +278,33 @@ For CNI compatibility details (OVN-Kubernetes, Cilium, Calico, Flannel, and othe
 go.mod                          # Go module (github.com/maci0/katamaran)
 Makefile                        # Build, test, fuzz, image targets
 Dockerfile                      # Multi-stage container image build
-Dockerfile.dashboard            # Dashboard container image build (multi-arch)
+Dockerfile.dashboard            # Dashboard container image build
 .dockerignore                   # Build context exclusions
+.github/
+  dependabot.yml                # Dependabot config (GitHub Actions + Go modules, weekly)
+  workflows/
+    ci.yml                      # GitHub Actions CI (lint, test, fuzz seeds, build, Docker)
 cmd/
   katamaran/
     main.go                     # CLI entry point — flag parsing and dispatch
+    main_test.go                # CLI validation and flag behavior tests
+  dashboard/
+    main.go                     # Dashboard web server (Go HTTP, zero third-party deps)
+    main_test.go                # Dashboard endpoint, middleware, and security tests
+    index.html                  # Dashboard frontend (dark theme, Chart.js)
+    loadgen.go                  # Ping and HTTP load generator handlers
+    middleware.go               # HTTP middleware (logging, recovery, CSRF, security headers)
+    migrate.go                  # Migration orchestration handler
+    validate.go                 # Input validation and SSRF prevention
+    README.md                   # Dashboard usage guide
 internal/
   migration/
-    config.go                   # Constants, CleanupCtx, and RunCmd helper
+    config.go                   # Config types, constants, and helpers (validators, formatQEMUHost)
     config_test.go              # Config unit tests and FuzzFormatQEMUHost
     dest.go                     # Destination-side migration logic
     dest_test.go                # Destination unit tests
+    exec.go                     # External command execution (runCmd, runCmdInNetns)
+    exec_test.go                # Exec unit tests
     source.go                   # Source-side migration logic and polling
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
@@ -298,12 +314,15 @@ internal/
     client_test.go              # QMP client unit tests
     fuzz_test.go                # Fuzz tests for QMP protocol parsing (6 targets)
     types.go                    # QMP protocol types and command argument structs
-dashboard/
-  main.go                       # Dashboard web server (Go, stdlib only)
-  index.html                    # Dashboard frontend (dark theme, Chart.js)
-  dashboard.yaml                # Kubernetes Deployment + NodePort Service
-  README.md                     # Dashboard usage guide
+  qmptest/
+    helpers.go                  # Shared test helpers for faking a QMP server
+  buildinfo/
+    buildinfo.go                # Build version variable (overridden via ldflags)
+  logutil/
+    logutil.go                  # Logging setup helpers (SetupLogger)
+    logutil_test.go             # Logging tests
 deploy/
+  dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
   daemonset.yaml                # DaemonSet for node setup (binary, QMP config, kernel modules)
   job-dest.yaml                 # Job template for destination-side migration
   job-source.yaml               # Job template for source-side migration
@@ -314,23 +333,28 @@ docs/
   TESTING.md                    # Test environment guide
   STORIES.md                    # User stories
   logo.png                      # Project logo
+demo/
+  nginx-kata.yaml               # Example Kata Containers pod with NGINX + NodePort
 scripts/                        # Test and operational scripts
   test.sh                       # Smoke tests (no VMs required)
   cleanup.sh                    # Cluster cleanup helper
   minikube-test.sh              # Single-node Kata QMP smoke test (requires KVM)
   e2e.sh                        # Unified E2E live migration test harness
+  sweep.sh                      # Parameter sweep tool for migration tuning
+  lib.sh                        # Shared utility functions for scripts
+  build-minikube-iso.sh         # Custom minikube ISO builder
+  build-minikube-modules.sh     # Kernel module builder for minikube
   manifests/                    # E2E test manifests and templates
     kata-pod.yaml               # Kata Containers pod template
     kind-config.yaml            # Kind cluster configuration
     kind-config-nocni.yaml      # Kind cluster configuration (CNI disabled for Cilium/Flannel)
     nfs-pv.yaml                 # NFS PersistentVolume template
     nfs-server.yaml             # NFS server pod template
-    qemu-wrapper.sh             # QEMU state-matching wrapper for destination
+    pod-src.yaml                # Source pod manifest for E2E tests
+    pod-dest.yaml               # Destination pod manifest for E2E tests
 ```
 
 ---
-
-
 
 ## Usage
 
@@ -480,18 +504,18 @@ This means the IPAM must allow the same IP to be assigned on the destination nod
 For production live migration with minimal downtime and operational complexity:
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│                  Ideal Stack                         │
-├──────────────┬──────────────────────────────────────┤
-│ Runtime      │ Kata Containers 3.x + Cloud Hypervisor or QEMU 8+ │
-│ Storage CSI  │ Ceph RBD (rbd.csi.ceph.com)          │
-│ Storage Mode │ --shared-storage (skip NBD mirror)     │
-│ CNI          │ OVN-Kubernetes or Cilium              │
-│ IPAM         │ Cluster-wide pool (not per-node)      │
-│ Kernel       │ 5.15+ (sch_plug, IPIP, KVM)           │
-│ Network      │ 25 Gbps+ node-to-node (for RAM pre-copy) │
-│ Orchestrator │ CRD operator (manages lifecycle)      │
-└──────────────┴──────────────────────────────────────┘
+┌──────────────┬──────────────────────────────────────────────┐
+│              │              Ideal Stack                     │
+├──────────────┼──────────────────────────────────────────────┤
+│ Runtime      │ Kata Containers 3.x + QEMU 8+               │
+│ Storage CSI  │ Ceph RBD (rbd.csi.ceph.com)                 │
+│ Storage Mode │ --shared-storage (skip NBD mirror)           │
+│ CNI          │ OVN-Kubernetes or Cilium                     │
+│ IPAM         │ Cluster-wide pool (not per-node)             │
+│ Kernel       │ 5.15+ (sch_plug, IPIP, KVM)                 │
+│ Network      │ 25 Gbps+ node-to-node (for RAM pre-copy)    │
+│ Orchestrator │ CRD operator (manages lifecycle)             │
+└──────────────┴──────────────────────────────────────────────┘
 ```
 
 **Why this stack:**
@@ -530,7 +554,7 @@ flowchart TD
     G -->|Success| H[Patch pod nodeName]
     H --> I[Update endpoint slices]
     I --> J[Clean up source]
-    G -->|Failure| K[migrate_cancel]
+    G -->|Failure| K[migrate-cancel]
     K --> L[Resume source VM]
     L --> M[Clean up destination]
 ```
@@ -540,7 +564,7 @@ flowchart TD
 - **Pod checkpoint/restore**: Should the operator snapshot the pod spec and container state for rollback?
 - **Multi-disk VMs**: katamaran currently mirrors a single drive. Multi-disk setups would need parallel NBD mirrors or sequential mirroring.
 - **Live migration scheduling**: Which node to pick? Factors: resource headroom, storage locality, network topology, anti-affinity rules.
-- **Preemption**: Can a migration be preempted mid-flight if the destination node runs out of resources? This requires `migrate_cancel` QMP support (already available in QEMU).
+- **Preemption**: Can a migration be preempted mid-flight if the destination node runs out of resources? This requires `migrate-cancel` QMP support (already available in QEMU).
 - **Encryption**: NBD traffic and RAM migration traffic are currently unencrypted. For cross-rack or cross-AZ migration, WireGuard or IPsec tunnels should wrap the migration streams.
 - **Observability**: Exposing migration progress (storage sync %, RAM dirty rate, downtime duration) as Prometheus metrics via the operator.
 
@@ -548,7 +572,7 @@ flowchart TD
 
 ## Dashboard
 
-A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. See [dashboard/README.md](dashboard/README.md) for details.
+A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. See [cmd/dashboard/README.md](cmd/dashboard/README.md) for details.
 
 ### Deploying the Dashboard
 
@@ -560,14 +584,14 @@ make dashboard
 minikube image load dashboard.tar
 
 # 3. Deploy the manifests
-kubectl apply -f dashboard/dashboard.yaml
+kubectl apply -f deploy/dashboard.yaml
 ```
 
 ### Using the Dashboard
 
-Once deployed, the dashboard is exposed via a NodePort service on port `30080`.
+Once deployed, the dashboard is exposed via a ClusterIP service on port `8080`.
 
-1. **Access the UI**: Open your browser to `http://<node-ip>:30080` (or run `minikube service katamaran-dashboard -n kube-system --url` to get the direct link).
+1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080` and open `http://localhost:8080`.
 2. **Configure Migration**: Enter your source/destination node names, QMP socket paths, and the VM pod IP into the form.
 3. **Start Load Generation**: Enter the pod's IP in the Ping/HTTP target box and click **Start**. A live Chart.js graph will begin plotting latency.
 4. **Migrate**: Click **Migrate**. The real-time log viewer will stream the orchestrator's progress.

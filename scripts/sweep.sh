@@ -2,20 +2,44 @@
 # scripts/sweep.sh — Parameter sweep tool for katamaran downtime limit
 #
 # Usage:
-#   ./scripts/sweep.sh <downtime1> [downtime2 ... | auto]
+#   ./scripts/sweep.sh [--provider <name>] [--help] <downtime1> [downtime2 ... | auto]
 #   Example: ./scripts/sweep.sh 10 25 50 auto
+#   Example: ./scripts/sweep.sh --provider kind 10 25 auto
 
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+source "${SCRIPT_DIR}/lib.sh"
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <downtime1> [downtime2 ... | auto]"
-    echo "Example: $0 10 25 50 auto"
-    echo ""
-    echo "Use 'auto' to test RTT-based auto-downtime calculation."
+PROVIDER="minikube"
+
+# Parse flags (before positional downtime args).
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --provider) need_arg "$1" "${2:-}"; PROVIDER="$2"; shift 2 ;;
+        --help|-h)
+            echo "Usage: $0 [--provider minikube|kind] [--help] <downtime1> [downtime2 ... | auto]"
+            echo "Example: $0 10 25 50 auto"
+            echo "Example: $0 --provider kind 10 25 auto"
+            echo ""
+            echo "Use 'auto' to test RTT-based auto-downtime calculation."
+            exit 0
+            ;;
+        --*) error "Unknown option: $1"; exit 2 ;;
+        *) break ;;  # First non-flag arg starts the downtime list.
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    error "At least one downtime value is required"
+    echo "Usage: $0 [--provider minikube|kind] <downtime1> [downtime2 ... | auto]" >&2
+    exit 2
+fi
+
+if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
+    error "--provider must be 'minikube' or 'kind' (got '${PROVIDER}')"
     exit 1
 fi
 
@@ -34,20 +58,31 @@ echo " Results dir: ${RESULTS_DIR}"
 echo "============================================================"
 
 # First, run e2e.sh --env-only to set up the environment
-echo ">>> Setting up environment..."
-"${SCRIPT_DIR}/e2e.sh" --env-only
+log "Setting up environment..."
+"${SCRIPT_DIR}/e2e.sh" --provider "${PROVIDER}" --env-only
 
-# Extract some functions from e2e.sh that we'll need
-source "${SCRIPT_DIR}/e2e.sh" --help >/dev/null 2>&1 || true
-
-# Helper to run kubectl depending on environment
-KUBECTL=(kubectl)
-SUDO=""
-if [[ "${PROVIDER:-minikube}" == "kind" ]]; then
+# Set up provider-aware variables for node_exec (from lib.sh) and kubectl.
+if [[ "${PROVIDER}" == "kind" ]]; then
     SUDO=""
+    CE="${CE:-$(command -v podman 2>/dev/null || echo docker)}"
 else
     SUDO="sudo"
+    CE=""
 fi
+# Derive profile and kubectl context to match e2e.sh naming convention.
+# e2e.sh defaults to kindnet for Kind and calico for minikube.
+if [[ "${PROVIDER}" == "kind" ]]; then
+    CNI_DEFAULT="kindnet"
+else
+    CNI_DEFAULT="calico"
+fi
+PROFILE="katamaran-e2e-${PROVIDER}-${CNI_DEFAULT}-none-job"
+if [[ "${PROVIDER}" == "kind" ]]; then
+    CTX="kind-${PROFILE}"
+else
+    CTX="${PROFILE}"
+fi
+KUBECTL=(kubectl --context "${CTX}")
 
 get_pod_ip() {
     local pod="$1"
@@ -68,26 +103,20 @@ get_qmp_socket() {
     local pod="$1"
     local node="$2"
     local pod_uid=$("${KUBECTL[@]}" get pod "$pod" -o jsonpath='{.metadata.uid}')
-    # Extract just the socket path, no \r or other artifacts
-    if [[ "${PROVIDER:-minikube}" == "minikube" ]]; then
-        minikube ssh -n "$node" "sudo crictl inspect -o go-template --template '{{.info.runtimeSpec.annotations.io\\.katacontainers\\.config\\.hypervisor\\.monitor_path}}' \$(sudo crictl ps --label io.kubernetes.pod.uid=$pod_uid -q) 2>/dev/null" | tr -d '\r'
-    else
-        # For kind we can just use exec/docker
-        docker exec "$node" sh -c "crictl inspect -o go-template --template '{{.info.runtimeSpec.annotations.io\\.katacontainers\\.config\\.hypervisor\\.monitor_path}}' \$(crictl ps --label io.kubernetes.pod.uid=$pod_uid -q)"
-    fi
+    node_exec "${node}" "${SUDO} crictl inspect -o go-template --template '{{.info.runtimeSpec.annotations.io\\.katacontainers\\.config\\.hypervisor\\.monitor_path}}' \$(${SUDO} crictl ps --label io.kubernetes.pod.uid=${pod_uid} -q) 2>/dev/null"
 }
 
 # Extract actual migration metrics from source job logs.
-# Looks for the log line: "Migration completed: actual_downtime=Xms total_time=Yms setup_time=Zms"
+# Looks for slog key=value pairs: actual_downtime_ms=X total_time_ms=Y setup_time_ms=Z
 extract_metrics() {
     local logfile="$1"
     local metric_line
-    metric_line=$(grep -o 'actual_downtime=[0-9]*ms total_time=[0-9]*ms setup_time=[0-9]*ms' "$logfile" 2>/dev/null || true)
+    metric_line=$(grep 'actual_downtime_ms=' "$logfile" 2>/dev/null | tail -1 || true)
     if [[ -n "$metric_line" ]]; then
         local actual_dt total_t setup_t
-        actual_dt=$(echo "$metric_line" | grep -o 'actual_downtime=[0-9]*' | cut -d= -f2)
-        total_t=$(echo "$metric_line" | grep -o 'total_time=[0-9]*' | cut -d= -f2)
-        setup_t=$(echo "$metric_line" | grep -o 'setup_time=[0-9]*' | cut -d= -f2)
+        actual_dt=$(echo "$metric_line" | grep -o 'actual_downtime_ms=[0-9]*' | cut -d= -f2)
+        total_t=$(echo "$metric_line" | grep -o 'total_time_ms=[0-9]*' | cut -d= -f2)
+        setup_t=$(echo "$metric_line" | grep -o 'setup_time_ms=[0-9]*' | cut -d= -f2)
         echo "${actual_dt}	${total_t}	${setup_t}"
     else
         echo "-	-	-"
@@ -97,7 +126,7 @@ extract_metrics() {
 # Write TSV header
 echo -e "downtime_limit_ms\tactual_downtime_ms\ttotal_time_ms\tsetup_time_ms\tresult" > "$TSV_FILE"
 
-echo ">>> Environment ready. Starting sweep..."
+log "Environment ready. Starting sweep..."
 
 for DOWNTIME in "${DOWNTIMES[@]}"; do
     # Determine if this is an auto-downtime run
@@ -117,12 +146,12 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     mkdir -p "$RUN_LOGDIR"
 
     # 1. Clean up from previous run if necessary
-    echo ">>> Cleaning up previous pods..."
+    log "Cleaning up previous pods..."
     "${KUBECTL[@]}" delete pod kata-src mig-helper --ignore-not-found --wait=true
     "${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found --wait=true
 
     # 2. Start the source pod
-    echo ">>> Deploying source Kata pod..."
+    log "Deploying source Kata pod..."
     "${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/manifests/pod-src.yaml"
     "${KUBECTL[@]}" wait --for=condition=Ready pod/kata-src --timeout=120s
 
@@ -130,7 +159,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     SRC_NODE=$(get_pod_node kata-src)
 
     # 3. Start the destination helper pod
-    echo ">>> Deploying destination helper pod..."
+    log "Deploying destination helper pod..."
     "${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/manifests/pod-dest.yaml"
     "${KUBECTL[@]}" wait --for=condition=Ready pod/mig-helper --timeout=120s
 
@@ -138,7 +167,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     DEST_NODE_IP=$(get_node_ip "$DEST_NODE")
 
     if [[ "$SRC_NODE" == "$DEST_NODE" ]]; then
-        echo "ERROR: Source and destination are on the same node ($SRC_NODE). Migration requires different nodes."
+        error "Source and destination are on the same node ($SRC_NODE). Migration requires different nodes."
         echo -e "${DOWNTIME}\t-\t-\t-\tERROR (same node)" >> "$TSV_FILE"
         continue
     fi
@@ -146,7 +175,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     # 4. Get QMP socket of source
     SRC_QMP=$(get_qmp_socket "kata-src" "$SRC_NODE")
     if [[ -z "$SRC_QMP" ]]; then
-        echo "ERROR: Could not find QMP socket for kata-src"
+        error "Could not find QMP socket for kata-src"
         echo -e "${DOWNTIME}\t-\t-\t-\tERROR (no SRC_QMP)" >> "$TSV_FILE"
         continue
     fi
@@ -154,19 +183,10 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     echo "Source Node: $SRC_NODE, IP: $SRC_IP, QMP: $SRC_QMP"
 
     # 5. Start destination QEMU manually via mig-helper
-    echo ">>> Starting destination QEMU..."
+    log "Starting destination QEMU..."
 
-    # We need to construct the QEMU command. For simplicity in the sweep,
-    # we'll extract the core logic for the dest QEMU setup.
-    if [[ "${PROVIDER:-minikube}" == "minikube" ]]; then
-        # On minikube, run it via minikube ssh
-        minikube ssh -n "$DEST_NODE" "sudo bash -c \"nohup /opt/kata/bin/qemu-system-x86_64 -name sandbox-mig-helper -machine q35,accel=kvm,kernel_irqchip=split -m 2048 -smp 2 -cpu host -no-user-config -nodefaults -nographic -vga none -daemonize -incoming defer -monitor none -qmp unix:/tmp/qmp-dest.sock,server=on,wait=off -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on -numa node,memdev=dimm1 -pidfile /tmp/qemu-dest.pid >/tmp/qemu.log 2>&1 &\""
-        DEST_QMP="/tmp/qmp-dest.sock"
-    else
-        # Similar logic for kind, or we could just use a simplified QEMU for tests
-        docker exec "$DEST_NODE" sh -c "nohup /opt/kata/bin/qemu-system-x86_64 -name sandbox-mig-helper -machine q35,accel=kvm,kernel_irqchip=split -m 2048 -smp 2 -cpu host -no-user-config -nodefaults -nographic -vga none -daemonize -incoming defer -monitor none -qmp unix:/tmp/qmp-dest.sock,server=on,wait=off -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on -numa node,memdev=dimm1 -pidfile /tmp/qemu-dest.pid >/tmp/qemu.log 2>&1 &"
-        DEST_QMP="/tmp/qmp-dest.sock"
-    fi
+    node_exec "$DEST_NODE" "${SUDO} bash -c 'nohup /opt/kata/bin/qemu-system-x86_64 -name sandbox-mig-helper -machine q35,accel=kvm,kernel_irqchip=split -m 2048 -smp 2 -cpu host -no-user-config -nodefaults -nographic -vga none -daemonize -incoming defer -monitor none -qmp unix:/tmp/qmp-dest.sock,server=on,wait=off -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on -numa node,memdev=dimm1 -pidfile /tmp/qemu-dest.pid >/tmp/qemu.log 2>&1 &'"
+    DEST_QMP="/tmp/qmp-dest.sock"
 
     # Wait a bit for QEMU to start
     sleep 2
@@ -184,10 +204,10 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     )
 
     if [[ "$IS_AUTO" == "true" ]]; then
-        echo ">>> Running katamaran migration job with auto-downtime..."
+        log "Running katamaran migration job with auto-downtime..."
         MIGRATE_ARGS+=(--auto-downtime)
     else
-        echo ">>> Running katamaran migration job with downtime ${DOWNTIME}ms..."
+        log "Running katamaran migration job with downtime ${DOWNTIME}ms..."
         MIGRATE_ARGS+=(--downtime "$DOWNTIME")
     fi
 
@@ -208,20 +228,16 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
 
     if [[ $MIG_EXIT -eq 0 ]]; then
         RESULT="SUCCESS"
-        echo ">>> Migration with downtime ${DOWNTIME} SUCCESS (actual_downtime=${ACTUAL_DT}ms total_time=${TOTAL_T}ms)"
+        success "Migration with downtime ${DOWNTIME} (actual_downtime=${ACTUAL_DT}ms total_time=${TOTAL_T}ms)"
     else
         RESULT="FAILED"
-        echo ">>> Migration with downtime ${DOWNTIME} FAILED (exit $MIG_EXIT)"
+        error "Migration with downtime ${DOWNTIME} FAILED (exit $MIG_EXIT)"
     fi
 
     echo -e "${DOWNTIME}\t${ACTUAL_DT}\t${TOTAL_T}\t${SETUP_T}\t${RESULT}" >> "$TSV_FILE"
 
     # 7. Clean up QEMU on dest
-    if [[ "${PROVIDER:-minikube}" == "minikube" ]]; then
-        minikube ssh -n "$DEST_NODE" "sudo kill -9 \$(cat /tmp/qemu-dest.pid) 2>/dev/null || true; sudo rm -f /tmp/qmp-dest.sock /tmp/qemu-dest.pid /tmp/qemu.log"
-    else
-        docker exec "$DEST_NODE" sh -c "kill -9 \$(cat /tmp/qemu-dest.pid) 2>/dev/null || true; rm -f /tmp/qmp-dest.sock /tmp/qemu-dest.pid /tmp/qemu.log"
-    fi
+    node_exec "$DEST_NODE" "${SUDO} kill -9 \$(cat /tmp/qemu-dest.pid) 2>/dev/null || true; ${SUDO} rm -f /tmp/qmp-dest.sock /tmp/qemu-dest.pid /tmp/qemu.log"
 done
 
 echo ""

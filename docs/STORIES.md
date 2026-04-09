@@ -29,7 +29,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** migration completes in seconds instead of minutes, since both nodes already share the storage backend.
 
 **Acceptance criteria:**
-- [x] Passing `-shared-storage` skips NBD server start, drive-mirror, and NBD server stop
+- [x] Passing `--shared-storage` skips NBD server start, drive-mirror, and NBD server stop
 - [x] Only RAM pre-copy and network cutover are performed
 - [x] Migration time is dominated by RAM convergence, not disk size
 
@@ -56,9 +56,9 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** in-flight IPv4 packets are forwarded to the destination during CNI convergence.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
-- [x] Host route uses `ip route add <vmIP> dev <tunnel>`
-- [x] Both `-dest-ip` and `-vm-ip` are validated with `netip.ParseAddr`
+- [x] `setupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
+- [x] Host route uses `ip route replace <vmIP> dev <tunnel>`
+- [x] Both `--dest-ip` and `--vm-ip` are validated with `netip.ParseAddr`
 
 ### US-5: Migrate VMs with IPv6 pod IPs
 
@@ -67,8 +67,8 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** IPv6-only workloads can be live-migrated with the same zero-drop guarantee.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
-- [x] Host route uses `ip -6 route add <vmIP> dev <tunnel>`
+- [x] `setupTunnel` creates a tunnel with `mode ip6ip6` for IPv6 addresses
+- [x] Host route uses `ip -6 route replace <vmIP> dev <tunnel>`
 - [x] Mixed address families (IPv4 dest + IPv6 vm or vice versa) are rejected with a clear error
 - [x] IPv6 addresses are validated at the CLI level before migration begins
 
@@ -85,7 +85,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 **Acceptance criteria:**
 - [x] Signal handler cancels the context, which propagates to all in-progress operations
 - [x] Deferred cleanup removes `tc sch_plug` qdisc, stops NBD server, cancels block jobs, and tears down IPIP tunnel
-- [x] Cleanup uses `context.Background()` with a 10s timeout so it runs even after main context cancellation
+- [x] Cleanup uses `context.WithoutCancel` with a 10s timeout so it runs even after main context cancellation while preserving parent values
 - [x] Exit code is 130 (standard SIGINT exit code)
 
 ### US-7: Idempotent tunnel and qdisc setup
@@ -95,7 +95,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** stale resources from a previous run are cleaned up automatically before creating new ones.
 
 **Acceptance criteria:**
-- [x] `SetupTunnel` deletes any existing tunnel with the same name before creation
+- [x] `setupTunnel` deletes any existing tunnel with the same name before creation
 - [x] Destination qdisc setup removes any existing root qdisc before adding a new one
 - [x] NBD server setup stops any existing server before starting a new one
 
@@ -110,10 +110,10 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** I can diagnose and resolve the issue without inspecting QEMU internals.
 
 **Acceptance criteria:**
-- [x] If the block job disappears unexpectedly, report that it "disappeared unexpectedly"
+- [x] If the block job disappears unexpectedly, report that it "disappeared"
 - [x] If the block job doesn't appear within 30s, report it "did not appear" (likely silent drive-mirror failure)
 - [x] If the block job enters a terminal state (`concluded`, `null`) without `ready`, report the state
-- [x] If storage sync exceeds `StorageSyncTimeout` (2h), report a timeout with the job ID
+- [x] If storage sync exceeds `storageSyncTimeout` (2h), report a timeout with the job ID
 - [x] Progress is logged as a percentage during sync
 
 ### US-9: Detect and report RAM migration failure
@@ -126,8 +126,8 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] Migration status is logged at each poll interval
 - [x] `failed` status includes QEMU's `error-desc` when available
 - [x] `cancelled` status returns a distinct sentinel error
-- [x] Migration polling is bounded by `MigrationTimeout` (1h) to prevent infinite loops
-- [x] On failure, `migrate_cancel` is sent to QEMU to resume the source VM
+- [x] Migration polling is bounded by `migrationTimeout` (1h) to prevent infinite loops
+- [x] On failure, `migrate-cancel` is sent to QEMU to resume the source VM
 
 ### US-10: Validate CLI inputs before migration begins
 
@@ -136,10 +136,10 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** I don't discover configuration errors deep into a multi-hour storage mirror.
 
 **Acceptance criteria:**
-- [x] Invalid `-dest-ip` and `-vm-ip` are rejected with `netip.ParseAddr` before any QMP connection
-- [x] Missing required flags (`-dest-ip`, `-vm-ip` in source mode) print a clear error and usage
+- [x] Invalid `--dest-ip` and `--vm-ip` are rejected with `netip.ParseAddr` before any QMP connection
+- [x] Missing required flags (`--dest-ip`, `--vm-ip` in source mode) print a clear error and usage
 - [x] Unexpected positional arguments are rejected
-- [x] Invalid `-mode` values are rejected with the invalid value shown in the error
+- [x] Invalid `--mode` values are rejected with the invalid value shown in the error
 
 ---
 
@@ -155,7 +155,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] `sch_plug` qdisc is installed in pass-through mode initially (so pre-migration traffic flows normally)
 - [x] Queue is switched to `block` mode before the expected RESUME
 - [x] On RESUME, queue is switched to `release_indefinite`, flushing all buffered packets
-- [x] If `sch_plug` is unavailable (kernel module missing), migration proceeds without buffering (degraded but functional)
+- [x] If `sch_plug` is unavailable (kernel module missing) and the tap interface exists, migration fails with a clear error suggesting `sch_plug` may not be loaded
 - [x] If tap interface is not specified, network queue setup is skipped entirely
 
 ### US-12: Broadcast GARP after VM resumes
@@ -167,8 +167,8 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 **Acceptance criteria:**
 - [x] GARP is sent via QEMU's `announce-self` (not host-side `arping`)
 - [x] Uses the guest's actual MAC address on all NICs
-- [x] Sends 5 rounds with exponential backoff (20ms initial, 100ms step, 550ms max)
-- [x] GARP failure is logged as a warning, not a fatal error
+- [x] Sends 5 rounds with incremental backoff (20ms initial, +100ms step, 550ms max)
+- [x] GARP failure is a fatal error (returns from `RunDestination` with error)
 
 ---
 
@@ -210,5 +210,5 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] Installs katamaran on both nodes
 - [x] Runs a full migration (dest first, then source)
 - [x] Validates the VM is running on the destination after migration
-- [x] Supports `teardown` subcommand for manual cleanup
+- [x] Supports `--teardown` flag for manual cleanup
 

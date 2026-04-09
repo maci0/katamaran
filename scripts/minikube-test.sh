@@ -39,10 +39,15 @@ for arg in "$@"; do
         --keep) KEEP=true ;;
         --env-only) ENV_ONLY=true ;;
         --help)
-            echo "Usage: ./scripts/minikube-test.sh [--keep] [--env-only]"
+            echo "Usage: ./scripts/minikube-test.sh [--keep] [--env-only] [--help]"
+            echo ""
+            echo "Options:"
+            echo "  --keep      Don't delete the minikube cluster on exit (for debugging)"
+            echo "  --env-only  Stop after environment setup (don't run tests)"
+            echo "  --help      Show this help message"
             exit 0
             ;;
-        *) echo "Unknown argument: ${arg}"; exit 1 ;;
+        *) echo "Error: unknown option: ${arg}" >&2; exit 2 ;;
     esac
 done
 readonly KEEP
@@ -277,7 +282,7 @@ minikube -p "${PROFILE}" ssh -- sudo chmod +x /tmp/katamaran
 
 echo ">>> Locating extra QMP monitor socket..."
 # The primary qmp.sock is owned 1:1 by kata-shim. We use the extra-monitor.sock
-# that we configured via extra_monitor_socket = "katamaran" in the Kata config.
+# that we configured via extra_monitor_socket = "qmp" in the Kata config.
 QMP_SOCK="$(minikube -p "${PROFILE}" ssh -- 'sudo find /run/vc -name "extra-monitor.sock" 2>/dev/null | head -1')"
 QMP_SOCK="$(echo "${QMP_SOCK}" | tr -d '[:space:]')"
 
@@ -293,7 +298,7 @@ if [[ -n "${QMP_SOCK}" ]]; then
     # Use -shared-storage to skip NBD (single-node smoke test, no real migration target).
     # Run with output to a file inside the node so log lines survive the
     # SIGTERM from timeout (Go's buffers are lost on signal kill).
-    minikube -p "${PROFILE}" ssh -- "sudo timeout 10 /tmp/katamaran -mode dest -qmp '${QMP_SOCK}' -shared-storage >/tmp/katamaran-dest.log 2>&1 || true"
+    minikube -p "${PROFILE}" ssh -- "sudo timeout 10 /tmp/katamaran --mode dest --qmp '${QMP_SOCK}' --shared-storage >/tmp/katamaran-dest.log 2>&1 || true"
     DEST_OUTPUT="$(minikube -p "${PROFILE}" ssh -- 'cat /tmp/katamaran-dest.log')"
     echo "${DEST_OUTPUT}"
 
@@ -317,7 +322,7 @@ echo ""
 echo "=== Step 6: In-node CLI tests ==="
 
 echo ">>> Testing invalid mode..."
-INVALID_OUTPUT="$(minikube -p "${PROFILE}" ssh -- '/tmp/katamaran -mode bogus 2>&1 || true')"
+INVALID_OUTPUT="$(minikube -p "${PROFILE}" ssh -- '/tmp/katamaran --mode bogus 2>&1 || true')"
 if echo "${INVALID_OUTPUT}" | grep -qi "invalid mode"; then
     pass "invalid mode produces error message"
 else

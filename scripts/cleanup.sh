@@ -5,10 +5,9 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+source "${SCRIPT_DIR}/lib.sh"
 
 KEEP_LOGS=false
-
-log() { echo ">>> $1"; }
 
 usage() {
     cat <<USAGE
@@ -16,15 +15,15 @@ Usage: ./scripts/cleanup.sh [--keep-logs] [--help]
 
 Options:
   --keep-logs   Keep /tmp/katamaran-*.log files
-  --help        Show this help message
+  --help, -h    Show this help message
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-logs) KEEP_LOGS=true; shift ;;
-        --help) usage; exit 0 ;;
-        *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+        --help|-h) usage; exit 0 ;;
+        *) error "Unknown option: $1"; usage >&2; exit 2 ;;
     esac
 done
 

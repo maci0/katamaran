@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a1f3f">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Web dashboard for Kata Containers live VM migration with zero packet drop">
+    <title>Katamaran Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolygon points='15,10 25,10 22,22 18,22' fill='%232b8eff'/%3E%3Cpolygon points='20,6 21,10 19,10' fill='%238ecdff'/%3E%3Cpath d='M5 24Q12 18 20 22Q28 26 35 20' stroke='%232b8eff' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script>
+    <script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                colors: {
+                    hull: { 50:'#eef7ff',100:'#d9edff',200:'#bce0ff',300:'#8ecdff',400:'#53b0ff',500:'#2b8eff',600:'#1470f5',700:'#0d59e1',800:'#1148b6',900:'#0f3d8f',950:'#0a1f3f' }
+                }
+            }
+        }
+    }
+    </script>
+    <style>
+        @keyframes wave{0%,100%{transform:translateX(0)}50%{transform:translateX(-8px)}}
+        .wave-line{animation:wave 3s ease-in-out infinite}
+        .wave-line-delay{animation:wave 3s ease-in-out infinite .5s}
+        @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+        .log-line{animation:fadein .15s ease-out}
+        input:focus,select:focus{outline:2px solid rgba(43,142,255,.6);outline-offset:0;box-shadow:0 0 0 2px rgba(43,142,255,.4)}
+        button:focus-visible{outline:2px solid #2b8eff;outline-offset:2px}
+        #logs:focus{outline:2px solid #2b8eff;outline-offset:-2px;border-radius:0.5rem}
+        .toast-close{background:none;border:none;color:inherit;opacity:.6;cursor:pointer;min-width:44px;min-height:44px;margin-left:4px;font-size:1rem;line-height:1;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center}
+        .toast-close:hover,.toast-close:focus-visible{opacity:1}
+        @media(prefers-reduced-motion:reduce){
+            .wave-line,.wave-line-delay{animation:none}
+            .log-line{animation:none}
+            .animate-pulse{animation:none}
+            .toast-enter,.toast-exit{animation:none}
+            *{transition-duration:0.01ms !important}
+        }
+        @keyframes toast-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes toast-out{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-8px)}}
+        .toast-enter{animation:toast-in .2s ease-out}
+        .toast-exit{animation:toast-out .2s ease-in forwards}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+        .has-tooltip[title]{cursor:help;border-bottom:1px dotted currentColor}
+        label.has-tooltip[title]{border-bottom:none;cursor:inherit}
+        h2.has-tooltip[title]{border-bottom:none;cursor:default}
+        input:disabled,select:disabled{opacity:.5;cursor:not-allowed}
+    </style>
+</head>
+<body class="bg-hull-950 text-slate-200 font-sans min-h-screen">
+
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-hull-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-lg">Skip to main content</a>
+
+    <noscript><div class="bg-red-900 text-white text-center py-4 px-6 text-sm">JavaScript is required for the Katamaran Dashboard to function.</div></noscript>
+
+    <div id="toast-container" role="status" aria-live="polite" aria-label="Notifications" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <div id="confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+        <div class="bg-slate-800 border border-slate-600/50 rounded-xl shadow-2xl max-w-sm w-full mx-4 p-6">
+            <h3 id="confirm-title" class="text-lg font-semibold text-white mb-2">Stop Migration?</h3>
+            <p id="confirm-desc" class="text-sm text-slate-300 mb-6">This may leave the VM in an inconsistent state.</p>
+            <div class="flex gap-3 justify-end">
+                <button type="button" id="confirm-cancel" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 bg-slate-700 hover:bg-slate-600 transition-colors min-h-[44px]">Cancel</button>
+                <button type="button" id="confirm-ok" class="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-500 transition-colors min-h-[44px]">Stop Migration</button>
+            </div>
+        </div>
+    </div>
+
+    <header class="border-b border-slate-700/50 bg-hull-950/80 backdrop-blur sticky top-0 z-10">
+        <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <svg viewBox="0 0 40 40" class="w-10 h-10" role="img" aria-label="Katamaran logo">
+                    <path d="M5 24 Q12 18 20 22 Q28 26 35 20" stroke="#2b8eff" stroke-width="2.5" fill="none" class="wave-line"/>
+                    <path d="M5 28 Q12 22 20 26 Q28 30 35 24" stroke="#53b0ff" stroke-width="1.5" fill="none" opacity=".5" class="wave-line-delay"/>
+                    <polygon points="15,10 25,10 22,22 18,22" fill="#2b8eff" opacity=".9"/>
+                    <polygon points="20,6 21,10 19,10" fill="#8ecdff"/>
+                </svg>
+                <div>
+                    <h1 class="text-lg font-bold text-white tracking-tight">Katamaran</h1>
+                    <p class="text-xs text-slate-400">Live Migration Dashboard <span id="version-text" class="text-slate-400"></span></p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <span id="last-result" role="status" class="text-xs" aria-describedby="last-result-detail"></span>
+                <span id="last-result-detail" class="sr-only"></span>
+                <span id="status-badge" role="status" aria-live="polite" aria-atomic="true" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Connecting&hellip;</span>
+            </div>
+        </div>
+    </header>
+
+    <div id="connection-banner" role="alert" class="hidden bg-amber-600/90 text-white text-center py-2 px-4 text-sm font-medium">Unable to reach the server &mdash; retrying&hellip;</div>
+
+    <main id="main-content" class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <div class="lg:col-span-3 space-y-5">
+                <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
+                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Migration Config</h2>
+                    <form id="migration-form" class="space-y-3" novalidate autocomplete="off" aria-label="Migration configuration">
+                        <p class="text-xs text-slate-400 -mt-1 mb-1"><span class="text-red-400" aria-hidden="true">*</span> Required field</p>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="source_node" id="source_node" value="katamaran-e2e" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            </div>
+                            <div>
+                                <label for="dest_node" class="block text-xs text-slate-400 mb-1">Dest Node <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="dest_node" id="dest_node" value="katamaran-e2e-m02" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            </div>
+                        </div>
+                        <div>
+                            <label for="tap" class="block text-xs text-slate-400 mb-1 has-tooltip" title="Network tap device inside the Kata VM sandbox">Tap Interface <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="tap" id="tap" value="tap0_kata" required aria-required="true" aria-describedby="tap-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            <p id="tap-help" class="sr-only">Network tap device inside the Kata VM sandbox</p>
+                        </div>
+                        <div>
+                            <label for="tap_netns" class="block text-xs text-slate-400 mb-1 has-tooltip" title="Path to the network namespace for the tap device (optional)">Tap Netns</label>
+                            <input type="text" name="tap_netns" id="tap_netns" placeholder="/proc/.../ns/net" aria-describedby="tap-netns-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
+                            <p id="tap-netns-help" class="sr-only">Path to the network namespace for the tap device</p>
+                        </div>
+                        <div>
+                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1 has-tooltip" title="QEMU Machine Protocol socket path on the source node">Source QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_source" id="qmp_source" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                        </div>
+                        <div>
+                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1 has-tooltip" title="QEMU Machine Protocol socket path on the destination node">Dest QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_dest" id="qmp_dest" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                        </div>
+                        <p id="qmp-help" class="text-xs text-slate-400 -mt-1">Path to the QEMU control socket inside the pod</p>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="dest_ip" id="dest_ip" required aria-required="true" placeholder="192.168.x.x" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
+                            </div>
+                            <div>
+                                <label for="vm_ip" class="block text-xs text-slate-400 mb-1">VM IP <span class="text-red-400" aria-hidden="true">*</span></label>
+                                <input type="text" name="vm_ip" id="vm_ip" value="10.244.0.5" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            </div>
+                        </div>
+                        <div>
+                            <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
+                            <input type="number" name="downtime" id="downtime" value="25" min="1" max="60000" aria-describedby="downtime-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            <p id="downtime-help" class="text-xs text-slate-400 -mt-1">Range: 1–60,000</p>
+                        </div>
+                        <div>
+                            <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="image" id="image" value="localhost/katamaran:dev" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono">
+                        </div>
+                        <label class="flex items-center gap-2 cursor-pointer py-1">
+                            <input type="checkbox" name="shared_storage" id="shared_storage" value="true" aria-describedby="shared-storage-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
+                            <span class="text-xs text-slate-300 has-tooltip" title="Use shared storage instead of Network Block Device replication">Shared Storage <span class="text-slate-400">(skip disk copy)</span></span>
+                            <span id="shared-storage-help" class="sr-only">Use shared storage instead of Network Block Device replication</span>
+                        </label>
+                        <div class="flex gap-2 mt-2">
+                            <button type="submit" id="btn-migrate" aria-label="Start Migration" class="flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9654; Start Migration</button>
+                            <button type="button" id="btn-stop-mig" disabled aria-label="Stop migration" class="bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
+                    <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4" id="loadgen-heading">Load Generator</h2>
+                    <div class="space-y-2" role="group" aria-labelledby="loadgen-heading">
+                        <button type="button" id="btn-ping" aria-label="ICMP Ping" class="w-full bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9673; ICMP Ping</button>
+                        <button type="button" id="btn-http" aria-label="HTTP Load" class="w-full bg-violet-600/80 hover:bg-violet-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#8645; HTTP Load</button>
+                        <button type="button" id="btn-stop-load" disabled aria-label="Stop load generator" class="w-full bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop Load</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-9 space-y-5">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4" role="region" aria-label="Load generator statistics">
+                    <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
+                        <p id="stat-sent-label" class="text-xs text-slate-400 uppercase tracking-wider">Packets Sent</p>
+                        <p id="stat-sent" aria-labelledby="stat-sent-label" class="text-2xl font-bold text-white mt-1">0</p>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
+                        <p id="stat-lost-label" class="text-xs text-slate-400 uppercase tracking-wider">Dropped</p>
+                        <p id="stat-lost" aria-labelledby="stat-lost-label" class="text-2xl font-bold text-emerald-400 mt-1">
+                            <span class="sr-only" id="stat-lost-sr">0 dropped packets</span>
+                            <span aria-hidden="true">0</span>
+                        </p>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
+                        <p id="stat-avg-label" class="text-xs text-slate-400 uppercase tracking-wider">Avg Latency</p>
+                        <p id="stat-avg" aria-labelledby="stat-avg-label" class="text-2xl font-bold text-white mt-1">&mdash;</p>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
+                        <p id="stat-max-label" class="text-xs text-slate-400 uppercase tracking-wider">Max Latency</p>
+                        <p id="stat-max" aria-labelledby="stat-max-label" class="text-2xl font-bold text-white mt-1">&mdash;</p>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
+                    <div class="flex items-center justify-between mb-3">
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &mdash; Zero-Drop Proof</h2>
+                        <span id="loadgen-indicator" class="text-xs text-slate-400" aria-live="polite"></span>
+                    </div>
+                    <div style="height:280px;position:relative" role="img" aria-label="Latency chart showing ping response times over time">
+                        <canvas id="latencyChart" aria-hidden="true"></canvas>
+                        <div id="chart-empty" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400">Start a load generator to see latency data</div>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-slate-700/50 flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider" id="log-heading">Migration Log</h2>
+                        <button type="button" id="btn-clear-logs" class="text-xs text-slate-400 hover:text-slate-300 transition-colors px-3 py-2 min-h-[44px] min-w-[44px] rounded" aria-label="Clear migration logs" aria-controls="logs">Clear</button>
+                    </div>
+                    <div id="logs" role="log" aria-labelledby="log-heading" aria-live="off" class="font-mono text-xs leading-relaxed p-4 h-72 overflow-y-auto bg-slate-900/50 text-slate-400" style="overflow-wrap:anywhere" tabindex="0">
+                        <div class="text-slate-400">Awaiting migration start...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <p id="log-sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>
+
+    <script>
+    var latencyChart = null;
+    try {
+        var chartCtx = document.getElementById('latencyChart').getContext('2d');
+        var grad = chartCtx.createLinearGradient(0, 0, 0, 280);
+        grad.addColorStop(0, 'rgba(43,142,255,0.25)');
+        grad.addColorStop(1, 'rgba(43,142,255,0)');
+
+        latencyChart = new Chart(chartCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Latency (ms)',
+                    data: [],
+                    borderColor: '#2b8eff',
+                    backgroundColor: grad,
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    pointHoverRadius: 4,
+                    pointHoverBackgroundColor: '#2b8eff',
+                    tension: 0.3,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#1e293b',
+                        borderColor: '#334155',
+                        borderWidth: 1,
+                        titleColor: '#94a3b8',
+                        bodyColor: '#e2e8f0',
+                        padding: 10,
+                        displayColors: false,
+                        callbacks: { label: function(c) { if (c.dataset.label === 'Error') return 'Timeout / Unreachable'; return c.parsed.y.toFixed(2) + ' ms'; } }
+                    }
+                },
+                scales: {
+                    y: { beginAtZero: true, suggestedMax: 5, grid: { color: 'rgba(71,85,105,0.3)', drawBorder: false }, ticks: { color: '#64748b', font: { size: 10 }, callback: function(v) { return v + 'ms'; } }, border: { display: false } },
+                    x: { grid: { display: false }, ticks: { color: '#475569', font: { size: 9 }, maxTicksLimit: 15, maxRotation: 0 }, border: { display: false } }
+                }
+            }
+        });
+    } catch(e) {
+        console.warn('Chart.js initialization failed:', e);
+        document.getElementById('chart-empty').textContent = 'Latency chart unavailable (Chart.js failed to load)';
+    }
+
+    function showToast(message, type) {
+        var container = document.getElementById('toast-container');
+        var toast = document.createElement('div');
+        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : 'bg-slate-700/90';
+        toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur max-w-sm flex items-center ' + bgColor + ' toast-enter';
+        toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+        var textSpan = document.createElement('span');
+        textSpan.className = 'flex-1';
+        textSpan.textContent = message;
+        toast.appendChild(textSpan);
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'toast-close';
+        closeBtn.setAttribute('aria-label', 'Dismiss notification');
+        closeBtn.textContent = '\u00D7';
+        closeBtn.addEventListener('click', function() { dismissToast(toast); });
+        toast.appendChild(closeBtn);
+        container.appendChild(toast);
+        var duration = type === 'error' ? 7000 : 4000;
+        toast._timer = setTimeout(function() { dismissToast(toast); }, duration);
+    }
+    function dismissToast(toast) {
+        if (toast._dismissed) return;
+        toast._dismissed = true;
+        clearTimeout(toast._timer);
+        toast.className = toast.className.replace('toast-enter', 'toast-exit');
+        setTimeout(function() { toast.remove(); }, 200);
+    }
+
+    function apiCall(url, opts) {
+        opts = opts || {};
+        if (!opts.method) opts.method = 'POST';
+        return fetch(url, opts).then(function(r) {
+            if (!r.ok) {
+                return r.text().then(function(t) {
+                    var msg;
+                    try { msg = JSON.parse(t).error; } catch(e) {}
+                    msg = msg || t || 'Request failed (' + r.status + ')';
+                    showToast(msg, 'error');
+                    throw new Error(msg);
+                });
+            }
+            return r;
+        }).catch(function(err) {
+            if (err instanceof TypeError) {
+                showToast('Connection failed \u2014 is the server running?', 'error');
+            }
+        });
+    }
+
+    function showFieldError(field, msg) {
+        clearFieldError(field);
+        var p = document.createElement('p');
+        p.className = 'text-xs text-red-400 mt-0.5';
+        p.id = field.id + '-error';
+        p.setAttribute('role', 'alert');
+        p.textContent = msg;
+        field.parentNode.appendChild(p);
+        var desc = field.getAttribute('aria-describedby') || '';
+        if (desc.indexOf(p.id) === -1) {
+            field.setAttribute('aria-describedby', (desc + ' ' + p.id).trim());
+        }
+    }
+    function clearFieldError(field) {
+        var errorId = field.id + '-error';
+        var el = document.getElementById(errorId);
+        if (el) el.remove();
+        var desc = field.getAttribute('aria-describedby') || '';
+        desc = desc.replace(errorId, '').replace(/\s+/g, ' ').trim();
+        if (desc) field.setAttribute('aria-describedby', desc);
+        else field.removeAttribute('aria-describedby');
+    }
+
+    document.getElementById('migration-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var form = e.target;
+        var requiredFields = form.querySelectorAll('[required]');
+        var firstInvalid = null;
+        requiredFields.forEach(function(field) {
+            if (!field.value.trim()) {
+                field.classList.add('border-red-500/70');
+                field.setAttribute('aria-invalid', 'true');
+                showFieldError(field, 'This field is required');
+                if (!firstInvalid) firstInvalid = field;
+            } else {
+                field.classList.remove('border-red-500/70');
+                field.removeAttribute('aria-invalid');
+                clearFieldError(field);
+            }
+        });
+        if (firstInvalid) {
+            firstInvalid.focus();
+            showToast('Please fill in all required fields', 'error');
+            return;
+        }
+        var dtField = document.getElementById('downtime');
+        var dtVal = parseInt(dtField.value, 10);
+        if (dtField.value !== '' && (isNaN(dtVal) || dtVal < 1 || dtVal > 60000)) {
+            dtField.classList.add('border-red-500/70');
+            dtField.setAttribute('aria-invalid', 'true');
+            showFieldError(dtField, 'Must be between 1 and 60,000 ms');
+            dtField.focus();
+            showToast('Downtime must be between 1 and 60,000 ms', 'error');
+            return;
+        } else {
+            dtField.classList.remove('border-red-500/70');
+            dtField.removeAttribute('aria-invalid');
+            clearFieldError(dtField);
+        }
+        var btn = document.getElementById('btn-migrate');
+        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        apiCall('/api/migrate', { method: 'POST', body: new URLSearchParams(new FormData(form)) })
+            .then(function(r) { if (r) showToast('Migration started', 'success'); else btn.disabled = false; })
+            .finally(function() { btn.textContent = '\u25B6 Start Migration'; });
+    });
+
+    var loadgenType = '';
+    var loadgenTarget = '';
+
+    document.getElementById('btn-ping').addEventListener('click', function() {
+        var vmIpField = document.getElementById('vm_ip');
+        var vmIp = vmIpField.value.trim();
+        if (!vmIp) {
+            vmIpField.classList.add('border-red-500/70');
+            vmIpField.setAttribute('aria-invalid', 'true');
+            showFieldError(vmIpField, 'This field is required');
+            showToast('VM IP is required to start ping', 'error');
+            vmIpField.focus();
+            return;
+        }
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        loadgenType = 'ICMP';
+        loadgenTarget = vmIp;
+        apiCall('/api/ping?target=' + encodeURIComponent(vmIp))
+            .then(function(r) { if (r) showToast('Ping load generator started', 'success'); else btn.disabled = false; })
+            .finally(function() { btn.textContent = '\u25C9 ICMP Ping'; });
+    });
+    document.getElementById('btn-http').addEventListener('click', function() {
+        var vmIpField = document.getElementById('vm_ip');
+        var vmIp = vmIpField.value.trim();
+        if (!vmIp) {
+            vmIpField.classList.add('border-red-500/70');
+            vmIpField.setAttribute('aria-invalid', 'true');
+            showFieldError(vmIpField, 'This field is required');
+            showToast('VM IP is required to start HTTP load', 'error');
+            vmIpField.focus();
+            return;
+        }
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        loadgenType = 'HTTP';
+        loadgenTarget = vmIp;
+        apiCall('/api/httpgen?target=' + encodeURIComponent(vmIp))
+            .then(function(r) { if (r) showToast('HTTP load generator started', 'success'); else btn.disabled = false; })
+            .finally(function() { btn.textContent = '\u21C5 HTTP Load'; });
+    });
+    document.getElementById('btn-stop-load').addEventListener('click', function() {
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Stopping\u2026';
+        var endpoint = loadgenType === 'HTTP' ? '/api/httpgen/stop' : '/api/ping/stop';
+        apiCall(endpoint).then(function(r) { if (r) showToast('Load generator stopped', 'success'); })
+            .finally(function() { btn.textContent = '\u25A0 Stop Load'; });
+    });
+    var _inertEls = ['header', '#toast-container', '#connection-banner', '#main-content', '#log-sr-announce'];
+    function openModal() {
+        var modal = document.getElementById('confirm-modal');
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+        _inertEls.forEach(function(s) { var el = document.querySelector(s); if (el) el.setAttribute('inert', ''); });
+        document.getElementById('confirm-cancel').focus();
+    }
+    function closeModal(focusTarget) {
+        document.getElementById('confirm-modal').classList.add('hidden');
+        document.body.style.overflow = '';
+        _inertEls.forEach(function(s) { var el = document.querySelector(s); if (el) el.removeAttribute('inert'); });
+        (focusTarget || document.getElementById('btn-stop-mig')).focus();
+    }
+    document.getElementById('btn-stop-mig').addEventListener('click', function() {
+        openModal();
+    });
+    document.getElementById('confirm-ok').addEventListener('click', function() {
+        closeModal(document.getElementById('btn-migrate'));
+        var btn = document.getElementById('btn-stop-mig');
+        btn.disabled = true; btn.textContent = 'Stopping\u2026';
+        apiCall('/api/migrate/stop').then(function(r) { if (r) showToast('Migration stop requested', 'success'); })
+            .finally(function() { btn.textContent = '\u25A0 Stop'; });
+    });
+    document.getElementById('confirm-cancel').addEventListener('click', function() {
+        closeModal();
+    });
+    document.getElementById('confirm-modal').addEventListener('click', function(e) {
+        if (e.target === this) { closeModal(); }
+    });
+    document.addEventListener('keydown', function(e) {
+        var modal = document.getElementById('confirm-modal');
+        if (modal.classList.contains('hidden')) return;
+        if (e.key === 'Escape') { closeModal(); }
+        if (e.key === 'Tab') {
+            var btns = modal.querySelectorAll('button');
+            if (e.shiftKey && document.activeElement === btns[0]) { e.preventDefault(); btns[btns.length - 1].focus(); }
+            else if (!e.shiftKey && document.activeElement === btns[btns.length - 1]) { e.preventDefault(); btns[0].focus(); }
+        }
+    });
+
+    var logsDiv = document.getElementById('logs');
+    var lastLogCount = 0;
+
+    document.getElementById('btn-clear-logs').addEventListener('click', function() {
+        while (logsDiv.firstChild) logsDiv.removeChild(logsDiv.firstChild);
+        var cleared = document.createElement('div');
+        cleared.className = 'text-slate-400';
+        cleared.textContent = 'Cleared.';
+        logsDiv.appendChild(cleared);
+        lastLogCount = 0;
+    });
+
+    function classifyLog(line) {
+        var l = line.toLowerCase();
+        if (l.indexOf('error') !== -1 || l.indexOf('failed') !== -1 || l.indexOf('fatal') !== -1) return 'text-red-400';
+        if (l.indexOf('warning') !== -1 || l.indexOf('warn') !== -1) return 'text-amber-400';
+        if (l.indexOf('success') !== -1 || l.indexOf('complete') !== -1 || l.indexOf('finished successfully') !== -1) return 'text-emerald-400';
+        if (l.indexOf('>>>') !== -1) return 'text-hull-400 font-semibold';
+        return 'text-slate-400';
+    }
+
+    var wasMigrating = false;
+
+    document.querySelectorAll('#migration-form [required]').forEach(function(field) {
+        field.addEventListener('input', function() {
+            if (field.value.trim()) {
+                field.classList.remove('border-red-500/70');
+                field.removeAttribute('aria-invalid');
+                clearFieldError(field);
+            }
+        });
+    });
+    document.getElementById('downtime').addEventListener('input', function() {
+        this.classList.remove('border-red-500/70');
+        this.removeAttribute('aria-invalid');
+        clearFieldError(this);
+    });
+
+    var fetchInFlight = false;
+    var fetchFailures = 0;
+    function beforeUnloadHandler(e) { e.preventDefault(); e.returnValue = ''; }
+
+    setInterval(async function() {
+        if (document.hidden || fetchInFlight) return;
+        fetchInFlight = true;
+        try {
+            var fetchOpts = {};
+            if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+                fetchOpts.signal = AbortSignal.timeout(5000);
+            }
+            var res = await fetch('/api/status', fetchOpts);
+            var data = await res.json();
+            var wasDisconnected = fetchFailures >= 3;
+            fetchFailures = 0;
+            document.getElementById('connection-banner').classList.add('hidden');
+            if (wasDisconnected) showToast('Connection restored', 'success');
+            var badge = document.getElementById('status-badge');
+            var verEl = document.getElementById('version-text');
+            if (data.version && verEl.textContent !== data.version) verEl.textContent = 'v' + data.version;
+            var indicator = document.getElementById('loadgen-indicator');
+            var hasPings = data.pings && data.pings.length > 0;
+
+            if (data.migrating) {
+                var elapsed = data.migration_elapsed_seconds || 0;
+                var mins = Math.floor(elapsed / 60);
+                var secs = elapsed % 60;
+                var timeStr = mins > 0 ? mins + 'm ' + secs + 's' : secs + 's';
+                badge.textContent = 'Migrating \u2014 ' + timeStr;
+                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-hull-600/30 text-hull-300 animate-pulse transition-all duration-300';
+            } else if (data.loadgen_running) {
+                badge.textContent = 'Loadgen Active';
+                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-emerald-600/30 text-emerald-300 animate-pulse transition-all duration-300';
+            } else {
+                badge.textContent = 'Idle';
+                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300';
+            }
+
+            if (data.migrating) {
+                document.title = '\u25B6 Migrating \u2014 Katamaran';
+                window.addEventListener('beforeunload', beforeUnloadHandler);
+            } else {
+                window.removeEventListener('beforeunload', beforeUnloadHandler);
+                document.title = data.loadgen_running ? '\u25CF Loadgen \u2014 Katamaran' : 'Katamaran Dashboard';
+            }
+
+            // Button state management
+            document.getElementById('btn-migrate').disabled = data.migrating;
+            document.getElementById('btn-stop-mig').disabled = !data.migrating;
+            document.getElementById('btn-ping').disabled = data.loadgen_running;
+            document.getElementById('btn-http').disabled = data.loadgen_running;
+            document.getElementById('btn-stop-load').disabled = !data.loadgen_running;
+            document.querySelectorAll('#migration-form input').forEach(function(f) { f.disabled = data.migrating; });
+
+            // Restore loadgen type from server state and indicate active button.
+            if (data.loadgen_running && data.loadgen_type) {
+                loadgenType = data.loadgen_type === 'ping' ? 'ICMP' : 'HTTP';
+                document.getElementById('btn-ping').textContent = data.loadgen_type === 'ping' ? '\u25C9 ICMP Ping (active)' : '\u25C9 ICMP Ping';
+                document.getElementById('btn-http').textContent = data.loadgen_type === 'http' ? '\u21C5 HTTP Load (active)' : '\u21C5 HTTP Load';
+                document.getElementById('btn-ping').setAttribute('aria-pressed', data.loadgen_type === 'ping' ? 'true' : 'false');
+                document.getElementById('btn-http').setAttribute('aria-pressed', data.loadgen_type === 'http' ? 'true' : 'false');
+            } else if (!data.loadgen_running) {
+                document.getElementById('btn-ping').textContent = '\u25C9 ICMP Ping';
+                document.getElementById('btn-http').textContent = '\u21C5 HTTP Load';
+                document.getElementById('btn-ping').removeAttribute('aria-pressed');
+                document.getElementById('btn-http').removeAttribute('aria-pressed');
+            }
+
+            // Notify when migration completes
+            if (wasMigrating && !data.migrating) {
+                var lastLog = data.logs && data.logs.length > 0 ? data.logs[data.logs.length - 1] : '';
+                if (lastLog.indexOf('Finished successfully') !== -1) {
+                    showToast('Migration completed successfully', 'success');
+                } else {
+                    showToast('Migration finished with errors', 'error');
+                }
+            }
+            wasMigrating = data.migrating;
+
+            var resultEl = document.getElementById('last-result');
+            var resultDetail = document.getElementById('last-result-detail');
+            if (!data.migrating && data.last_migration_result) {
+                if (data.last_migration_result === 'success') {
+                    resultEl.textContent = '\u2713 Last: completed';
+                    resultEl.className = 'text-xs text-emerald-400/80';
+                    resultEl.removeAttribute('title');
+                    resultDetail.textContent = '';
+                } else {
+                    resultEl.textContent = '\u2717 Last: failed';
+                    resultEl.className = 'text-xs text-red-400/80';
+                    if (data.last_migration_error) {
+                        resultEl.title = data.last_migration_error;
+                        resultDetail.textContent = data.last_migration_error;
+                    } else {
+                        resultEl.removeAttribute('title');
+                        resultDetail.textContent = '';
+                    }
+                }
+            } else {
+                resultEl.textContent = '';
+                resultEl.className = 'text-xs';
+                resultEl.removeAttribute('title');
+                resultDetail.textContent = '';
+            }
+
+            if (data.logs && data.logs.length > lastLogCount) {
+                var newCount = data.logs.length - lastLogCount;
+                if (lastLogCount === 0) {
+                    while (logsDiv.firstChild) logsDiv.removeChild(logsDiv.firstChild);
+                }
+                var atBottom = logsDiv.scrollHeight - logsDiv.scrollTop - logsDiv.clientHeight < 40;
+                data.logs.slice(lastLogCount).forEach(function(l) {
+                    var div = document.createElement('div');
+                    div.textContent = l;
+                    div.className = 'log-line ' + classifyLog(l);
+                    logsDiv.appendChild(div);
+                });
+                if (atBottom) logsDiv.scrollTop = logsDiv.scrollHeight;
+                lastLogCount = data.logs.length;
+                var srAnnounce = document.getElementById('log-sr-announce');
+                if (srAnnounce) srAnnounce.textContent = newCount + ' new log line' + (newCount !== 1 ? 's' : '');
+            }
+            if (!data.logs || data.logs.length === 0) lastLogCount = 0;
+
+            var chartEmpty = document.getElementById('chart-empty');
+            var sentLabel = document.getElementById('stat-sent-label');
+            var lostLabel = document.getElementById('stat-lost-label');
+            if (loadgenType === 'HTTP') {
+                sentLabel.textContent = 'Requests Sent';
+                lostLabel.textContent = 'Failed';
+            } else {
+                sentLabel.textContent = 'Packets Sent';
+                lostLabel.textContent = 'Dropped';
+            }
+
+            if (hasPings) {
+                chartEmpty.style.display = 'none';
+                var pings = data.pings;
+                var latencies = pings.filter(function(p) { return !p.error; }).map(function(p) { return p.latency; });
+                var errors = pings.filter(function(p) { return p.error; }).length;
+
+                document.getElementById('stat-sent').textContent = pings.length;
+                var lostEl = document.getElementById('stat-lost');
+                var lostDisplay = lostEl.querySelector('[aria-hidden]');
+                var lostSr = document.getElementById('stat-lost-sr');
+                lostDisplay.textContent = errors;
+                lostSr.textContent = errors + (loadgenType === 'HTTP' ? ' failed request' : ' dropped packet') + (errors !== 1 ? 's' : '');
+                if (errors > 0) {
+                    lostDisplay.textContent = '\u26A0 ' + errors;
+                    lostEl.className = 'text-2xl font-bold text-red-400 mt-1';
+                } else {
+                    lostDisplay.textContent = '\u2713 ' + errors;
+                    lostEl.className = 'text-2xl font-bold text-emerald-400 mt-1';
+                }
+
+                var chartBox = document.getElementById('latencyChart').parentElement;
+                if (latencies.length > 0) {
+                    var avg = latencies.reduce(function(a,b){return a+b;},0) / latencies.length;
+                    var maxVal = Math.max.apply(null, latencies);
+                    document.getElementById('stat-avg').textContent = avg.toFixed(2) + ' ms';
+                    document.getElementById('stat-max').textContent = maxVal.toFixed(2) + ' ms';
+                    chartBox.setAttribute('aria-label', 'Latency chart: ' + pings.length + ' samples, avg ' + avg.toFixed(2) + 'ms, max ' + maxVal.toFixed(2) + 'ms, ' + errors + ' dropped');
+                } else {
+                    chartBox.setAttribute('aria-label', 'Latency chart: ' + pings.length + ' samples, all timed out');
+                }
+
+                var typePrefix = loadgenType ? loadgenType + ': ' : '';
+                var targetSuffix = loadgenTarget ? ' \u2192 ' + loadgenTarget : '';
+                indicator.textContent = data.loadgen_running ? typePrefix + pings.length + ' samples' + targetSuffix : typePrefix + pings.length + ' samples (stopped)';
+                if (latencyChart) {
+                    latencyChart.data.labels = pings.map(function(p){var d = new Date(p.time); return isNaN(d) ? p.time : d.toLocaleTimeString();});
+                    latencyChart.data.datasets[0].data = pings.map(function(p){return p.error ? null : p.latency;});
+
+                    var maxLat = latencies.length > 0 ? Math.max.apply(null, latencies) * 1.5 : 10;
+                    var errPts = pings.map(function(p){return p.error ? maxLat : null;});
+                    if (latencyChart.data.datasets.length === 1) {
+                        latencyChart.data.datasets.push({
+                            label: 'Error',
+                            data: errPts,
+                            borderColor: 'transparent',
+                            backgroundColor: '#ef444480',
+                            pointRadius: pings.map(function(p){return p.error ? 5 : 0;}),
+                            pointBackgroundColor: '#ef4444',
+                            pointBorderColor: '#ef444440',
+                            pointBorderWidth: 6,
+                            pointHoverRadius: 7,
+                            pointHoverBackgroundColor: '#ef4444',
+                            showLine: false,
+                            fill: false
+                        });
+                    } else {
+                        latencyChart.data.datasets[1].data = errPts;
+                        latencyChart.data.datasets[1].pointRadius = pings.map(function(p){return p.error ? 5 : 0;});
+                    }
+                    latencyChart.update();
+                }
+            } else {
+                chartEmpty.style.display = '';
+                indicator.textContent = '';
+                document.getElementById('latencyChart').parentElement.setAttribute('aria-label', 'Latency chart showing ping response times over time');
+                document.getElementById('stat-sent').textContent = '0';
+                var lostEl = document.getElementById('stat-lost');
+                lostEl.querySelector('[aria-hidden]').textContent = '0';
+                document.getElementById('stat-lost-sr').textContent = loadgenType === 'HTTP' ? '0 failed requests' : '0 dropped packets';
+                lostEl.className = 'text-2xl font-bold text-emerald-400 mt-1';
+                document.getElementById('stat-avg').textContent = '\u2014';
+                document.getElementById('stat-max').textContent = '\u2014';
+            }
+        } catch (err) {
+            fetchFailures++;
+            if (fetchFailures >= 3) {
+                document.getElementById('connection-banner').classList.remove('hidden');
+            }
+            console.error('Status fetch error', err);
+        } finally {
+            fetchInFlight = false;
+        }
+    }, 1000);
+    </script>
+</body>
+</html>

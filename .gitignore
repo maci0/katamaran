@@ -1,6 +1,6 @@
 # Build output
 bin/
-dashboard/main
+cmd/dashboard/main
 test_signal
 *.tar
 
@@ -25,3 +25,18 @@ scripts/kata_test_rsa
 scripts/kata_test_rsa.pub
 
 .minikube-build/
+.claude/
+.opencode/
+.sisyphus/
+docs/superpowers/
+
+# Sweep results
+sweep-results/
+
+# Environment and log files
+.env*
+*.log
+
+# Root-level build artifacts
+/katamaran
+/dashboard
