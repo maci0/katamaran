@@ -31,6 +31,31 @@ roleRef:
   name: katamaran-dashboard-role
   apiGroup: rbac.authorization.k8s.io
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: katamaran-dashboard-cluster
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: katamaran-dashboard-cluster-binding
+subjects:
+- kind: ServiceAccount
+  name: katamaran-dashboard
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: katamaran-dashboard-cluster
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
