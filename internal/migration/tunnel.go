@@ -109,7 +109,6 @@ func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), rollbackTunnel(ctx, tunnelName))
 	}
 
-	// Add host route: "ip route replace" for IPv4, "ip -6 route replace" for IPv6.
 	// Use "replace" instead of "add" for idempotency — the VM IP may already
 	// have a route via the local pod network on the source node.
 	if vm.Is6() {

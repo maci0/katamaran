@@ -15,7 +15,7 @@
 
 All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.24+.
 
-> **Note:** E2E tests now build a container image and deploy the katamaran binary to nodes via a DaemonSet. A pre-built binary is no longer required for E2E tests; only `podman` and the Go source are needed.
+> **Note:** E2E tests build the katamaran container image from source and deploy the binary to nodes via a DaemonSet. A pre-built local `bin/katamaran` is not required for E2E tests.
 
 ---
 
@@ -197,8 +197,8 @@ Creates a two-node minikube cluster, installs Kata Containers on both nodes, and
 The script:
 1. Creates a 2-node minikube cluster (KVM2 driver, Calico CNI)
 2. Installs Kata Containers via Helm on both nodes
-3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
-4. Applies E2E-specific Kata timeout settings on both nodes
+3. Applies E2E-specific Kata QMP and timeout settings on both nodes
+4. Builds the container image and deploys katamaran via DaemonSet (binary install and kernel modules)
 5. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
 6. Removes tc mirred redirect on source pod eth0
 7. Deploys a lightweight non-Kata helper pod on Node 2 for network namespace
@@ -659,8 +659,8 @@ The IPIP tunnel and sch_plug qdisc cover the gap regardless of CNI, but OVN-Kube
 2. Clones OVN-Kubernetes and deploys it via Helm (OVN DB, ovnkube-master, ovnkube-node)
 3. Waits for OVN-K pods and CoreDNS to be ready (proves CNI is functional)
 4. Installs Kata Containers via Helm on both nodes
-5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
-6. Applies E2E-specific Kata timeout settings on both nodes
+5. Applies E2E-specific Kata QMP and timeout settings on both nodes
+6. Builds the container image and deploys katamaran via DaemonSet (binary install and kernel modules)
 7. Deploys a source pod on Node 1 with `runtimeClassName: kata-qemu`
 8. Removes tc mirred redirect on source pod eth0
 9. Deploys a lightweight helper pod on Node 2 and replays source QEMU command line
@@ -722,8 +722,8 @@ Cilium's eBPF datapath reconverges after the destination endpoint is registered.
 2. Installs Cilium via Helm (`oci://quay.io/cilium/charts/cilium`) with `ipam.mode=kubernetes`
 3. Waits for the `cilium` DaemonSet and all nodes to be Ready
 4. Installs Kata Containers via Helm on both nodes
-5. Deploys katamaran via DaemonSet (binary + QMP config + kernel modules)
-6. Deploys source pod, extracts QEMU state, installs wrapper, deploys destination pod
+5. Applies E2E-specific Kata QMP and timeout settings, then deploys katamaran via DaemonSet
+6. Deploys source pod and replays its QEMU command line in a destination helper pod
 7. Starts continuous ping and runs migration
 8. Reports zero-drop proof
 
@@ -753,8 +753,8 @@ Flannel's VXLAN FDB entries are updated via GARP after migration. The IPIP tunne
 2. Installs Flannel via `kubectl apply` from the upstream release manifest
 3. Waits for the `kube-flannel-ds` DaemonSet in `kube-flannel` namespace and all nodes to be Ready
 4. Installs Kata Containers via Helm on both nodes
-5. Deploys katamaran via DaemonSet (binary + QMP config + kernel modules)
-6. Deploys source pod, extracts QEMU state, installs wrapper, deploys destination pod
+5. Applies E2E-specific Kata QMP and timeout settings, then deploys katamaran via DaemonSet
+6. Deploys source pod and replays its QEMU command line in a destination helper pod
 7. Starts continuous ping and runs migration
 8. Reports zero-drop proof
 
@@ -794,8 +794,8 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
 1. Creates a 2-node Kind cluster with Podman provider and `/dev/kvm` mounted
 2. Verifies `/dev/kvm` is accessible inside both node containers
 3. Installs Kata Containers via Helm (qemu shim only)
-4. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
-5. Applies E2E-specific Kata timeout settings on both nodes
+4. Applies E2E-specific Kata QMP and timeout settings on both nodes
+5. Builds the container image and deploys katamaran via DaemonSet (binary install and kernel modules)
 6. Deploys source pod on control-plane, removes tc mirred redirect
 7. Deploys helper pod on worker node and replays source QEMU command line
 8. Runs migration via `deploy/migrate.sh`
@@ -863,9 +863,9 @@ Validates katamaran's `--shared-storage` mode with a real NFS server running in-
 
 ### Why Test with NFS?
 
-All other E2E scripts use `--shared-storage` as a convenience flag to skip the storage phase. This test actually deploys an NFS server pod, creates a PV/PVC backed by it, and mounts the NFS volume into both source and destination Kata pods. It proves:
+The default `--storage none` E2E mode uses `--shared-storage` only to skip the storage phase. The `--storage nfs` mode deploys an NFS server pod, mounts that export on both nodes, and hotplugs the same shared disk image into the source and destination QEMUs. It proves:
 
-- The NFS PVC is accessible from both nodes simultaneously (`ReadWriteMany`)
+- The NFS export and shared disk image are accessible from both nodes
 - Data written before migration survives the cutover
 - katamaran correctly skips the NBD drive-mirror phase
 - The full RAM + network cutover pipeline works with real shared storage
@@ -886,15 +886,15 @@ All other E2E scripts use `--shared-storage` as a convenience flag to skip the s
 ### What the Script Does
 
 1. Creates a 2-node minikube cluster (kvm2, Calico CNI)
-2. Deploys an NFS server pod on Node 1 with `itsthenetwork/nfs-server-alpine`
-3. Creates a PersistentVolume and PersistentVolumeClaim backed by the NFS server
-4. Installs Kata Containers via Helm (qemu shim only)
-5. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
-6. Applies E2E-specific Kata timeout settings and loads NFS kernel modules on both nodes
-7. Deploys source Kata pod on Node 1
-8. Mounts NFS on both nodes, creates shared disk image on NFS
-9. Removes tc mirred redirect on source pod eth0
-10. Deploys helper pod on Node 2 and replays source QEMU command line
+2. Installs Kata Containers and applies the E2E Kata configuration overrides
+3. Builds the container image and deploys katamaran via DaemonSet
+4. Deploys an NFS server pod on Node 1
+5. Loads NFS kernel modules, mounts the NFS export on both nodes, and creates a shared raw disk image
+6. Deploys source Kata pod on Node 1
+7. Hotplugs the shared NFS-backed disk image into the source QEMU
+8. Removes tc mirred redirect on source pod eth0
+9. Deploys helper pod on Node 2 and replays source QEMU command line
+10. Hotplugs the same shared disk image into the destination QEMU
 11. Runs katamaran migration with `--shared-storage` (skips NBD)
 12. Verifies zero-drop proof via `--ping-proof` log pattern checks
 13. Reports migration result
@@ -967,8 +967,8 @@ sequenceDiagram
 
 1. Creates a 2-node Kind cluster (Podman provider, /dev/kvm mount)
 2. Installs Kata Containers via Helm
-3. Builds the container image and deploys katamaran via DaemonSet (binary install, QMP extra-monitor socket, kernel modules)
-4. Applies E2E-specific Kata timeout settings on both nodes
+3. Applies E2E-specific Kata QMP and timeout settings on both nodes
+4. Builds the container image and deploys katamaran via DaemonSet (binary install and kernel modules)
 5. Deploys source pod, removes tc mirred redirect
 6. Deploys helper pod on destination node and replays source QEMU command line
 7. Executes migration via `deploy/migrate.sh` (K8s Jobs)

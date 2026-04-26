@@ -39,6 +39,26 @@ var (
 //   - Cancels the drive-mirror block job (disarms the deferred cleanup)
 //   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	cfg.DestIP = cfg.DestIP.Unmap()
+	cfg.VMIP = cfg.VMIP.Unmap()
+	if !cfg.DestIP.IsValid() {
+		return fmt.Errorf("invalid destination address: %s", cfg.DestIP)
+	}
+	if !cfg.VMIP.IsValid() {
+		return fmt.Errorf("invalid VM address: %s", cfg.VMIP)
+	}
+	if cfg.DestIP.Is4() != cfg.VMIP.Is4() {
+		return fmt.Errorf("destination (%s) and VM (%s) address families must match", cfg.DestIP, cfg.VMIP)
+	}
+	if cfg.TunnelMode == "" {
+		cfg.TunnelMode = TunnelModeIPIP
+	}
+	if cfg.TunnelMode != TunnelModeIPIP && cfg.TunnelMode != TunnelModeGRE && cfg.TunnelMode != TunnelModeNone {
+		return fmt.Errorf("invalid tunnel mode: %q", cfg.TunnelMode)
+	}
+	if cfg.MultifdChannels < 0 {
+		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
+	}
 	if !cfg.SharedStorage {
 		if err := validateDriveID(cfg.DriveID); err != nil {
 			return fmt.Errorf("validating drive ID: %w", err)
@@ -131,7 +151,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	}
 
 	if cfg.AutoDowntime {
-		rtt, err := measureRTT(cfg.DestIP)
+		rtt, err := measureRTTFunc(cfg.DestIP)
 		if err != nil {
 			slog.Warn("Failed to measure RTT for auto-downtime, using fallback", "error", err, "fallback_ms", downtimeLimitMS)
 		} else {
@@ -301,9 +321,12 @@ stopLoop:
 	return nil
 }
 
+var measureRTTFunc = measureRTT
+
 // measureRTT estimates network round-trip time to the destination by performing
 // TCP handshake timing against the RAM migration port, used for auto-downtime
-// calculation. Returns the best (lowest) of 3 samples.
+// calculation. Returns the best (lowest) of three successful samples; any
+// failed sample aborts the measurement so callers can fall back explicitly.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	const samples = 3
 	addr := net.JoinHostPort(destIP.String(), ramMigrationPort)

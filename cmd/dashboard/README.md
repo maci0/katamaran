@@ -22,9 +22,9 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/api/migrate` | POST | Start migration (form fields: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`) |
 | `/api/migrate/stop` | POST | Cancel running migration |
 | `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}` |
-| `/api/ping?target=<ip>` | POST | Start continuous ping (5/sec) to target |
+| `/api/ping?target=<host-or-ip>` | POST | Start continuous ping (5/sec) to target |
 | `/api/ping/stop` | POST | Stop active ping/loadgen |
-| `/api/httpgen?target=<host:port>` | POST | Start HTTP load generator (5 req/sec) to target |
+| `/api/httpgen?target=<host-or-ip[:port]>` | POST | Start HTTP load generator (5 req/sec) to target |
 | `/api/httpgen/stop` | POST | Stop active ping/loadgen |
 | `/debug/pprof/` | GET | Runtime profiling (requires `--enable-debug`) |
 | `/debug/vars` | GET | Runtime metrics via expvar (requires `--enable-debug`) |
@@ -47,7 +47,8 @@ podman build --platform linux/arm64 -t localhost/katamaran-dashboard:dev -f Dock
 
 ```bash
 podman run -d --rm -p 8080:8080 \
-  -v $HOME/.kube/config:/root/.kube/config:ro \
+  -e KUBECONFIG=/home/dashboard/.kube/config \
+  -v $HOME/.kube/config:/home/dashboard/.kube/config:ro \
   --network host \
   localhost/katamaran-dashboard:dev
 ```
@@ -78,7 +79,7 @@ Access the dashboard via `kubectl port-forward -n kube-system svc/katamaran-dash
 └──────────────┬──────────────────────────────┘
                │ HTTP
 ┌──────────────▼──────────────────────────────┐
-│  Go HTTP server (main.go, port 8080)        │
+│  Go HTTP server (internal/dashboard)        │
 │  - /api/migrate → exec deploy/migrate.sh    │
 │  - /api/ping    → exec ping subprocess      │
 │  - /api/httpgen → HTTP GET loop             │

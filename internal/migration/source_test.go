@@ -68,6 +68,40 @@ func TestRunSource_Failures(t *testing.T) {
 	}
 }
 
+func TestRunSource_ConfigValidation(t *testing.T) {
+	t.Parallel()
+	base := SourceConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         "drive-virtio-disk0",
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	}
+	tests := []struct {
+		name string
+		cfg  SourceConfig
+		want string
+	}{
+		{"InvalidDestIP", func() SourceConfig { c := base; c.DestIP = netip.Addr{}; return c }(), "invalid destination address"},
+		{"InvalidVMIP", func() SourceConfig { c := base; c.VMIP = netip.Addr{}; return c }(), "invalid VM address"},
+		{"FamilyMismatch", func() SourceConfig { c := base; c.VMIP = netip.MustParseAddr("fd00::1"); return c }(), "address families must match"},
+		{"InvalidTunnelMode", func() SourceConfig { c := base; c.TunnelMode = TunnelMode("vxlan"); return c }(), "invalid tunnel mode"},
+		{"NegativeMultifd", func() SourceConfig { c := base; c.MultifdChannels = -1; return c }(), "multifd channels must be non-negative"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := RunSource(context.Background(), tt.cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("RunSource error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // QMP test helpers (StartFakeQMP, QMPHandshake, ConsumeCommand) are in internal/qmptest.
 
 func TestWaitForStorageSync_JobReady(t *testing.T) {
@@ -448,6 +482,86 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunSource_NonShared_CommandArguments(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "query-block-jobs":
+			return `{"return":[{"device":"mirror-drive-virtio-disk0","len":1000,"offset":1000,"ready":true,"status":"running","type":"mirror"}]}`
+		case "migrate":
+			return `{"return":{}}` + "\n" + `{"event":"STOP"}`
+		case "query-migrate":
+			return `{"return":{"status":"completed","downtime":10,"total-time":800,"setup-time":30}}`
+		default:
+			return `{"return":{}}`
+		}
+	})
+
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket:       sock,
+		DestIP:          testDestIP,
+		VMIP:            testVMIP,
+		DriveID:         "drive-virtio-disk0",
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+		MultifdChannels: 4,
+	})
+	if err != nil {
+		t.Fatalf("RunSource non-shared command arguments: %v", err)
+	}
+
+	commands := rec.Commands()
+	assertRecordedSubsequence(t, commands, []string{
+		"drive-mirror",
+		"query-block-jobs",
+		"migrate-set-capabilities",
+		"migrate-set-parameters",
+		"migrate",
+		"query-migrate",
+		"query-migrate",
+		"block-job-cancel",
+	})
+
+	var mirror qmp.DriveMirrorArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "drive-mirror"), &mirror)
+	if mirror.Device != "drive-virtio-disk0" {
+		t.Fatalf("drive-mirror device = %q, want drive-virtio-disk0", mirror.Device)
+	}
+	if mirror.Target != "nbd:10.0.0.1:10809:exportname=drive-virtio-disk0" {
+		t.Fatalf("drive-mirror target = %q", mirror.Target)
+	}
+	if mirror.Sync != "full" || mirror.Mode != "existing" || mirror.JobID != "mirror-drive-virtio-disk0" {
+		t.Fatalf("unexpected drive-mirror args: %+v", mirror)
+	}
+
+	var caps qmp.MigrateSetCapabilitiesArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-set-capabilities"), &caps)
+	if len(caps.Capabilities) != 2 ||
+		caps.Capabilities[0] != (qmp.MigrationCapability{Capability: "auto-converge", State: true}) ||
+		caps.Capabilities[1] != (qmp.MigrationCapability{Capability: "multifd", State: true}) {
+		t.Fatalf("unexpected migration capabilities: %+v", caps.Capabilities)
+	}
+
+	var params qmp.MigrateSetParametersArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-set-parameters"), &params)
+	if params.DowntimeLimit != 25 || params.MaxBandwidth != maxBandwidth || params.MultifdChannels != 4 {
+		t.Fatalf("unexpected migration parameters: %+v", params)
+	}
+
+	var migrate qmp.MigrateArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate"), &migrate)
+	if migrate.URI != "tcp:10.0.0.1:4444" {
+		t.Fatalf("migrate URI = %q, want tcp:10.0.0.1:4444", migrate.URI)
+	}
+
+	var cancel qmp.BlockJobCancelArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "block-job-cancel"), &cancel)
+	if cancel.Device != "mirror-drive-virtio-disk0" || !cancel.Force {
+		t.Fatalf("unexpected block-job-cancel args: %+v", cancel)
+	}
+}
+
 func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 	t.Parallel()
 
@@ -643,13 +757,35 @@ func TestMigrationTerminalError(t *testing.T) {
 }
 
 func TestMeasureRTT(t *testing.T) {
-	t.Parallel()
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", ramMigrationPort))
+	if err != nil {
+		t.Skipf("cannot bind RTT test listener on %s: %v", ramMigrationPort, err)
+	}
+	defer l.Close()
 
-	// measureRTT hardcodes ramMigrationPort, so we can only test the error
-	// path with an unreachable address (RFC 5737 TEST-NET).
-	_, err := measureRTT(netip.MustParseAddr("192.0.2.1"))
-	if err == nil {
-		t.Fatal("expected error for unreachable address")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 3; i++ {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	rtt, err := measureRTT(netip.MustParseAddr("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("measureRTT: %v", err)
+	}
+	if rtt <= 0 {
+		t.Fatalf("measureRTT returned non-positive duration: %v", rtt)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("measureRTT did not complete all RTT samples")
 	}
 }
 
@@ -820,41 +956,39 @@ func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 }
 
 func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
-	t.Parallel()
+	origMeasureRTT := measureRTTFunc
+	measureRTTFunc = func(netip.Addr) (time.Duration, error) {
+		return 0, errors.New("forced RTT failure")
+	}
+	t.Cleanup(func() {
+		measureRTTFunc = origMeasureRTT
+	})
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
-				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "migrate":
+			return `{"return":{}}` + "\n" + `{"event":"STOP"}`
+		case "query-migrate":
+			return `{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}`
+		default:
+			return `{"return":{}}`
 		}
 	})
 
-	// Use TEST-NET address (RFC 5737) — guaranteed unreachable, so measureRTT
-	// fails and the code falls back to the provided DowntimeLimitMS.
-	unreachableIP := netip.MustParseAddr("192.0.2.1")
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: unreachableIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25, AutoDowntime: true,
 	})
 	if err != nil {
 		t.Fatalf("RunSource with auto-downtime fallback: %v", err)
+	}
+
+	// Verify the fallback path used the explicit DowntimeLimitMS rather than
+	// silently using 0 or some other value when measureRTT failed.
+	var params qmp.MigrateSetParametersArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, rec.Commands(), "migrate-set-parameters"), &params)
+	if params.DowntimeLimit != 25 {
+		t.Fatalf("auto-downtime fallback should use explicit DowntimeLimitMS=25, got %d", params.DowntimeLimit)
 	}
 }
 

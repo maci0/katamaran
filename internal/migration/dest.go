@@ -34,6 +34,9 @@ import (
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
 func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
+	if cfg.MultifdChannels < 0 {
+		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
+	}
 	if cfg.TapIface != "" {
 		if err := validateTapIface(cfg.TapIface); err != nil {
 			return fmt.Errorf("validating tap interface: %w", err)

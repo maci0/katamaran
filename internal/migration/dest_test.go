@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maci0/katamaran/internal/qmp"
 	"github.com/maci0/katamaran/internal/qmptest"
 )
 
@@ -49,6 +50,18 @@ func TestRunDestination_ContextCancelled(t *testing.T) {
 	err := RunDestination(ctx, DestConfig{QMPSocket: "/nonexistent/qmp.sock", DriveID: "drive-virtio-disk0"})
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+}
+
+func TestRunDestination_NegativeMultifd(t *testing.T) {
+	t.Parallel()
+	err := RunDestination(context.Background(), DestConfig{
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DriveID:         "drive-virtio-disk0",
+		MultifdChannels: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "multifd channels must be non-negative") {
+		t.Fatalf("RunDestination error = %v, want multifd validation error", err)
 	}
 }
 
@@ -390,5 +403,75 @@ func TestRunDestination_GARPFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GARP") {
 		t.Fatalf("expected 'GARP' in error, got: %v", err)
+	}
+}
+
+func TestRunDestination_NonShared_CommandArguments(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "nbd-server-add":
+			return `{"return":{}}` + "\n" + `{"event":"RESUME"}`
+		default:
+			return `{"return":{}}`
+		}
+	})
+
+	err := RunDestination(context.Background(), DestConfig{
+		QMPSocket:       sock,
+		DriveID:         "drive-virtio-disk0",
+		MultifdChannels: 4,
+	})
+	if err != nil {
+		t.Fatalf("RunDestination non-shared command arguments: %v", err)
+	}
+
+	commands := rec.Commands()
+	assertRecordedSubsequence(t, commands, []string{
+		"migrate-set-capabilities",
+		"migrate-set-parameters",
+		"migrate-incoming",
+		"nbd-server-stop",
+		"nbd-server-start",
+		"nbd-server-add",
+		"nbd-server-stop",
+		"announce-self",
+	})
+
+	var caps qmp.MigrateSetCapabilitiesArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-set-capabilities"), &caps)
+	if len(caps.Capabilities) != 1 || caps.Capabilities[0] != (qmp.MigrationCapability{Capability: "multifd", State: true}) {
+		t.Fatalf("unexpected destination capabilities: %+v", caps.Capabilities)
+	}
+
+	var params qmp.MigrateSetParametersArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-set-parameters"), &params)
+	if params.MultifdChannels != 4 {
+		t.Fatalf("destination multifd channels = %d, want 4", params.MultifdChannels)
+	}
+
+	var incoming qmp.MigrateArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-incoming"), &incoming)
+	if incoming.URI != "tcp:[::]:4444" {
+		t.Fatalf("migrate-incoming URI = %q, want tcp:[::]:4444", incoming.URI)
+	}
+
+	var start qmp.NBDServerStartArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "nbd-server-start"), &start)
+	if start.Addr.Type != "inet" || start.Addr.Data.Host != "::" || start.Addr.Data.Port != nbdPort {
+		t.Fatalf("unexpected nbd-server-start args: %+v", start)
+	}
+
+	var add qmp.NBDServerAddArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "nbd-server-add"), &add)
+	if add.Device != "drive-virtio-disk0" || !add.Writable {
+		t.Fatalf("unexpected nbd-server-add args: %+v", add)
+	}
+
+	var announce qmp.AnnounceSelfArgs
+	decodeRecordedArgs(t, findRecordedCommand(t, commands, "announce-self"), &announce)
+	if announce.Initial != garpInitialMS || announce.Max != garpMaxMS || announce.Rounds != garpRounds || announce.Step != garpStepMS {
+		t.Fatalf("unexpected announce-self args: %+v", announce)
 	}
 }

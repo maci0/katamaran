@@ -1,4 +1,4 @@
-package logutil
+package logging
 
 import (
 	"io"
@@ -43,6 +43,11 @@ func Test_parseLevel(t *testing.T) {
 }
 
 func TestSetupLogger(t *testing.T) {
+	// Successful SetupLogger calls mutate slog.Default. Save and restore so
+	// subsequent tests in this package see the original logger.
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
 	tests := []struct {
 		format  string
 		level   string

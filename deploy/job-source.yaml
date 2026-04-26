@@ -1,6 +1,6 @@
 # Source-side migration Job template.
 # Rendered via envsubst by deploy/migrate.sh.
-# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS
+# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,6 +46,9 @@ spec:
       - name: katamaran
         image: ${IMAGE}
         imagePullPolicy: IfNotPresent
+        env:
+        - name: KATAMARAN_MIGRATION_ID
+          value: "${KATAMARAN_MIGRATION_ID}"
         securityContext:
           privileged: true
         resources:

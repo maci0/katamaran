@@ -3,13 +3,14 @@
 #
 # --provider <name>  Cluster provider: 'minikube' (default) or 'kind'.
 # --cni <name>       CNI plugin: 'auto' (default), 'calico', 'cilium', 'flannel',
-#                    'ovn' (Kind only), or 'kindnet'.
+#                    'ovn', or 'kindnet'.
 # --storage <mode>   Storage mode: 'none' (default, skip NBD), 'local' (NBD drive-mirror),
 #                    or 'nfs' (NFS shared storage). 'local' exercises the full 3-phase
 #                    migration including storage mirroring. 'nfs' deploys an NFS server
 #                    pod and uses it as shared storage.
 # --kata-version <v> Kata Containers chart version (default: '3.24.0').
-# --method <name>    Orchestration method: 'job' (default) or 'direct'.
+# --method <name>    Orchestration method: 'job' (default). 'direct' is accepted
+#                    for compatibility but currently exits as not implemented.
 # --ping-proof       Verify zero-drop sch_plug buffering from migration logs.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
 # --teardown         Tear down the cluster and exit.

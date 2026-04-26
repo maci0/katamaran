@@ -121,7 +121,7 @@ kubectl get runtimeclass kata-qemu
 
 ### 4. Deploy katamaran on Both Nodes
 
-Build the container image and deploy via DaemonSet. This automatically installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on both nodes:
+Build the container image and deploy via DaemonSet. With the Kata 3.27 layout shown above, this installs the katamaran binary, enables the Kata QMP extra-monitor socket, and loads the required kernel modules (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on both nodes:
 
 ```bash
 make image
@@ -236,9 +236,9 @@ The destination QEMU starts an NBD server exporting the target block device. The
 
 Once storage is synchronized, the source starts standard QEMU RAM pre-copy migration (`migrate` QMP command) with `auto-converge` enabled. QEMU iteratively copies dirty RAM pages while the VM continues to run.
 
-To achieve true "zero downtime" perception, `katamaran` explicitly configures QEMU with a strict **25ms downtime limit** and uncaps the migration bandwidth to 10GB/s. This forces QEMU to keep iterating until the remaining dirty RAM can be transferred in under 25 milliseconds.
+To achieve true "zero downtime" perception, `katamaran` configures QEMU with a **25 ms default downtime limit** and uncaps the migration bandwidth to 10 GB/s. The downtime limit is configurable with `--downtime` or can be derived from RTT with `--auto-downtime`; QEMU keeps iterating until the remaining dirty RAM can be transferred within that budget.
 
-Once the remaining dirty RAM set is small enough to transfer within this 25ms budget, the VM pauses (emitting the `STOP` event). **At this very last bit, QEMU performs a final incremental copy** of the remaining dirty RAM pages and device state. Only after this final copy completes does the destination VM resume (emitting the `RESUME` event).
+Once the remaining dirty RAM set is small enough to transfer within the configured downtime budget, the VM pauses (emitting the `STOP` event). **At this very last bit, QEMU performs a final incremental copy** of the remaining dirty RAM pages and device state. Only after this final copy completes does the destination VM resume (emitting the `RESUME` event).
 
 ### Phase 3 — Zero-Drop Network Cutover (tc sch_plug + IP Tunnel)
 
@@ -289,15 +289,22 @@ cmd/
     main.go                     # CLI entry point — flag parsing and dispatch
     main_test.go                # CLI validation and flag behavior tests
   dashboard/
-    main.go                     # Dashboard web server (Go HTTP, zero third-party deps)
-    main_test.go                # Dashboard endpoint, middleware, and security tests
+    main.go                     # Dashboard CLI wrapper
     index.html                  # Dashboard frontend (dark theme, Chart.js)
-    loadgen.go                  # Ping and HTTP load generator handlers
-    middleware.go               # HTTP middleware (logging, recovery, CSRF, security headers)
-    migrate.go                  # Migration orchestration handler
-    validate.go                 # Input validation and SSRF prevention
     README.md                   # Dashboard usage guide
 internal/
+  dashboard/
+    server.go                   # Dashboard web server and route table
+    server_test.go              # Dashboard endpoint, middleware, and security tests
+    loadgen.go                  # Ping and HTTP load generator handlers
+    metrics.go                  # expvar counters and duration buckets
+    middleware.go               # HTTP middleware (logging, recovery, CSRF, security headers)
+    migrate.go                  # Migration orchestration handler
+    types.go                    # Dashboard state and API response types
+    validate.go                 # Input validation and SSRF prevention
+  logging/
+    logutil.go                  # Logging setup helpers (SetupLogger)
+    logutil_test.go             # Logging tests
   migration/
     config.go                   # Config types, constants, and helpers (validators, formatQEMUHost)
     config_test.go              # Config unit tests and FuzzFormatQEMUHost
@@ -305,6 +312,7 @@ internal/
     dest_test.go                # Destination unit tests
     exec.go                     # External command execution (runCmd, runCmdInNetns)
     exec_test.go                # Exec unit tests
+    qmp_recording_test.go       # QMP command recording helpers for migration tests
     source.go                   # Source-side migration logic and polling
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
@@ -318,12 +326,9 @@ internal/
     helpers.go                  # Shared test helpers for faking a QMP server
   buildinfo/
     buildinfo.go                # Build version variable (overridden via ldflags)
-  logutil/
-    logutil.go                  # Logging setup helpers (SetupLogger)
-    logutil_test.go             # Logging tests
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
-  daemonset.yaml                # DaemonSet for node setup (binary, QMP config, kernel modules)
+  daemonset.yaml                # DaemonSet for node setup (binary, kernel modules, QMP config when present)
   job-dest.yaml                 # Job template for destination-side migration
   job-source.yaml               # Job template for source-side migration
   migrate.sh                    # Orchestration wrapper for Job-based migration
@@ -522,7 +527,7 @@ For production live migration with minimal downtime and operational complexity:
 1. **Ceph RBD** eliminates the storage mirroring phase entirely. Migration becomes RAM-only, completing in seconds instead of minutes.
 2. **OVN-Kubernetes or Cilium** provide the fastest network convergence. OVN's centralized southbound DB updates port bindings atomically. Cilium's eBPF datapath reconverges without waiting for BGP propagation.
 3. **Cluster-wide IPAM** ensures the pod IP is valid on any node, avoiding the per-node CIDR problem.
-4. **25 Gbps+ networking** ensures the final dirty page flush (the actual downtime-causing transfer) completes well within the 25ms budget.
+4. **25 Gbps+ networking** helps the final dirty page flush (the actual downtime-causing transfer) complete within the configured downtime budget.
 
 ### Integration Architecture (Operator-Driven)
 
@@ -593,9 +598,9 @@ Once deployed, the dashboard is exposed via a ClusterIP service on port `8080`.
 
 1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080` and open `http://localhost:8080`.
 2. **Configure Migration**: Enter your source/destination node names, QMP socket paths, and the VM pod IP into the form.
-3. **Start Load Generation**: Enter the pod's IP in the Ping/HTTP target box and click **Start**. A live Chart.js graph will begin plotting latency.
-4. **Migrate**: Click **Migrate**. The real-time log viewer will stream the orchestrator's progress.
-5. **Observe Zero-Drop**: As the migration crosses the critical 25ms downtime window, you will see a latency spike on the chart (representing the buffered packets) but zero dropped packets!
+3. **Start Load Generation**: Enter the VM pod IP in the migration form, then click **ICMP Ping** or **HTTP Load**. A live Chart.js graph will begin plotting latency.
+4. **Migrate**: Click **Start Migration**. The real-time log viewer will stream the orchestrator's progress.
+5. **Observe Zero-Drop**: As the migration crosses the configured downtime window (25 ms by default), you will see a latency spike on the chart (representing the buffered packets) but zero dropped packets!
 
 ---
 

@@ -1,10 +1,12 @@
-package main
+package dashboard
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os/exec"
@@ -17,6 +19,28 @@ import (
 
 var pingRe = regexp.MustCompile(`time=([0-9.]+) ms`)
 
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := lookupSafeTargetIPs(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{}
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// stopLoadgen cancels the currently running load generator context, if any.
 func (a *App) stopLoadgen() {
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()
@@ -58,6 +82,7 @@ func (a *App) resetLoadgen() {
 	a.loadgenMutex.Unlock()
 }
 
+// handleLoadgenStop processes a request to stop the currently running load generator.
 func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 	a.loadgenMutex.Lock()
 	wasRunning := a.loadgenRunning
@@ -70,14 +95,42 @@ func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Load generator stop requested", "stopped": wasRunning, "loadgen_type": loadgenType})
 }
 
+// handlePingStart processes a request to start the ping load generator.
 func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("target")
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil || mediaType != "application/x-www-form-urlencoded" {
+			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			jsonError(w, "Invalid request body", http.StatusBadRequest)
+		}
+		return
+	}
+	target := r.FormValue("target")
 	if target == "" {
 		jsonError(w, "Target required", http.StatusBadRequest)
 		return
 	}
 	if !validTarget(target) {
-		slog.Warn("Rejected invalid ping target", "target", target, "request_id", requestIDFromContext(r.Context()))
+		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Invalid target", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve once and pass ping an IP literal so it cannot resolve to a
+	// different address after validation.
+	pingTarget, ok := resolvedTargetIP(target)
+	if !ok {
+		slog.Warn("Failed to resolve safe ping target", "target", target, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid target", http.StatusBadRequest)
 		return
 	}
@@ -85,12 +138,6 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	ctx, ok := a.tryStartLoadgen(w, r, "ping")
 	if !ok {
 		return
-	}
-
-	// Strip port if present — ping only accepts host/IP, not host:port.
-	pingTarget := target
-	if h, _, err := net.SplitHostPort(target); err == nil {
-		pingTarget = h
 	}
 
 	reqID := requestIDFromContext(r.Context())
@@ -119,18 +166,20 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 			if len(matches) > 1 {
 				lat, parseErr := strconv.ParseFloat(matches[1], 64)
 				if parseErr != nil {
-					slog.Debug("Failed to parse ping latency", "raw", matches[1], "error", parseErr)
+					slog.Warn("Failed to parse ping latency", "raw", matches[1], "error", parseErr, "request_id", reqID)
+					a.addPing(0, "Parse error")
+				} else {
+					a.addPing(lat, "")
 				}
-				a.addPing(lat, "")
 			} else if strings.Contains(line, "Unreachable") || strings.Contains(line, "timeout") {
 				a.addPing(0, "Timeout/Unreachable")
 			}
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
-			slog.Warn("Ping output scanner error", "target", target, "error", scanErr)
+			slog.Warn("Ping output scanner error", "target", pingTarget, "error", scanErr, "request_id", reqID)
 		}
 		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			slog.Warn("Ping command finished with error", "target", target, "error", err)
+			slog.Warn("Ping command finished with error", "target", pingTarget, "error", err, "request_id", reqID)
 		} else {
 			slog.Info("Ping load generator stopped", "target", pingTarget, "request_id", reqID)
 		}
@@ -139,6 +188,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Ping started", "target": pingTarget})
 }
 
+// addPing records a ping latency sample or error to the loadgen log buffer.
 func (a *App) addPing(lat float64, errStr string) {
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()
@@ -152,14 +202,33 @@ func (a *App) addPing(lat float64, errStr string) {
 	}
 }
 
+// handleHTTPStart processes a request to start the HTTP load generator.
 func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("target")
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil || mediaType != "application/x-www-form-urlencoded" {
+			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			jsonError(w, "Invalid request body", http.StatusBadRequest)
+		}
+		return
+	}
+	target := r.FormValue("target")
 	if target == "" {
 		jsonError(w, "Target required", http.StatusBadRequest)
 		return
 	}
 	if !validTarget(target) {
-		slog.Warn("Rejected invalid HTTP target", "target", target, "request_id", requestIDFromContext(r.Context()))
+		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid target", http.StatusBadRequest)
 		return
 	}
@@ -180,6 +249,10 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 
 		client := &http.Client{
 			Timeout: httpClientTimeout,
+			Transport: &http.Transport{
+				Proxy:       nil,
+				DialContext: safeDialContext,
+			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Block redirects to prevent SSRF bypass: an attacker-controlled
 				// target could redirect to internal/metadata IPs, bypassing the
@@ -231,7 +304,7 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 				a.addPing(0, err.Error())
 			} else {
 				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseDiscard))
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				a.addPing(lat, "")
 			}
 

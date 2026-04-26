@@ -1,4 +1,4 @@
-package main
+package dashboard
 
 import (
 	"bufio"
@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+// migrateScriptPath finds the absolute path to the migrate.sh script.
 func migrateScriptPath() (string, error) {
 	paths := []string{
 		"deploy/migrate.sh",
@@ -28,6 +29,7 @@ func migrateScriptPath() (string, error) {
 	return "", fmt.Errorf("migrate.sh not found in expected locations: %v", paths)
 }
 
+// handleMigrate processes a form POST to start a new migration.
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// Reject non-form content types early. Without this check, ParseForm
 	// silently ignores non-form bodies (e.g. JSON), and all fields appear
@@ -71,6 +73,12 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.allowedImage != "" && r.PostFormValue("image") != a.allowedImage {
+		slog.Warn("Rejected disallowed migration image", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Image is not allowed", http.StatusBadRequest)
+		return
+	}
+
 	// Reject requests missing required fields. The frontend validates
 	// these too, but direct API callers (curl, scripts) bypass that.
 	// Aligned with migrate.sh's required flags.
@@ -111,6 +119,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationID = migrationID
 	a.migrationStart = time.Now()
 	a.migrationsStarted++
+	dashboardMigrationsActive.Add(1)
 	// Use context.Background() so the migration process survives after
 	// the HTTP response is sent (r.Context() cancels on response write).
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,6 +139,8 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			a.lastMigrationResult = "error"
 			a.lastMigrationError = err.Error()
 			a.migrationMutex.Unlock()
+			dashboardMigrationsActive.Add(-1)
+			dashboardMigrationResultsByOutcome.Add("error", 1)
 			cancel()
 			slog.Error("Migration script not found", "error", err, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, "Migration script not found", http.StatusInternalServerError)
@@ -160,12 +171,13 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--downtime", downtimeArg)
 	}
 
-	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", r.PostFormValue("source_node"), "dest_node", r.PostFormValue("dest_node"))
+	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", r.PostFormValue("source_node"), "dest_node", r.PostFormValue("dest_node"), "image", r.PostFormValue("image"), "dest_ip", r.PostFormValue("dest_ip"), "vm_ip", r.PostFormValue("vm_ip"), "shared_storage", r.PostFormValue("shared_storage") == "true")
 	go a.runCommand(ctx, args, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
 
+// handleMigrateStop processes a request to cancel an ongoing migration.
 func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	a.migrationMutex.Lock()
 	wasRunning := a.migrationCancel != nil
@@ -180,7 +192,9 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
 
+// runCommand executes the migration script and streams its output to the dashboard.
 func (a *App) runCommand(ctx context.Context, args []string, migrationID string) {
+	start := time.Now()
 	defer func() {
 		a.migrationMutex.Lock()
 		a.isMigrating = false
@@ -188,10 +202,12 @@ func (a *App) runCommand(ctx context.Context, args []string, migrationID string)
 		// with the migration_id returned in the 202 response. It gets
 		// overwritten when a new migration starts.
 		a.migrationCancel = nil
+		outcome := a.lastMigrationResult
 		a.migrationMutex.Unlock()
+		dashboardMigrationsActive.Add(-1)
+		recordMigrationDuration(time.Since(start), outcome)
 	}()
 
-	start := time.Now()
 	slog.Info("Starting migration command", "migration_id", migrationID, "command", args[0], "args", args[1:])
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
@@ -260,6 +276,7 @@ func (a *App) runCommand(ctx context.Context, args []string, migrationID string)
 	}
 }
 
+// setMigrationResult updates the final status and error message of the completed migration.
 func (a *App) setMigrationResult(result, errMsg string) {
 	a.migrationMutex.Lock()
 	defer a.migrationMutex.Unlock()
@@ -273,7 +290,11 @@ func (a *App) setMigrationResult(result, errMsg string) {
 	}
 }
 
+// appendLog adds a new log line to the migration output buffer, discarding the oldest if full.
 func (a *App) appendLog(msg string) {
+	if len(msg) > maxLogLineSize {
+		msg = msg[:maxLogLineSize] + " ... [truncated]"
+	}
 	a.migrationMutex.Lock()
 	defer a.migrationMutex.Unlock()
 	a.migrationOutput = append(a.migrationOutput, msg)

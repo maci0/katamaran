@@ -1,5 +1,5 @@
-// Package logutil provides shared logging helpers for katamaran binaries.
-package logutil
+// Package logging provides shared logging helpers for katamaran binaries.
+package logging
 
 import (
 	"fmt"

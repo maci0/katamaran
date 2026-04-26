@@ -295,7 +295,7 @@ fi
 
 if [[ -n "${QMP_SOCK}" ]]; then
     echo ">>> Running katamaran in dest mode against extra QMP socket..."
-    # Use -shared-storage to skip NBD (single-node smoke test, no real migration target).
+    # Use --shared-storage to skip NBD (single-node smoke test, no real migration target).
     # Run with output to a file inside the node so log lines survive the
     # SIGTERM from timeout (Go's buffers are lost on signal kill).
     minikube -p "${PROFILE}" ssh -- "sudo timeout 10 /tmp/katamaran --mode dest --qmp '${QMP_SOCK}' --shared-storage >/tmp/katamaran-dest.log 2>&1 || true"

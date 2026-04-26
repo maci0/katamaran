@@ -76,28 +76,28 @@ func (c *Client) bufferEvent(ev response) {
 // The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
 // from a misbehaving QEMU that sends data without newlines.
 func (c *Client) readLine() ([]byte, error) {
-	line, err := c.r.ReadBytes('\n')
-	if err != nil {
-		if len(line) > 0 {
-			c.buf = append(c.buf, line...)
+	for {
+		frag, err := c.r.ReadSlice('\n')
+		if len(frag) > 0 {
+			if len(c.buf)+len(frag) > maxLineSize {
+				c.buf = nil
+				return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
+			}
+			if len(c.buf) == 0 && err == nil {
+				return frag, nil
+			}
+			c.buf = append(c.buf, frag...)
 		}
-		if len(c.buf) > maxLineSize {
+		if err == nil {
+			fullLine := c.buf
 			c.buf = nil
-			return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
+			return fullLine, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
 		}
 		return nil, fmt.Errorf("reading QMP line: %w", err)
 	}
-	// Fast path: no prior partial data from a timeout — return the line
-	// directly from ReadBytes without copying into the accumulation buffer.
-	if len(c.buf) == 0 {
-		return line, nil
-	}
-	// Slow path: had partial data from a previous timeout — assemble
-	// the complete line from accumulated fragments.
-	c.buf = append(c.buf, line...)
-	fullLine := c.buf
-	c.buf = nil
-	return fullLine, nil
 }
 
 // NewClient connects to a QEMU QMP unix socket, performs the capability
@@ -122,11 +122,11 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	// true, preventing a race where ctx cancellation could close a
 	// successfully-returned connection.
 	stop := context.AfterFunc(ctx, func() {
-		conn.Close()
+		_ = conn.Close()
 	})
 	fail := func(err error) (*Client, error) {
 		stop()
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -212,6 +212,10 @@ func (c *Client) Close() error {
 //
 // Returns an error if the connection has already been closed.
 func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMessage, error) {
+	if cmd == "" {
+		return nil, errors.New("QMP command is required")
+	}
+
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()

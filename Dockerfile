@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /katamaran ./cmd/katamaran/
 
 # Stage 2 — runtime
-FROM alpine:3.20
+FROM alpine:3.23
 RUN apk add --no-cache iproute2 kmod
 COPY --from=builder /katamaran /usr/local/bin/katamaran
 ENTRYPOINT ["/usr/local/bin/katamaran"]

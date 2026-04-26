@@ -45,6 +45,7 @@ QMP_DEST=""
 DEST_IP=""
 VM_IP=""
 IMAGE_REF=""
+export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 
 usage() {
     local code="${1:-1}"
@@ -271,7 +272,7 @@ else
     export EXTRA_ARGS="${DEST_EXTRA_ARGS}"
 fi
 
-envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
+envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
 echo ">>> Waiting for destination pod to appear..."
 for _ in $(seq 1 30); do
@@ -306,7 +307,7 @@ export DEST_IP="$DEST_IP"
 export VM_IP="$VM_IP"
 export EXTRA_ARGS="$SRC_EXTRA_ARGS"
 
-envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
+envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
 
 echo ">>> Waiting for migration to complete..."
 set +e

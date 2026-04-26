@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /dashboard ./cmd/dashboard/
 
-FROM alpine:3.20
+FROM alpine:3.23
 
 ARG TARGETARCH=amd64
 
@@ -30,10 +30,9 @@ RUN addgroup -g 1000 dashboard && \
     adduser -D -u 1000 -G dashboard dashboard
 
 WORKDIR /app
-COPY --from=builder /dashboard .
-COPY cmd/dashboard/index.html .
-COPY deploy /app/deploy
-RUN chown -R dashboard:dashboard /app
+COPY --chown=dashboard:dashboard --from=builder /dashboard .
+COPY --chown=dashboard:dashboard cmd/dashboard/index.html .
+COPY --chown=dashboard:dashboard deploy /app/deploy
 
 USER dashboard
 EXPOSE 8080

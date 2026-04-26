@@ -1,4 +1,4 @@
-package main
+package dashboard
 
 import (
 	"context"
@@ -80,7 +80,8 @@ func validRequestID(id string) bool {
 	if len(id) == 0 || len(id) > maxRequestIDLen {
 		return false
 	}
-	for _, c := range id {
+	for i := 0; i < len(id); i++ {
+		c := id[i]
 		if c < 0x20 || c > 0x7e {
 			return false
 		}
@@ -104,17 +105,26 @@ func requestLogger(next http.Handler) http.Handler {
 		rw.Header().Set("X-Request-Id", reqID)
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey, reqID))
 		next.ServeHTTP(rw, r)
+		duration := time.Since(start)
+		recordHTTPRequest(r.URL.Path, rw.status, duration)
 		// Skip logging health/readiness checks to avoid noise.
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			return
 		}
-		duration := time.Since(start)
-		attrs := []any{"method", r.Method, "path", r.URL.Path}
+		slow := duration >= slowRequestThreshold
+		failed := rw.status >= http.StatusInternalServerError
+		// Suppress INFO logs for the dashboard's 1-Hz status poll. Errors and
+		// slow responses still surface via the WARN path; metrics still record.
+		if r.URL.Path == "/api/status" && !slow && !failed {
+			return
+		}
+		attrs := make([]any, 0, 16)
+		attrs = append(attrs, "method", r.Method, "path", r.URL.Path)
 		if r.URL.RawQuery != "" {
-			attrs = append(attrs, "query", r.URL.RawQuery)
+			attrs = append(attrs, "has_query", true)
 		}
 		attrs = append(attrs, "status", rw.status, "elapsed", duration.Round(time.Millisecond), "bytes_out", rw.bytesOut, "content_length", r.ContentLength, "remote_addr", r.RemoteAddr, "request_id", reqID)
-		if duration >= slowRequestThreshold || rw.status >= http.StatusInternalServerError {
+		if slow || failed {
 			slog.Warn("Slow or failed HTTP request", attrs...)
 		} else {
 			slog.Info("HTTP request", attrs...)
@@ -142,10 +152,17 @@ func recoverMiddleware(next http.Handler) http.Handler {
 // csrfCheck rejects cross-origin state-changing requests. It validates the
 // Origin header first; if absent, it falls back to the Referer header.
 // Requests with neither header (e.g., curl, scripts) are allowed through,
-// since non-browser clients cannot be CSRF'd.
+// since non-browser clients cannot be CSRF'd. Modern browsers also send
+// Sec-Fetch-Site; if it indicates cross-site/cross-origin, the request is
+// rejected even if Origin/Referer somehow pass.
 func csrfCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if sfs := r.Header.Get("Sec-Fetch-Site"); sfs == "cross-site" || sfs == "cross-origin" {
+				slog.Warn("CSRF check rejected request (sec-fetch-site)", "method", r.Method, "path", r.URL.Path, "sec_fetch_site", sfs, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
+				csrfForbidden(w, r)
+				return
+			}
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				u, err := url.Parse(origin)
@@ -191,9 +208,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("X-XSS-Protection", "0")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js; "+
+				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js; "+
 				"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "+
 				"img-src 'self' data:; "+
 				"connect-src 'self'; "+

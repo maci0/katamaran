@@ -10,7 +10,7 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolygon points='15,10 25,10 22,22 18,22' fill='%232b8eff'/%3E%3Cpolygon points='20,6 21,10 19,10' fill='%238ecdff'/%3E%3Cpath d='M5 24Q12 18 20 22Q28 26 35 20' stroke='%232b8eff' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
     <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script>
     <script>
     tailwind.config = {
@@ -46,10 +46,10 @@
         .toast-enter{animation:toast-in .2s ease-out}
         .toast-exit{animation:toast-out .2s ease-in forwards}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
-        .has-tooltip[title]{cursor:help;border-bottom:1px dotted currentColor}
-        label.has-tooltip[title]{border-bottom:none;cursor:inherit}
-        h2.has-tooltip[title]{border-bottom:none;cursor:default}
         input:disabled,select:disabled{opacity:.5;cursor:not-allowed}
+        #migration-form input[type="text"],#migration-form input[type="number"]{min-height:44px}
+        #migration-form input[type="checkbox"]{min-width:20px;min-height:20px}
+        #migration-form label.flex{min-height:44px}
     </style>
 </head>
 <body class="bg-hull-950 text-slate-200 font-sans min-h-screen">
@@ -72,7 +72,7 @@
     </div>
 
     <header class="border-b border-slate-700/50 bg-hull-950/80 backdrop-blur sticky top-0 z-10">
-        <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+        <div class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div class="flex items-center gap-4">
                 <svg viewBox="0 0 40 40" class="w-10 h-10" role="img" aria-label="Katamaran logo">
                     <path d="M5 24 Q12 18 20 22 Q28 26 35 20" stroke="#2b8eff" stroke-width="2.5" fill="none" class="wave-line"/>
@@ -85,7 +85,7 @@
                     <p class="text-xs text-slate-400">Live Migration Dashboard <span id="version-text" class="text-slate-400"></span></p>
                 </div>
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3 sm:justify-end">
                 <span id="last-result" role="status" class="text-xs" aria-describedby="last-result-detail"></span>
                 <span id="last-result-detail" class="sr-only"></span>
                 <span id="status-badge" role="status" aria-live="polite" aria-atomic="true" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Connecting&hellip;</span>
@@ -93,67 +93,68 @@
         </div>
     </header>
 
-    <div id="connection-banner" role="alert" class="hidden bg-amber-600/90 text-white text-center py-2 px-4 text-sm font-medium">Unable to reach the server &mdash; retrying&hellip;</div>
+    <div id="connection-banner" role="alert" class="hidden bg-amber-400 text-slate-900 text-center py-2 px-4 text-sm font-semibold">Unable to reach the server &mdash; retrying&hellip;</div>
 
-    <main id="main-content" class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6">
+    <main id="main-content" tabindex="-1" class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6">
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
             <div class="lg:col-span-3 space-y-5">
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Migration Config</h2>
-                    <form id="migration-form" class="space-y-3" novalidate autocomplete="off" aria-label="Migration configuration">
+                    <p class="text-xs text-slate-400 mb-4">Fill in the migration details, start the move, then watch the live chart and log for cutover health.</p>
+                    <form id="migration-form" class="space-y-3" novalidate aria-label="Migration configuration">
                         <p class="text-xs text-slate-400 -mt-1 mb-1"><span class="text-red-400" aria-hidden="true">*</span> Required field</p>
-                        <div class="grid grid-cols-2 gap-3">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                                 <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="source_node" id="source_node" value="katamaran-e2e" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <input type="text" name="source_node" id="source_node" placeholder="worker-a" required aria-required="true" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
                             </div>
                             <div>
                                 <label for="dest_node" class="block text-xs text-slate-400 mb-1">Dest Node <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="dest_node" id="dest_node" value="katamaran-e2e-m02" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <input type="text" name="dest_node" id="dest_node" placeholder="worker-b" required aria-required="true" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
                             </div>
                         </div>
                         <div>
-                            <label for="tap" class="block text-xs text-slate-400 mb-1 has-tooltip" title="Network tap device inside the Kata VM sandbox">Tap Interface <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="tap" id="tap" value="tap0_kata" required aria-required="true" aria-describedby="tap-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
-                            <p id="tap-help" class="sr-only">Network tap device inside the Kata VM sandbox</p>
+                            <label for="tap" class="block text-xs text-slate-400 mb-1">Tap Interface <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="tap" id="tap" value="tap0_kata" required aria-required="true" aria-describedby="tap-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            <p id="tap-help" class="text-xs text-slate-400 -mt-1">Network tap device inside the Kata VM sandbox</p>
                         </div>
                         <div>
-                            <label for="tap_netns" class="block text-xs text-slate-400 mb-1 has-tooltip" title="Path to the network namespace for the tap device (optional)">Tap Netns</label>
-                            <input type="text" name="tap_netns" id="tap_netns" placeholder="/proc/.../ns/net" aria-describedby="tap-netns-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
-                            <p id="tap-netns-help" class="sr-only">Path to the network namespace for the tap device</p>
+                            <label for="tap_netns" class="block text-xs text-slate-400 mb-1">Tap Netns</label>
+                            <input type="text" name="tap_netns" id="tap_netns" placeholder="/proc/.../ns/net" aria-describedby="tap-netns-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
+                            <p id="tap-netns-help" class="text-xs text-slate-400 -mt-1">Path to the network namespace for the tap device</p>
                         </div>
                         <div>
-                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1 has-tooltip" title="QEMU Machine Protocol socket path on the source node">Source QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="qmp_source" id="qmp_source" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1">Source QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_source" id="qmp_source" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
                         </div>
                         <div>
-                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1 has-tooltip" title="QEMU Machine Protocol socket path on the destination node">Dest QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="qmp_dest" id="qmp_dest" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1">Dest QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="qmp_dest" id="qmp_dest" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
                         </div>
                         <p id="qmp-help" class="text-xs text-slate-400 -mt-1">Path to the QEMU control socket inside the pod</p>
-                        <div class="grid grid-cols-2 gap-3">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                                 <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="dest_ip" id="dest_ip" required aria-required="true" placeholder="192.168.x.x" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
+                                <input type="text" name="dest_ip" id="dest_ip" required aria-required="true" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.0.0.25" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
                             </div>
                             <div>
                                 <label for="vm_ip" class="block text-xs text-slate-400 mb-1">VM IP <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="vm_ip" id="vm_ip" value="10.244.0.5" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <input type="text" name="vm_ip" id="vm_ip" required aria-required="true" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.244.0.5" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
                             </div>
                         </div>
                         <div>
                             <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
-                            <input type="number" name="downtime" id="downtime" value="25" min="1" max="60000" aria-describedby="downtime-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            <input type="number" name="downtime" id="downtime" value="25" min="1" max="60000" inputmode="numeric" aria-describedby="downtime-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                             <p id="downtime-help" class="text-xs text-slate-400 -mt-1">Range: 1–60,000</p>
                         </div>
                         <div>
                             <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="image" id="image" value="localhost/katamaran:dev" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono">
+                            <input type="text" name="image" id="image" required aria-required="true" placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
                         </div>
                         <label class="flex items-center gap-2 cursor-pointer py-1">
                             <input type="checkbox" name="shared_storage" id="shared_storage" value="true" aria-describedby="shared-storage-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
-                            <span class="text-xs text-slate-300 has-tooltip" title="Use shared storage instead of Network Block Device replication">Shared Storage <span class="text-slate-400">(skip disk copy)</span></span>
+                            <span class="text-xs text-slate-300">Shared Storage <span class="text-slate-400">(skip disk copy)</span></span>
                             <span id="shared-storage-help" class="sr-only">Use shared storage instead of Network Block Device replication</span>
                         </label>
                         <div class="flex gap-2 mt-2">
@@ -165,6 +166,7 @@
 
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4" id="loadgen-heading">Load Generator</h2>
+                    <p class="text-xs text-slate-400 mb-4">Start traffic before cutover so you can see latency spikes or failed requests in real time.</p>
                     <div class="space-y-2" role="group" aria-labelledby="loadgen-heading">
                         <button type="button" id="btn-ping" aria-label="ICMP Ping" class="w-full bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9673; ICMP Ping</button>
                         <button type="button" id="btn-http" aria-label="HTTP Load" class="w-full bg-violet-600/80 hover:bg-violet-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#8645; HTTP Load</button>
@@ -203,7 +205,7 @@
                     </div>
                     <div style="height:280px;position:relative" role="img" aria-label="Latency chart showing ping response times over time">
                         <canvas id="latencyChart" aria-hidden="true"></canvas>
-                        <div id="chart-empty" class="absolute inset-0 flex items-center justify-center text-sm text-slate-400">Start a load generator to see latency data</div>
+                        <div id="chart-empty" class="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-400 px-6">Start ICMP Ping or HTTP Load to see latency and failure data.</div>
                     </div>
                 </div>
 
@@ -212,8 +214,8 @@
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider" id="log-heading">Migration Log</h2>
                         <button type="button" id="btn-clear-logs" class="text-xs text-slate-400 hover:text-slate-300 transition-colors px-3 py-2 min-h-[44px] min-w-[44px] rounded" aria-label="Clear migration logs" aria-controls="logs">Clear</button>
                     </div>
-                    <div id="logs" role="log" aria-labelledby="log-heading" aria-live="off" class="font-mono text-xs leading-relaxed p-4 h-72 overflow-y-auto bg-slate-900/50 text-slate-400" style="overflow-wrap:anywhere" tabindex="0">
-                        <div class="text-slate-400">Awaiting migration start...</div>
+                    <div id="logs" role="log" aria-labelledby="log-heading" aria-live="off" class="font-mono text-xs leading-relaxed p-4 h-72 overflow-y-auto bg-slate-900/50 text-slate-300" style="overflow-wrap:anywhere" tabindex="0">
+                        <div class="text-slate-400">No logs yet. Fill in the migration config and click Start Migration to begin.</div>
                     </div>
                 </div>
             </div>
@@ -223,6 +225,7 @@
     <p id="log-sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>
 
     <script>
+    var migrationForm = document.getElementById('migration-form');
     var latencyChart = null;
     try {
         var chartCtx = document.getElementById('latencyChart').getContext('2d');
@@ -267,8 +270,8 @@
                     }
                 },
                 scales: {
-                    y: { beginAtZero: true, suggestedMax: 5, grid: { color: 'rgba(71,85,105,0.3)', drawBorder: false }, ticks: { color: '#64748b', font: { size: 10 }, callback: function(v) { return v + 'ms'; } }, border: { display: false } },
-                    x: { grid: { display: false }, ticks: { color: '#475569', font: { size: 9 }, maxTicksLimit: 15, maxRotation: 0 }, border: { display: false } }
+                    y: { beginAtZero: true, suggestedMax: 5, grid: { color: 'rgba(71,85,105,0.3)', drawBorder: false }, ticks: { color: '#94a3b8', font: { size: 11 }, callback: function(v) { return v + 'ms'; } }, border: { display: false } },
+                    x: { grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 12, maxRotation: 0 }, border: { display: false } }
                 }
             }
         });
@@ -280,7 +283,7 @@
     function showToast(message, type) {
         var container = document.getElementById('toast-container');
         var toast = document.createElement('div');
-        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : 'bg-slate-700/90';
+        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : type === 'info' ? 'bg-hull-600/90' : 'bg-slate-700/90';
         toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur max-w-sm flex items-center ' + bgColor + ' toast-enter';
         toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
         var textSpan = document.createElement('span');
@@ -297,6 +300,10 @@
         container.appendChild(toast);
         var duration = type === 'error' ? 7000 : 4000;
         toast._timer = setTimeout(function() { dismissToast(toast); }, duration);
+        toast.addEventListener('mouseenter', function() { clearTimeout(toast._timer); });
+        toast.addEventListener('mouseleave', function() { toast._timer = setTimeout(function() { dismissToast(toast); }, duration); });
+        toast.addEventListener('focusin', function() { clearTimeout(toast._timer); });
+        toast.addEventListener('focusout', function() { toast._timer = setTimeout(function() { dismissToast(toast); }, duration); });
     }
     function dismissToast(toast) {
         if (toast._dismissed) return;
@@ -349,22 +356,49 @@
         if (desc) field.setAttribute('aria-describedby', desc);
         else field.removeAttribute('aria-describedby');
     }
+    function markFieldInvalid(field, msg) {
+        field.classList.add('border-red-500/70');
+        field.setAttribute('aria-invalid', 'true');
+        showFieldError(field, msg);
+    }
+    function clearFieldState(field) {
+        field.classList.remove('border-red-500/70');
+        field.removeAttribute('aria-invalid');
+        clearFieldError(field);
+    }
+    function isIPv4(value) {
+        if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return false;
+        return value.split('.').every(function(part) {
+            if (part.length > 1 && part.charAt(0) === '0') return false;
+            var n = Number(part);
+            return String(n) === part && n >= 0 && n <= 255;
+        });
+    }
+    function validateIPv4Field(field, emptyMessage, invalidMessage) {
+        var value = field.value.trim();
+        if (!value) {
+            markFieldInvalid(field, emptyMessage);
+            return false;
+        }
+        if (!isIPv4(value)) {
+            markFieldInvalid(field, invalidMessage);
+            return false;
+        }
+        clearFieldState(field);
+        return true;
+    }
 
-    document.getElementById('migration-form').addEventListener('submit', function(e) {
+    migrationForm.addEventListener('submit', function(e) {
         e.preventDefault();
         var form = e.target;
         var requiredFields = form.querySelectorAll('[required]');
         var firstInvalid = null;
         requiredFields.forEach(function(field) {
             if (!field.value.trim()) {
-                field.classList.add('border-red-500/70');
-                field.setAttribute('aria-invalid', 'true');
-                showFieldError(field, 'This field is required');
+                markFieldInvalid(field, 'This field is required');
                 if (!firstInvalid) firstInvalid = field;
             } else {
-                field.classList.remove('border-red-500/70');
-                field.removeAttribute('aria-invalid');
-                clearFieldError(field);
+                clearFieldState(field);
             }
         });
         if (firstInvalid) {
@@ -372,98 +406,160 @@
             showToast('Please fill in all required fields', 'error');
             return;
         }
+        var destIpField = document.getElementById('dest_ip');
+        if (!validateIPv4Field(destIpField, 'Destination IP is required', 'Enter a valid IPv4 address')) {
+            destIpField.focus();
+            showToast('Enter a valid destination IP address', 'error');
+            return;
+        }
+        var vmIpField = document.getElementById('vm_ip');
+        if (!validateIPv4Field(vmIpField, 'VM IP is required', 'Enter a valid IPv4 address')) {
+            vmIpField.focus();
+            showToast('Enter a valid VM IP address', 'error');
+            return;
+        }
         var dtField = document.getElementById('downtime');
         var dtVal = parseInt(dtField.value, 10);
         if (dtField.value !== '' && (isNaN(dtVal) || dtVal < 1 || dtVal > 60000)) {
-            dtField.classList.add('border-red-500/70');
-            dtField.setAttribute('aria-invalid', 'true');
-            showFieldError(dtField, 'Must be between 1 and 60,000 ms');
+            markFieldInvalid(dtField, 'Must be between 1 and 60,000 ms');
             dtField.focus();
             showToast('Downtime must be between 1 and 60,000 ms', 'error');
             return;
         } else {
-            dtField.classList.remove('border-red-500/70');
-            dtField.removeAttribute('aria-invalid');
-            clearFieldError(dtField);
+            clearFieldState(dtField);
         }
         var btn = document.getElementById('btn-migrate');
-        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        migrationForm.setAttribute('aria-busy', 'true');
+        btn.disabled = true;
+        btn.textContent = 'Starting\u2026';
+        btn.setAttribute('aria-busy', 'true');
         apiCall('/api/migrate', { method: 'POST', body: new URLSearchParams(new FormData(form)) })
-            .then(function(r) { if (r) showToast('Migration started', 'success'); else btn.disabled = false; })
-            .finally(function() { btn.textContent = '\u25B6 Start Migration'; });
+            .then(function(r) {
+                if (r) {
+                    showToast('Migration started', 'success');
+                } else {
+                    migrationForm.removeAttribute('aria-busy');
+                    btn.disabled = false;
+                    btn.textContent = '\u25B6 Start Migration';
+                    btn.removeAttribute('aria-busy');
+                }
+            });
     });
 
     var loadgenType = '';
     var loadgenTarget = '';
+    var lastFocusedBeforeModal = null;
 
     document.getElementById('btn-ping').addEventListener('click', function() {
         var vmIpField = document.getElementById('vm_ip');
         var vmIp = vmIpField.value.trim();
-        if (!vmIp) {
-            vmIpField.classList.add('border-red-500/70');
-            vmIpField.setAttribute('aria-invalid', 'true');
-            showFieldError(vmIpField, 'This field is required');
-            showToast('VM IP is required to start ping', 'error');
+        if (!validateIPv4Field(vmIpField, 'VM IP is required', 'Enter a valid IPv4 address')) {
+            showToast('Enter a valid VM IP address before starting ping', 'error');
             vmIpField.focus();
             return;
         }
         var btn = this;
-        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        btn.disabled = true;
+        btn.textContent = 'Starting\u2026';
+        btn.setAttribute('aria-busy', 'true');
         loadgenType = 'ICMP';
         loadgenTarget = vmIp;
         apiCall('/api/ping?target=' + encodeURIComponent(vmIp))
-            .then(function(r) { if (r) showToast('Ping load generator started', 'success'); else btn.disabled = false; })
-            .finally(function() { btn.textContent = '\u25C9 ICMP Ping'; });
+            .then(function(r) {
+                if (r) {
+                    showToast('Ping load generator started', 'success');
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = '\u25C9 ICMP Ping';
+                    btn.removeAttribute('aria-busy');
+                }
+            });
     });
     document.getElementById('btn-http').addEventListener('click', function() {
         var vmIpField = document.getElementById('vm_ip');
         var vmIp = vmIpField.value.trim();
-        if (!vmIp) {
-            vmIpField.classList.add('border-red-500/70');
-            vmIpField.setAttribute('aria-invalid', 'true');
-            showFieldError(vmIpField, 'This field is required');
-            showToast('VM IP is required to start HTTP load', 'error');
+        if (!validateIPv4Field(vmIpField, 'VM IP is required', 'Enter a valid IPv4 address')) {
+            showToast('Enter a valid VM IP address before starting HTTP load', 'error');
             vmIpField.focus();
             return;
         }
         var btn = this;
-        btn.disabled = true; btn.textContent = 'Starting\u2026';
+        btn.disabled = true;
+        btn.textContent = 'Starting\u2026';
+        btn.setAttribute('aria-busy', 'true');
         loadgenType = 'HTTP';
         loadgenTarget = vmIp;
         apiCall('/api/httpgen?target=' + encodeURIComponent(vmIp))
-            .then(function(r) { if (r) showToast('HTTP load generator started', 'success'); else btn.disabled = false; })
-            .finally(function() { btn.textContent = '\u21C5 HTTP Load'; });
+            .then(function(r) {
+                if (r) {
+                    showToast('HTTP load generator started', 'success');
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = '\u21C5 HTTP Load';
+                    btn.removeAttribute('aria-busy');
+                }
+            });
     });
     document.getElementById('btn-stop-load').addEventListener('click', function() {
         var btn = this;
-        btn.disabled = true; btn.textContent = 'Stopping\u2026';
+        btn.disabled = true;
+        btn.textContent = 'Stopping\u2026';
+        btn.setAttribute('aria-busy', 'true');
         var endpoint = loadgenType === 'HTTP' ? '/api/httpgen/stop' : '/api/ping/stop';
-        apiCall(endpoint).then(function(r) { if (r) showToast('Load generator stopped', 'success'); })
-            .finally(function() { btn.textContent = '\u25A0 Stop Load'; });
+        apiCall(endpoint).then(function(r) {
+            if (r) {
+                showToast('Load generator stopped', 'success');
+            } else {
+                btn.disabled = false;
+                btn.textContent = '\u25A0 Stop Load';
+                btn.removeAttribute('aria-busy');
+            }
+        });
     });
     var _inertEls = ['header', '#toast-container', '#connection-banner', '#main-content', '#log-sr-announce'];
     function openModal() {
         var modal = document.getElementById('confirm-modal');
+        lastFocusedBeforeModal = document.activeElement;
         modal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
         _inertEls.forEach(function(s) { var el = document.querySelector(s); if (el) el.setAttribute('inert', ''); });
         document.getElementById('confirm-cancel').focus();
     }
+    function focusFallback(target) {
+        var candidates = [target, lastFocusedBeforeModal, document.getElementById('btn-stop-mig'), document.getElementById('btn-migrate'), document.getElementById('main-content')];
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+            if (!candidate) continue;
+            if (candidate.disabled) continue;
+            candidate.focus();
+            break;
+        }
+        lastFocusedBeforeModal = null;
+    }
     function closeModal(focusTarget) {
         document.getElementById('confirm-modal').classList.add('hidden');
         document.body.style.overflow = '';
         _inertEls.forEach(function(s) { var el = document.querySelector(s); if (el) el.removeAttribute('inert'); });
-        (focusTarget || document.getElementById('btn-stop-mig')).focus();
+        focusFallback(focusTarget || document.getElementById('btn-stop-mig'));
     }
     document.getElementById('btn-stop-mig').addEventListener('click', function() {
         openModal();
     });
     document.getElementById('confirm-ok').addEventListener('click', function() {
-        closeModal(document.getElementById('btn-migrate'));
+        closeModal(document.getElementById('main-content'));
         var btn = document.getElementById('btn-stop-mig');
-        btn.disabled = true; btn.textContent = 'Stopping\u2026';
-        apiCall('/api/migrate/stop').then(function(r) { if (r) showToast('Migration stop requested', 'success'); })
-            .finally(function() { btn.textContent = '\u25A0 Stop'; });
+        btn.disabled = true;
+        btn.textContent = 'Stopping\u2026';
+        btn.setAttribute('aria-busy', 'true');
+        apiCall('/api/migrate/stop').then(function(r) {
+            if (r) {
+                showToast('Migration stop requested', 'success');
+            } else {
+                btn.disabled = false;
+                btn.textContent = '\u25A0 Stop';
+                btn.removeAttribute('aria-busy');
+            }
+        });
     });
     document.getElementById('confirm-cancel').addEventListener('click', function() {
         closeModal();
@@ -492,6 +588,8 @@
         cleared.textContent = 'Cleared.';
         logsDiv.appendChild(cleared);
         lastLogCount = 0;
+        document.getElementById('log-sr-announce').textContent = 'Logs cleared';
+        showToast('Logs cleared', 'info');
     });
 
     function classifyLog(line) {
@@ -500,7 +598,7 @@
         if (l.indexOf('warning') !== -1 || l.indexOf('warn') !== -1) return 'text-amber-400';
         if (l.indexOf('success') !== -1 || l.indexOf('complete') !== -1 || l.indexOf('finished successfully') !== -1) return 'text-emerald-400';
         if (l.indexOf('>>>') !== -1) return 'text-hull-400 font-semibold';
-        return 'text-slate-400';
+        return 'text-slate-300';
     }
 
     var wasMigrating = false;
@@ -508,23 +606,32 @@
     document.querySelectorAll('#migration-form [required]').forEach(function(field) {
         field.addEventListener('input', function() {
             if (field.value.trim()) {
-                field.classList.remove('border-red-500/70');
-                field.removeAttribute('aria-invalid');
-                clearFieldError(field);
+                clearFieldState(field);
             }
         });
     });
     document.getElementById('downtime').addEventListener('input', function() {
-        this.classList.remove('border-red-500/70');
-        this.removeAttribute('aria-invalid');
-        clearFieldError(this);
+        clearFieldState(this);
+    });
+    ['dest_ip', 'vm_ip'].forEach(function(id) {
+        var field = document.getElementById(id);
+        field.addEventListener('input', function() {
+            var value = field.value.trim();
+            if (!value || isIPv4(value)) clearFieldState(field);
+        });
+        field.addEventListener('blur', function() {
+            var value = field.value.trim();
+            if (value && !isIPv4(value)) {
+                markFieldInvalid(field, 'Enter a valid IPv4 address');
+            }
+        });
     });
 
     var fetchInFlight = false;
     var fetchFailures = 0;
     function beforeUnloadHandler(e) { e.preventDefault(); e.returnValue = ''; }
 
-    setInterval(async function() {
+    async function refreshStatus() {
         if (document.hidden || fetchInFlight) return;
         fetchInFlight = true;
         try {
@@ -533,6 +640,7 @@
                 fetchOpts.signal = AbortSignal.timeout(5000);
             }
             var res = await fetch('/api/status', fetchOpts);
+            if (!res.ok) throw new Error('Status request failed (' + res.status + ')');
             var data = await res.json();
             var wasDisconnected = fetchFailures >= 3;
             fetchFailures = 0;
@@ -540,6 +648,11 @@
             if (wasDisconnected) showToast('Connection restored', 'success');
             var badge = document.getElementById('status-badge');
             var verEl = document.getElementById('version-text');
+            var migrateBtn = document.getElementById('btn-migrate');
+            var stopMigBtn = document.getElementById('btn-stop-mig');
+            var pingBtn = document.getElementById('btn-ping');
+            var httpBtn = document.getElementById('btn-http');
+            var stopLoadBtn = document.getElementById('btn-stop-load');
             if (data.version && verEl.textContent !== data.version) verEl.textContent = 'v' + data.version;
             var indicator = document.getElementById('loadgen-indicator');
             var hasPings = data.pings && data.pings.length > 0;
@@ -568,26 +681,36 @@
             }
 
             // Button state management
-            document.getElementById('btn-migrate').disabled = data.migrating;
-            document.getElementById('btn-stop-mig').disabled = !data.migrating;
-            document.getElementById('btn-ping').disabled = data.loadgen_running;
-            document.getElementById('btn-http').disabled = data.loadgen_running;
-            document.getElementById('btn-stop-load').disabled = !data.loadgen_running;
+            migrationForm.toggleAttribute('aria-busy', data.migrating);
+            migrateBtn.disabled = data.migrating;
+            stopMigBtn.disabled = !data.migrating;
+            pingBtn.disabled = data.loadgen_running;
+            httpBtn.disabled = data.loadgen_running;
+            stopLoadBtn.disabled = !data.loadgen_running;
             document.querySelectorAll('#migration-form input').forEach(function(f) { f.disabled = data.migrating; });
+            migrateBtn.textContent = data.migrating ? 'Migration in progress…' : '\u25B6 Start Migration';
+            migrateBtn.setAttribute('aria-label', data.migrating ? 'Migration in progress' : 'Start migration');
+            stopMigBtn.textContent = '\u25A0 Stop';
+            stopMigBtn.removeAttribute('aria-busy');
+            stopLoadBtn.textContent = '\u25A0 Stop Load';
+            stopLoadBtn.removeAttribute('aria-busy');
+            migrateBtn.removeAttribute('aria-busy');
 
             // Restore loadgen type from server state and indicate active button.
             if (data.loadgen_running && data.loadgen_type) {
                 loadgenType = data.loadgen_type === 'ping' ? 'ICMP' : 'HTTP';
-                document.getElementById('btn-ping').textContent = data.loadgen_type === 'ping' ? '\u25C9 ICMP Ping (active)' : '\u25C9 ICMP Ping';
-                document.getElementById('btn-http').textContent = data.loadgen_type === 'http' ? '\u21C5 HTTP Load (active)' : '\u21C5 HTTP Load';
-                document.getElementById('btn-ping').setAttribute('aria-pressed', data.loadgen_type === 'ping' ? 'true' : 'false');
-                document.getElementById('btn-http').setAttribute('aria-pressed', data.loadgen_type === 'http' ? 'true' : 'false');
+                pingBtn.textContent = data.loadgen_type === 'ping' ? '\u25C9 ICMP Ping (active)' : '\u25C9 ICMP Ping';
+                httpBtn.textContent = data.loadgen_type === 'http' ? '\u21C5 HTTP Load (active)' : '\u21C5 HTTP Load';
+                pingBtn.setAttribute('aria-pressed', data.loadgen_type === 'ping' ? 'true' : 'false');
+                httpBtn.setAttribute('aria-pressed', data.loadgen_type === 'http' ? 'true' : 'false');
             } else if (!data.loadgen_running) {
-                document.getElementById('btn-ping').textContent = '\u25C9 ICMP Ping';
-                document.getElementById('btn-http').textContent = '\u21C5 HTTP Load';
-                document.getElementById('btn-ping').removeAttribute('aria-pressed');
-                document.getElementById('btn-http').removeAttribute('aria-pressed');
+                pingBtn.textContent = '\u25C9 ICMP Ping';
+                httpBtn.textContent = '\u21C5 HTTP Load';
+                pingBtn.removeAttribute('aria-pressed');
+                httpBtn.removeAttribute('aria-pressed');
             }
+            pingBtn.removeAttribute('aria-busy');
+            httpBtn.removeAttribute('aria-busy');
 
             // Notify when migration completes
             if (wasMigrating && !data.migrating) {
@@ -595,7 +718,8 @@
                 if (lastLog.indexOf('Finished successfully') !== -1) {
                     showToast('Migration completed successfully', 'success');
                 } else {
-                    showToast('Migration finished with errors', 'error');
+                    var errDetail = data.last_migration_error ? ': ' + data.last_migration_error : '';
+                    showToast('Migration finished with errors' + errDetail, 'error');
                 }
             }
             wasMigrating = data.migrating;
@@ -738,7 +862,9 @@
         } finally {
             fetchInFlight = false;
         }
-    }, 1000);
+    }
+    refreshStatus();
+    setInterval(refreshStatus, 1000);
     </script>
 </body>
 </html>

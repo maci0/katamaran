@@ -1,9 +1,10 @@
-package main
+package dashboard
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,18 @@ func dummyMigrateScript(t *testing.T) string {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "migrate.sh")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// slowMigrateScript creates a migrate.sh that stays alive long enough for
+// tests that need to observe an in-progress migration.
+func slowMigrateScript(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "migrate.sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nsleep 30\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -58,31 +71,33 @@ func waitMigrationDone(t *testing.T, app *App, timeout time.Duration) {
 func TestRun_Help(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--help"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--help"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "katamaran-dashboard") {
-		t.Fatalf("expected usage output containing 'katamaran-dashboard', got: %s", stdout.String())
+	// "Usage:" distinguishes the help banner from the version line, which also
+	// contains "katamaran-dashboard".
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("expected usage output containing 'Usage:', got: %s", stdout.String())
 	}
 }
 
 func TestRun_HelpShort(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-h"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"-h"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "katamaran-dashboard") {
-		t.Fatalf("expected usage output, got: %s", stdout.String())
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("expected usage output containing 'Usage:', got: %s", stdout.String())
 	}
 }
 
 func TestRun_Version(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--version"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--version"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -94,7 +109,7 @@ func TestRun_Version(t *testing.T) {
 func TestRun_VersionShort(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-v"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"-v"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -106,7 +121,7 @@ func TestRun_VersionShort(t *testing.T) {
 func TestRun_UnexpectedArgs(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"foo", "bar"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"foo", "bar"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -118,7 +133,7 @@ func TestRun_UnexpectedArgs(t *testing.T) {
 func TestRun_UnknownFlag(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--nonexistent-flag"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--nonexistent-flag"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -130,9 +145,9 @@ func TestRun_UnknownFlag(t *testing.T) {
 func TestRun_InvalidLogFormat(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--log-format", "yaml"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("exit code %d, want 1", code)
+	code := Run(context.Background(), []string{"--log-format", "yaml"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "invalid log format") {
 		t.Fatalf("expected log format error, got: %s", stderr.String())
@@ -144,7 +159,7 @@ func TestRun_CaseInsensitiveLogFlags(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Pre-cancel so the server shuts down immediately.
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"--log-level", "INFO", "--log-format", "TEXT"}, &stdout, &stderr)
+	code := Run(ctx, []string{"--log-level", "INFO", "--log-format", "TEXT"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -172,10 +187,16 @@ func TestValidTarget(t *testing.T) {
 		want   bool
 	}{
 		{"10.0.0.1", true},
+		{"10.0.0.1:8080", true},
+		{"[2001:db8::1]", true},
+		{"[2001:db8::1]:8080", true},
 		{"localhost", false},       // loopback
 		{"127.0.0.1", false},       // loopback
 		{"169.254.169.254", false}, // cloud metadata
 		{"-c1", false},             // flag injection
+		{"10.0.0.1:0", false},      // invalid port
+		{"10.0.0.1:65536", false},  // invalid port
+		{"10.0.0.1:http", false},   // invalid port
 		{"10.0.0.1; rm -rf /", false},
 		{"evil.com@internal:8080", false},
 		{"host#fragment", false},
@@ -358,6 +379,18 @@ func TestMux_MethodNotAllowed(t *testing.T) {
 			if allow := w.Header().Get("Allow"); allow == "" {
 				t.Fatal("expected Allow header to be set")
 			}
+			if strings.HasPrefix(tt.path, "/api/") {
+				if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+					t.Fatalf("expected JSON Content-Type for API 405, got %q", ct)
+				}
+				var resp map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal API 405 response: %v", err)
+				}
+				if resp["error"] == "" {
+					t.Fatal("expected API 405 response to include error")
+				}
+			}
 		})
 	}
 }
@@ -375,6 +408,18 @@ func TestMux_NotFound(t *testing.T) {
 			mux.ServeHTTP(w, req)
 			if w.Code != http.StatusNotFound {
 				t.Fatalf("expected 404, got %v", w.Code)
+			}
+			if strings.HasPrefix(path, "/api/") {
+				if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+					t.Fatalf("expected JSON Content-Type for API 404, got %q", ct)
+				}
+				var resp map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal API 404 response: %v", err)
+				}
+				if resp["error"] == "" {
+					t.Fatal("expected API 404 response to include error")
+				}
 			}
 		})
 	}
@@ -490,6 +535,25 @@ func TestHandleHTTPStart_InvalidTarget(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPStart_InvalidPort(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodPost, "/api/httpgen?target=192.0.2.1:70000", nil)
+	w := httptest.NewRecorder()
+	app.handleHTTPStart(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid target port, got %v", w.Code)
+	}
+}
+
+func TestSafeDialContext_BlocksUnsafeAddress(t *testing.T) {
+	t.Parallel()
+	_, err := safeDialContext(context.Background(), "tcp", "127.0.0.1:80")
+	if !errors.Is(err, errUnsafeTargetIP) {
+		t.Fatalf("expected unsafe target error, got %v", err)
+	}
+}
+
 func TestHandleHTTPStart_MissingTarget(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -557,6 +621,26 @@ func TestHandleMigrate_RejectsShellMetachars(t *testing.T) {
 	}
 }
 
+func TestHandleMigrate_RejectsDisallowedImage(t *testing.T) {
+	t.Parallel()
+	app := &App{allowedImage: "localhost/katamaran:dev"}
+	form := validMigrateForm()
+	form.Set("image", "evil.example/katamaran:dev")
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for disallowed image, got %v", w.Code)
+	}
+	app.migrationMutex.Lock()
+	started := app.isMigrating
+	app.migrationMutex.Unlock()
+	if started {
+		t.Fatal("migration should not start with a disallowed image")
+	}
+}
+
 func TestHandleMigrate_MissingRequiredField(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -575,7 +659,7 @@ func TestHandleMigrate_MissingRequiredField(t *testing.T) {
 
 func TestHandleMigrate_DuplicatePrevented(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{migrateScript: slowMigrateScript(t)}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -602,6 +686,13 @@ func TestHandleMigrate_DuplicatePrevented(t *testing.T) {
 	if w2.Code != http.StatusConflict {
 		t.Fatalf("duplicate migration: expected 409, got %v", w2.Code)
 	}
+	app.migrationMutex.Lock()
+	cancel := app.migrationCancel
+	app.migrationMutex.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	waitMigrationDone(t, app, 5*time.Second)
 }
 
 func TestHandleMigrateStop_ReturnsBody(t *testing.T) {
@@ -692,6 +783,21 @@ func TestAppendLog_Overflow(t *testing.T) {
 	app.migrationMutex.Unlock()
 	if count != maxLogLines {
 		t.Fatalf("expected log capped at %d, got %d", maxLogLines, count)
+	}
+}
+
+func TestAppendLog_TruncatesLongLines(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	app.appendLog(strings.Repeat("x", maxLogLineSize+100))
+	app.migrationMutex.Lock()
+	got := app.migrationOutput[0]
+	app.migrationMutex.Unlock()
+	if len(got) > maxLogLineSize+len(" ... [truncated]") {
+		t.Fatalf("log line was not truncated, length=%d", len(got))
+	}
+	if !strings.HasSuffix(got, " ... [truncated]") {
+		t.Fatalf("truncated log line missing suffix: %q", got)
 	}
 }
 
@@ -1164,7 +1270,7 @@ func TestHandleReadyz_NoScript(t *testing.T) {
 
 func TestHandleMigrateStop_WithRunningMigration(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{migrateScript: slowMigrateScript(t)}
 	// Start a migration so there's something to stop.
 	form := validMigrateForm()
 	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
@@ -1189,6 +1295,7 @@ func TestHandleMigrateStop_WithRunningMigration(t *testing.T) {
 	if resp["stopped"] != true {
 		t.Errorf("stopped = %v, want true", resp["stopped"])
 	}
+	waitMigrationDone(t, app, 5*time.Second)
 }
 
 func TestGenerateID(t *testing.T) {
@@ -1198,7 +1305,7 @@ func TestGenerateID(t *testing.T) {
 		t.Fatalf("expected 16-char hex ID, got %d chars: %q", len(id), id)
 	}
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("expected lowercase hex, got char %q in %q", string(c), id)
 		}
 	}

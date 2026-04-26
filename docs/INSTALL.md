@@ -76,7 +76,7 @@ podman run --rm localhost/katamaran:dev --help
 
 ## Option 3: Install on Kubernetes Nodes (DaemonSet)
 
-This installs `katamaran` onto `/usr/local/bin/katamaran` on nodes labeled for Kata runtime. The DaemonSet also configures the Kata QMP extra-monitor socket (required for migration) and loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) on each node via an init container.
+This installs `katamaran` onto `/usr/local/bin/katamaran` on nodes labeled for Kata runtime. The DaemonSet also loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) and enables the Kata QMP extra-monitor socket when the default Kata 3.25+ QEMU config path is present.
 
 ### Step 1: Build image
 

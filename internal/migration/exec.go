@@ -40,15 +40,15 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 		errMsg := strings.TrimSpace(out.String())
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			if errMsg == "" {
-				return fmt.Errorf("executing %s %v (exit %d): %w", name, args, exitErr.ExitCode(), err)
+			if errMsg != "" {
+				return fmt.Errorf("executing %s %v (exit %d): %s: %w", name, args, exitErr.ExitCode(), errMsg, err)
 			}
-			return fmt.Errorf("executing %s %v (exit %d): %s: %w", name, args, exitErr.ExitCode(), errMsg, err)
+			return fmt.Errorf("executing %s %v (exit %d): %w", name, args, exitErr.ExitCode(), err)
 		}
-		if errMsg == "" {
-			return fmt.Errorf("executing %s %v: %w", name, args, err)
+		if errMsg != "" {
+			return fmt.Errorf("executing %s %v: %s: %w", name, args, errMsg, err)
 		}
-		return fmt.Errorf("executing %s %v: %s: %w", name, args, errMsg, err)
+		return fmt.Errorf("executing %s %v: %w", name, args, err)
 	}
 	slog.Debug("Command completed", "command", name, "elapsed", time.Since(start).Round(time.Millisecond))
 	return nil

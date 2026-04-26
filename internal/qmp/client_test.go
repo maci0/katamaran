@@ -155,8 +155,22 @@ func TestExecute_WithArgs(t *testing.T) {
 	}
 
 	received := <-receivedCh
-	if !strings.Contains(string(received), `"uri":"tcp:10.0.0.1:4444"`) {
-		t.Fatalf("expected URI in request, got: %s", string(received))
+	var req struct {
+		Execute   string          `json:"execute"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(received, &req); err != nil {
+		t.Fatalf("unmarshal request: %v; raw=%s", err, string(received))
+	}
+	if req.Execute != "migrate" {
+		t.Fatalf("execute = %q, want %q", req.Execute, "migrate")
+	}
+	var args MigrateArgs
+	if err := json.Unmarshal(req.Arguments, &args); err != nil {
+		t.Fatalf("unmarshal arguments: %v; raw=%s", err, string(req.Arguments))
+	}
+	if args.URI != "tcp:10.0.0.1:4444" {
+		t.Fatalf("uri = %q, want %q", args.URI, "tcp:10.0.0.1:4444")
 	}
 }
 
@@ -182,6 +196,15 @@ func TestExecute_QMPError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "device not found") {
 		t.Fatalf("expected 'device not found' in error, got: %v", err)
+	}
+}
+
+func TestExecute_EmptyCommand(t *testing.T) {
+	t.Parallel()
+	c := &Client{}
+	_, err := c.Execute(context.Background(), "", nil)
+	if err == nil || !strings.Contains(err.Error(), "QMP command is required") {
+		t.Fatalf("Execute error = %v, want empty command validation", err)
 	}
 }
 
@@ -1054,6 +1077,21 @@ func TestReadLine_MaxLineSizeGuard(t *testing.T) {
 	_, err = c.Execute(ctx, "query-migrate", nil)
 	if err == nil {
 		t.Fatal("expected error for oversized line")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size guard error containing 'exceeds', got: %v", err)
+	}
+}
+
+func TestReadLine_MaxLineSizeGuardBeforeNewline(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{
+		r: bufio.NewReader(bytes.NewBufferString(strings.Repeat("x", maxLineSize+1) + "\n")),
+	}
+	_, err := c.readLine()
+	if err == nil {
+		t.Fatal("expected error for oversized newline-terminated line")
 	}
 	if !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected size guard error containing 'exceeds', got: %v", err)

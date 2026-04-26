@@ -24,6 +24,10 @@ jobs:
           go-version-file: go.mod
       - name: Lint
         run: make vet
+      - name: Vulnerability check
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
       - name: Unit tests
         run: make test
       - name: Fuzz seeds
@@ -54,13 +58,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [lint-and-test, build-and-smoke, shellcheck]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: katamaran
+            file: Dockerfile
+            tag: katamaran:ci
+            smoke: --version
+          - name: dashboard
+            file: Dockerfile.dashboard
+            tag: katamaran-dashboard:ci
+            smoke: ./dashboard --version
+    env:
+      VERSION_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Build katamaran image
-        run: docker build --build-arg VERSION=${{ github.sha }} -t katamaran:ci .
-      - name: Build dashboard image
-        run: docker build --build-arg VERSION=${{ github.sha }} -t katamaran-dashboard:ci -f Dockerfile.dashboard .
-      - name: Smoke-test katamaran image
-        run: docker run --rm katamaran:ci --version
-      - name: Smoke-test dashboard image
-        run: docker run --rm katamaran-dashboard:ci ./dashboard --version
+      - name: Build ${{ matrix.name }} image
+        env:
+          IMAGE_FILE: ${{ matrix.file }}
+          IMAGE_TAG: ${{ matrix.tag }}
+        run: docker build --build-arg "VERSION=${VERSION_SHA}" -t "${IMAGE_TAG}" -f "${IMAGE_FILE}" .
+      - name: Smoke-test ${{ matrix.name }} image
+        env:
+          IMAGE_TAG: ${{ matrix.tag }}
+          SMOKE_CMD: ${{ matrix.smoke }}
+        run: docker run --rm "${IMAGE_TAG}" ${SMOKE_CMD}
