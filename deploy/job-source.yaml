@@ -96,6 +96,8 @@ spec:
           mountPath: /run/vc
         - name: sys
           mountPath: /sys
+        - name: cmdline-dir
+          mountPath: /tmp/katamaran-cmdlines
       volumes:
       - name: run-vc
         hostPath:
@@ -109,3 +111,12 @@ spec:
         hostPath:
           path: /lib/modules
           type: Directory
+      - name: cmdline-dir
+        # Used by --emit-cmdline-to in --replay-cmdline mode. The orchestrator
+        # (deploy/migrate.sh) kubectl-cps the captured QEMU cmdline file from
+        # this dir to the dest node's matching mount. Always mounted so the
+        # job manifest is identical between modes; harmless when the flag is
+        # not set (the file is simply never written).
+        hostPath:
+          path: /tmp/katamaran-cmdlines
+          type: DirectoryOrCreate

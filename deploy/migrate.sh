@@ -49,6 +49,13 @@ POD_NAME=""
 POD_NAMESPACE=""
 DEST_POD_NAME=""
 DEST_POD_NAMESPACE=""
+REPLAY_CMDLINE=false
+# Shared per-migration filename for the captured source QEMU cmdline. Both
+# the source and dest jobs mount /tmp/katamaran-cmdlines as a hostPath; the
+# orchestrator (this script) shuttles the file between the source and dest
+# nodes via kubectl cp.
+CMDLINE_HOST_DIR="/tmp/katamaran-cmdlines"
+CMDLINE_FILENAME=""
 export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 
 usage() {
@@ -74,6 +81,8 @@ usage() {
         echo "  --pod-namespace <ns>    Source pod namespace"
         echo "  --dest-pod-name <name>  Destination pod name (resolves dest sandbox QMP socket)"
         echo "  --dest-pod-namespace <ns>  Destination pod namespace"
+        echo "  --replay-cmdline        Capture source QEMU cmdline and replay it on dest with -incoming defer"
+        echo "                          (required when dest pod is an empty pause container with no live VM)"
         echo "  --shared-storage        Enable shared storage mode"
         echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
         echo "  --downtime <ms>         Max allowed downtime in milliseconds, 1-60000 (default: 25)"
@@ -122,6 +131,7 @@ while [[ $# -gt 0 ]]; do
         --pod-namespace) need_arg "$1" "${2:-}"; POD_NAMESPACE="$2"; shift 2 ;;
         --dest-pod-name) need_arg "$1" "${2:-}"; DEST_POD_NAME="$2"; shift 2 ;;
         --dest-pod-namespace) need_arg "$1" "${2:-}"; DEST_POD_NAMESPACE="$2"; shift 2 ;;
+        --replay-cmdline) REPLAY_CMDLINE=true; shift ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
         --tunnel-mode) need_arg "$1" "${2:-}"; TUNNEL_MODE="$2"; shift 2 ;;
@@ -268,6 +278,28 @@ else
     fi
 fi
 
+# When --replay-cmdline is set, both jobs need to know where the captured
+# cmdline file lives. Source writes it; dest reads it. Both mount the same
+# hostPath dir on their respective nodes (declared in deploy/job-*.yaml);
+# this script kubectl-cps the file from source pod to dest pod between the
+# two job startups.
+if [[ "$REPLAY_CMDLINE" == "true" ]]; then
+    if [[ -z "$POD_NAME" ]]; then
+        echo "Error: --replay-cmdline requires --pod-name (the source QEMU PID is resolved from the pod)" >&2
+        exit 1
+    fi
+    if [[ -z "${KATAMARAN_MIGRATION_ID:-}" ]]; then
+        # Generate a stable filename per migration so concurrent runs don't
+        # clobber each other's cmdline files on the shared hostPath dir.
+        KATAMARAN_MIGRATION_ID="m$(date +%s)-$$"
+        export KATAMARAN_MIGRATION_ID
+    fi
+    CMDLINE_FILENAME="cmdline-${KATAMARAN_MIGRATION_ID}.txt"
+    CMDLINE_PATH="${CMDLINE_HOST_DIR}/${CMDLINE_FILENAME}"
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --emit-cmdline-to ${CMDLINE_PATH}"
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --replay-cmdline ${CMDLINE_PATH}"
+fi
+
 # Cleanup trap
 cleanup() {
     if [[ "${KATAMARAN_KEEP_JOBS:-}" == "true" ]]; then
@@ -301,55 +333,146 @@ dump_debug() {
 echo ">>> Preparing migration..."
 "${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found
 
-echo ">>> Deploying destination job on $DEST_NODE..."
-export NODE_NAME="$DEST_NODE"
-export QMP_SOCKET="$QMP_DEST"
-export IMAGE="$IMAGE_REF"
+# Build dest-job EXTRA_ARGS once. In replay-cmdline mode we still set --tap
+# below so the dest can install the sch_plug qdisc on its own tap0_kata
+# (created by the spawned QEMU); the dest binary tolerates a missing iface.
 if [[ -n "${TAP_IFACE}" ]]; then
-    export EXTRA_ARGS="${DEST_EXTRA_ARGS} --tap ${TAP_IFACE}"
+    DEST_EXTRA_ARGS_FULL="${DEST_EXTRA_ARGS} --tap ${TAP_IFACE}"
     if [[ -n "${TAP_NETNS}" ]]; then
-        export EXTRA_ARGS="${EXTRA_ARGS} --tap-netns ${TAP_NETNS}"
+        DEST_EXTRA_ARGS_FULL="${DEST_EXTRA_ARGS_FULL} --tap-netns ${TAP_NETNS}"
     fi
 else
-    export EXTRA_ARGS="${DEST_EXTRA_ARGS}"
+    DEST_EXTRA_ARGS_FULL="${DEST_EXTRA_ARGS}"
 fi
 
-envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
+deploy_dest_job() {
+    echo ">>> Deploying destination job on $DEST_NODE..."
+    export NODE_NAME="$DEST_NODE"
+    export QMP_SOCKET="$QMP_DEST"
+    export IMAGE="$IMAGE_REF"
+    export EXTRA_ARGS="$DEST_EXTRA_ARGS_FULL"
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
-echo ">>> Waiting for destination pod to appear..."
-for _ in $(seq 1 30); do
-    if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest --no-headers 2>/dev/null | grep -q .; then
-        break
-    fi
-    sleep 2
-done
-echo ">>> Waiting for destination pod to be ready..."
-"${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l job-name=katamaran-dest --timeout=60s
+    echo ">>> Waiting for destination pod to appear..."
+    for _ in $(seq 1 30); do
+        if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest --no-headers 2>/dev/null | grep -q .; then
+            break
+        fi
+        sleep 2
+    done
+    echo ">>> Waiting for destination pod to be ready..."
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l job-name=katamaran-dest --timeout=60s
 
-echo ">>> Waiting for destination service loop to become ready..."
-ready=0
-for _ in $(seq 1 20); do
-    if "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest 2>/dev/null | grep -q "Waiting for QEMU RESUME"; then
-        ready=1
-        break
+    echo ">>> Waiting for destination service loop to become ready..."
+    ready=0
+    for _ in $(seq 1 60); do
+        if "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest 2>/dev/null | grep -q "Waiting for QEMU RESUME"; then
+            ready=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ "$ready" -ne 1 ]]; then
+        echo "Error: destination did not reach ready state in time." >&2
+        dump_debug
+        exit 1
     fi
-    sleep 2
-done
-if [[ "$ready" -ne 1 ]]; then
-    echo "Error: destination did not reach ready state in time." >&2
-    dump_debug
-    exit 1
+}
+
+deploy_source_job() {
+    echo ">>> Deploying source job on $SOURCE_NODE..."
+    export NODE_NAME="$SOURCE_NODE"
+    export QMP_SOCKET="$QMP_SOURCE"
+    export IMAGE="$IMAGE_REF"
+    export DEST_IP="$DEST_IP"
+    export VM_IP="$VM_IP"
+    export EXTRA_ARGS="$SRC_EXTRA_ARGS"
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
+}
+
+# ship_cmdline_to_dest copies the captured QEMU cmdline file from the source
+# pod's hostPath mount to the dest node's hostPath mount via a temporary
+# sandbox pod on the dest node. Required only in --replay-cmdline mode; the
+# dest job itself can't be used as the kubectl-cp target because it hasn't
+# been deployed yet (the dest job needs the cmdline file to start QEMU).
+ship_cmdline_to_dest() {
+    local local_tmp src_pod
+    local_tmp="$(mktemp)"
+
+    echo ">>> Waiting for source job to capture QEMU cmdline..."
+    src_pod=""
+    for _ in $(seq 1 60); do
+        src_pod="$("${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-source -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        if [[ -n "$src_pod" ]] && "${KUBECTL[@]}" -n kube-system logs "$src_pod" 2>/dev/null | grep -q "KATAMARAN_CMDLINE_AT="; then
+            break
+        fi
+        sleep 2
+    done
+    if [[ -z "$src_pod" ]] || ! "${KUBECTL[@]}" -n kube-system logs "$src_pod" 2>/dev/null | grep -q "KATAMARAN_CMDLINE_AT="; then
+        echo "Error: source job never emitted KATAMARAN_CMDLINE_AT marker." >&2
+        dump_debug
+        exit 1
+    fi
+
+    echo ">>> Copying cmdline file from source pod $src_pod to local tmp..."
+    "${KUBECTL[@]}" -n kube-system cp "$src_pod:${CMDLINE_PATH}" "$local_tmp"
+    if [[ ! -s "$local_tmp" ]]; then
+        echo "Error: cmdline file from source pod is empty." >&2
+        rm -f "$local_tmp"
+        exit 1
+    fi
+
+    echo ">>> Pre-staging cmdline file on dest node $DEST_NODE..."
+    # Use a one-shot privileged debug pod on the dest node to drop the file
+    # into the dest hostPath dir before we start the dest katamaran job.
+    local stager="katamaran-cmdline-stager-${KATAMARAN_MIGRATION_ID}"
+    "${KUBECTL[@]}" -n kube-system delete pod "$stager" --ignore-not-found --force --grace-period=0 2>/dev/null || true
+    cat <<EOF | "${KUBECTL[@]}" apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${stager}
+  namespace: kube-system
+spec:
+  nodeName: ${DEST_NODE}
+  restartPolicy: Never
+  hostPID: true
+  containers:
+  - name: stager
+    image: ${IMAGE_REF}
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-c", "mkdir -p ${CMDLINE_HOST_DIR} && sleep 60"]
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: cmdline-dir
+      mountPath: ${CMDLINE_HOST_DIR}
+  volumes:
+  - name: cmdline-dir
+    hostPath:
+      path: ${CMDLINE_HOST_DIR}
+      type: DirectoryOrCreate
+EOF
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready "pod/${stager}" --timeout=60s
+    "${KUBECTL[@]}" -n kube-system cp "$local_tmp" "${stager}:${CMDLINE_PATH}"
+    "${KUBECTL[@]}" -n kube-system delete pod "$stager" --ignore-not-found --force --grace-period=0 2>/dev/null || true
+    rm -f "$local_tmp"
+    echo ">>> Cmdline file staged at ${DEST_NODE}:${CMDLINE_PATH}"
+}
+
+if [[ "$REPLAY_CMDLINE" == "true" ]]; then
+    # Source-first ordering: source captures and emits cmdline, then blocks
+    # waiting for dest TCP. We ship the file, start dest, dest spawns QEMU,
+    # source detects dest readiness and proceeds with migration.
+    deploy_source_job
+    ship_cmdline_to_dest
+    deploy_dest_job
+else
+    # Default ordering: dest first (its migrate-incoming listener must be up
+    # before source connects), source second.
+    deploy_dest_job
+    deploy_source_job
 fi
-
-echo ">>> Deploying source job on $SOURCE_NODE..."
-export NODE_NAME="$SOURCE_NODE"
-export QMP_SOCKET="$QMP_SOURCE"
-export IMAGE="$IMAGE_REF"
-export DEST_IP="$DEST_IP"
-export VM_IP="$VM_IP"
-export EXTRA_ARGS="$SRC_EXTRA_ARGS"
-
-envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
 
 echo ">>> Waiting for migration to complete..."
 set +e

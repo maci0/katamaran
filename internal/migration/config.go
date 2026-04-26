@@ -110,6 +110,15 @@ type SourceConfig struct {
 	// derive the QMP socket path and VM IP. Consumed by the migration package.
 	PodName      string
 	PodNamespace string
+	// EmitCmdlineTo, when non-empty, instructs the source binary to capture
+	// /proc/<qemu_pid>/cmdline (NUL bytes converted to newlines) and write it
+	// to this path before kicking off the migration. The destination job
+	// consumes this file via DestConfig.ReplayCmdlineFile to spawn an
+	// identical QEMU with -incoming defer, since Kata 3.27 has no knob to
+	// inject extra QEMU args. The source emits a `KATAMARAN_CMDLINE_AT=<path>`
+	// stdout line when the write succeeds so the orchestrator can ship the
+	// file to the dest node.
+	EmitCmdlineTo string
 }
 
 // DestConfig holds all parameters for RunDestination.
@@ -125,6 +134,23 @@ type DestConfig struct {
 	// derive the QMP socket path. Symmetric to SourceConfig.PodName.
 	DestPodName      string
 	DestPodNamespace string
+	// ReplayCmdlineFile, when non-empty, points at a file containing the
+	// source QEMU's /proc/<pid>/cmdline (NUL→newline). The destination binary
+	// transforms this cmdline (path substitutions, strip readonly,
+	// strip/append -incoming defer + -daemonize), spawns the QEMU itself
+	// inside the dest container's network namespace, then drives the
+	// migration via QMP as usual. Used because Kata 3.27 cannot start QEMU
+	// with -incoming defer (kata-shim kills VMs that fail the vsock dial).
+	ReplayCmdlineFile string
+	// QEMUBinary, when non-empty, overrides the QEMU binary path used for
+	// cmdline replay. Defaults to the source's argv[0] (typically
+	// /opt/kata/bin/qemu-system-x86_64). Mostly a test seam.
+	QEMUBinary string
+	// SandboxID, when non-empty, names the synthetic dest sandbox directory
+	// created under /run/vc/vm/<id>/ for cmdline replay. Defaults to
+	// "katamaran-dest". Also used to substitute the source sandbox path in
+	// the captured cmdline.
+	SandboxID string
 }
 
 // cleanupCtx returns a context with cleanupTimeout that is independent of the

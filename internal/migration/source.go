@@ -48,6 +48,7 @@ var (
 //   - Cancels the drive-mirror block job (disarms the deferred cleanup)
 //   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	var resolvedQEMUPID int
 	if cfg.PodName != "" {
 		ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
 		if err != nil {
@@ -65,9 +66,28 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if cfg.QMPSocket == "" {
 			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
 		}
+		resolvedQEMUPID = res.PID
 		// Emit netns/iface so the orchestrator (deploy/migrate.sh) can pass them
 		// to the dest job. Format is parser-friendly and unique per migration.
 		fmt.Printf("KATAMARAN_RESOLVED tap_netns=/proc/%d/ns/net tap=tap0_kata\n", res.PID)
+	}
+
+	// Capture the QEMU cmdline for the dest job to replay with -incoming defer.
+	// Done after pod resolution (when the QEMU PID is known) and before any
+	// QMP work, so the orchestrator can ship the file to the dest node while
+	// the dest job is still starting up. Failure here is fatal: a downstream
+	// dest job in replay mode will be unable to start QEMU without this file.
+	if cfg.EmitCmdlineTo != "" {
+		if resolvedQEMUPID == 0 {
+			return fmt.Errorf("--emit-cmdline-to requires pod-mode (--pod-name) so the QEMU PID can be resolved")
+		}
+		if err := captureSourceCmdline(resolvedQEMUPID, cfg.EmitCmdlineTo); err != nil {
+			return fmt.Errorf("capture source QEMU cmdline: %w", err)
+		}
+		// Marker line consumed by deploy/migrate.sh — print on stdout so it
+		// survives log re-formatting (slog writes to stderr in this binary).
+		fmt.Printf("KATAMARAN_CMDLINE_AT=%s\n", cfg.EmitCmdlineTo)
+		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
 	}
 
 	cfg.DestIP = cfg.DestIP.Unmap()
@@ -98,6 +118,21 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout+storageSyncTimeout)
 	defer cancel()
+
+	// In replay-cmdline mode the dest job starts AFTER us (the orchestrator
+	// needs our captured cmdline to spawn dest QEMU). Block here until the
+	// dest's RAM-migration TCP port becomes connectable, otherwise the very
+	// first migrate-incoming-driven QMP we issue would race the dest pod's
+	// startup and fail. The wait is bounded so a botched orchestration does
+	// not hang the source job indefinitely.
+	if cfg.EmitCmdlineTo != "" {
+		slog.Info("Waiting for destination RAM-migration listener",
+			"dest", cfg.DestIP, "port", ramMigrationPort, "timeout", destReadyTimeout)
+		if err := waitForDestReady(ctx, cfg.DestIP, ramMigrationPort, destReadyTimeout); err != nil {
+			return fmt.Errorf("waiting for destination to come up: %w", err)
+		}
+		slog.Info("Destination RAM-migration listener is reachable")
+	}
 
 	migrationStart := time.Now()
 

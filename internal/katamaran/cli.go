@@ -33,9 +33,11 @@ var (
 	sourceOnlyFlags = map[string]bool{
 		"dest-ip": true, "vm-ip": true, "tunnel-mode": true,
 		"downtime": true, "auto-downtime": true,
+		"emit-cmdline-to": true,
 	}
 	destOnlyFlags = map[string]bool{
 		"tap": true, "tap-netns": true,
+		"replay-cmdline": true,
 	}
 )
 
@@ -62,10 +64,12 @@ Source mode flags:
   --tunnel-mode string     Tunnel mode: 'ipip', 'gre', or 'none' (default "ipip")
   --downtime int           Max allowed downtime in milliseconds, 1-60000 (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
+  --emit-cmdline-to string Capture source QEMU /proc/<pid>/cmdline to this path before migration
 
 Destination mode flags:
   --tap string             Tap interface name for tc sch_plug buffering
   --tap-netns string       Network namespace path for tap interface (e.g. /proc/PID/ns/net)
+  --replay-cmdline string  Spawn QEMU on dest by replaying captured source cmdline (with -incoming defer)
 
 Other:
   -v, --version            Show version and exit
@@ -112,6 +116,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	podNS := fs.String("pod-namespace", "", "source pod namespace")
 	destPodName := fs.String("dest-pod-name", "", "destination pod name (alternative to --qmp)")
 	destPodNS := fs.String("dest-pod-namespace", "", "destination pod namespace")
+	emitCmdlineTo := fs.String("emit-cmdline-to", "", "source mode: capture /proc/<qemu_pid>/cmdline to this path before migration")
+	replayCmdline := fs.String("replay-cmdline", "", "dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -210,14 +216,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		err = migration.RunDestination(ctx, migration.DestConfig{
-			QMPSocket:        *qmpSocket,
-			TapIface:         *tapIface,
-			TapNetns:         *tapNetns,
-			DriveID:          *driveID,
-			SharedStorage:    *sharedStorage,
-			MultifdChannels:  *multifdChannels,
-			DestPodName:      *destPodName,
-			DestPodNamespace: *destPodNS,
+			QMPSocket:         *qmpSocket,
+			TapIface:          *tapIface,
+			TapNetns:          *tapNetns,
+			DriveID:           *driveID,
+			SharedStorage:     *sharedStorage,
+			MultifdChannels:   *multifdChannels,
+			DestPodName:       *destPodName,
+			DestPodNamespace:  *destPodNS,
+			ReplayCmdlineFile: *replayCmdline,
 		})
 	case roleSource:
 		if *destIP == "" {
@@ -302,6 +309,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			MultifdChannels: *multifdChannels,
 			PodName:         *podName,
 			PodNamespace:    *podNS,
+			EmitCmdlineTo:   *emitCmdlineTo,
 		})
 	}
 

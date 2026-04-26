@@ -58,6 +58,18 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		}
 	}
 
+	// If a captured source cmdline is supplied, spawn the destination QEMU
+	// ourselves with -incoming defer + -daemonize before connecting to QMP.
+	// This bypasses Kata's sandbox lifecycle (which kills VMs that don't
+	// connect via vsock within dial_timeout — incompatible with -incoming).
+	// spawnReplayedQEMU mutates cfg.QMPSocket to point at the spawned QEMU's
+	// monitor; pod-resolver overrides above are intentionally superseded.
+	if cfg.ReplayCmdlineFile != "" {
+		if err := spawnReplayedQEMU(ctx, &cfg); err != nil {
+			return fmt.Errorf("replay source QEMU cmdline: %w", err)
+		}
+	}
+
 	if cfg.MultifdChannels < 0 {
 		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
 	}

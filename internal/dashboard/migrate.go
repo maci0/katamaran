@@ -57,7 +57,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace"}
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline"}
 	for _, key := range formKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
@@ -70,6 +70,11 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if v := r.PostFormValue("shared_storage"); v != "" && v != "true" && v != "false" {
 		slog.Warn("Rejected invalid shared_storage value", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid value for shared_storage (must be 'true' or 'false')", http.StatusBadRequest)
+		return
+	}
+	if v := r.PostFormValue("replay_cmdline"); v != "" && v != "true" && v != "false" {
+		slog.Warn("Rejected invalid replay_cmdline value", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Invalid value for replay_cmdline (must be 'true' or 'false')", http.StatusBadRequest)
 		return
 	}
 
@@ -233,6 +238,14 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 	if r.PostFormValue("shared_storage") == "true" {
 		args = append(args, "--shared-storage")
+	}
+	// In pod-mode the dest pod is typically a fresh pause container with no
+	// live VM; the migration must capture the source QEMU's cmdline and replay
+	// it on the dest with -incoming defer. The opt-in flag mirrors the
+	// migrate.sh switch so the dashboard does not silently impose the
+	// behaviour on legacy explicit-flag callers.
+	if r.PostFormValue("replay_cmdline") == "true" {
+		args = append(args, "--replay-cmdline")
 	}
 	if downtimeArg != "" {
 		args = append(args, "--downtime", downtimeArg)
