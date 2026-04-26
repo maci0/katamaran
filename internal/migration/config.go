@@ -105,6 +105,11 @@ type SourceConfig struct {
 	DowntimeLimitMS int
 	AutoDowntime    bool
 	MultifdChannels int
+	// PodName and PodNamespace are an alternative to QMPSocket+VMIP: when set,
+	// the source binary resolves the pod's sandbox container at runtime to
+	// derive the QMP socket path and VM IP. Consumed by the migration package.
+	PodName      string
+	PodNamespace string
 }
 
 // DestConfig holds all parameters for RunDestination.

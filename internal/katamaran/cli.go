@@ -108,6 +108,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	multifdChannels := fs.Int("multifd-channels", migration.DefaultMultifdChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
+	podName := fs.String("pod-name", "", "source pod name (alternative to --qmp/--vm-ip)")
+	podNS := fs.String("pod-namespace", "", "source pod namespace")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -203,37 +205,48 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			MultifdChannels: *multifdChannels,
 		})
 	case roleSource:
-		var missing []string
 		if *destIP == "" {
-			missing = append(missing, "--dest-ip")
-		}
-		if *vmIP == "" {
-			missing = append(missing, "--vm-ip")
-		}
-		if len(missing) > 0 {
-			_, _ = fmt.Fprintf(stderr, "Error: required flag(s) not set: %s\n\n", strings.Join(missing, ", "))
+			_, _ = fmt.Fprintf(stderr, "Error: required flag(s) not set: --dest-ip\n\n")
 			printUsage(stderr)
 			return 2
 		}
-		parsedDest, err1 := netip.ParseAddr(*destIP)
+		// XOR check: exactly one of (--qmp + --vm-ip) or (--pod-name + --pod-namespace)
+		// must be supplied. Use fs.Visit to detect explicitly-set flags, since
+		// --qmp has a non-empty default value.
+		seen := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+		hasPod := *podName != "" && *podNS != ""
+		hasExplicit := seen["qmp"] && seen["vm-ip"]
+		if hasPod == hasExplicit {
+			_, _ = fmt.Fprintf(stderr, "Error: source mode requires exactly one of: (--qmp + --vm-ip) or (--pod-name + --pod-namespace)\n\n")
+			printUsage(stderr)
+			return 2
+		}
+
+		var parsedDest, parsedVM netip.Addr
+		var err1 error
+		parsedDest, err1 = netip.ParseAddr(*destIP)
 		if err1 != nil {
 			_, _ = fmt.Fprintf(stderr, "Error: invalid --dest-ip %q: %v\n\n", *destIP, err1)
 			printUsage(stderr)
 			return 2
 		}
-		parsedVM, err2 := netip.ParseAddr(*vmIP)
-		if err2 != nil {
-			_, _ = fmt.Fprintf(stderr, "Error: invalid --vm-ip %q: %v\n\n", *vmIP, err2)
-			printUsage(stderr)
-			return 2
-		}
 		parsedDest = parsedDest.Unmap()
-		parsedVM = parsedVM.Unmap()
-		if parsedDest.Is4() != parsedVM.Is4() {
-			_, _ = fmt.Fprintf(stderr, "Error: --dest-ip and --vm-ip address family mismatch (%s vs %s)\n\n",
-				migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
-			printUsage(stderr)
-			return 2
+		if hasExplicit {
+			var err2 error
+			parsedVM, err2 = netip.ParseAddr(*vmIP)
+			if err2 != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: invalid --vm-ip %q: %v\n\n", *vmIP, err2)
+				printUsage(stderr)
+				return 2
+			}
+			parsedVM = parsedVM.Unmap()
+			if parsedDest.Is4() != parsedVM.Is4() {
+				_, _ = fmt.Fprintf(stderr, "Error: --dest-ip and --vm-ip address family mismatch (%s vs %s)\n\n",
+					migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
+				printUsage(stderr)
+				return 2
+			}
 		}
 		tm := migration.TunnelMode(*tunnelMode)
 		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
@@ -257,6 +270,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			DowntimeLimitMS: *downtimeLimit,
 			AutoDowntime:    *autoDowntime,
 			MultifdChannels: *multifdChannels,
+			PodName:         *podName,
+			PodNamespace:    *podNS,
 		})
 	}
 
