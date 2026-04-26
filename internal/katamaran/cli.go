@@ -110,6 +110,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	podName := fs.String("pod-name", "", "source pod name (alternative to --qmp/--vm-ip)")
 	podNS := fs.String("pod-namespace", "", "source pod namespace")
+	destPodName := fs.String("dest-pod-name", "", "destination pod name (alternative to --qmp)")
+	destPodNS := fs.String("dest-pod-namespace", "", "destination pod namespace")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -196,13 +198,26 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var err error
 	switch mode {
 	case roleDest:
+		// Validate that --dest-pod-name and --dest-pod-namespace come together.
+		// Unlike source, no XOR check is needed: --qmp has a sensible default
+		// and the resolver overrides it (including the well-known migrate.sh
+		// placeholder) when a dest pod is supplied.
+		destSeen := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { destSeen[f.Name] = true })
+		if destSeen["dest-pod-name"] != destSeen["dest-pod-namespace"] {
+			_, _ = fmt.Fprintf(stderr, "Error: --dest-pod-name and --dest-pod-namespace must be supplied together\n\n")
+			printUsage(stderr)
+			return 2
+		}
 		err = migration.RunDestination(ctx, migration.DestConfig{
-			QMPSocket:       *qmpSocket,
-			TapIface:        *tapIface,
-			TapNetns:        *tapNetns,
-			DriveID:         *driveID,
-			SharedStorage:   *sharedStorage,
-			MultifdChannels: *multifdChannels,
+			QMPSocket:        *qmpSocket,
+			TapIface:         *tapIface,
+			TapNetns:         *tapNetns,
+			DriveID:          *driveID,
+			SharedStorage:    *sharedStorage,
+			MultifdChannels:  *multifdChannels,
+			DestPodName:      *destPodName,
+			DestPodNamespace: *destPodNS,
 		})
 	case roleSource:
 		if *destIP == "" {

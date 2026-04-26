@@ -47,6 +47,8 @@ VM_IP=""
 IMAGE_REF=""
 POD_NAME=""
 POD_NAMESPACE=""
+DEST_POD_NAME=""
+DEST_POD_NAMESPACE=""
 export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 
 usage() {
@@ -68,6 +70,10 @@ usage() {
         echo ""
         echo "Optional flags:"
         echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
+        echo "  --pod-name <name>       Source pod name (alternative to explicit qmp/vm-ip/tap)"
+        echo "  --pod-namespace <ns>    Source pod namespace"
+        echo "  --dest-pod-name <name>  Destination pod name (resolves dest sandbox QMP socket)"
+        echo "  --dest-pod-namespace <ns>  Destination pod namespace"
         echo "  --shared-storage        Enable shared storage mode"
         echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
         echo "  --downtime <ms>         Max allowed downtime in milliseconds, 1-60000 (default: 25)"
@@ -114,6 +120,8 @@ while [[ $# -gt 0 ]]; do
         --image) need_arg "$1" "${2:-}"; IMAGE_REF="$2"; shift 2 ;;
         --pod-name) need_arg "$1" "${2:-}"; POD_NAME="$2"; shift 2 ;;
         --pod-namespace) need_arg "$1" "${2:-}"; POD_NAMESPACE="$2"; shift 2 ;;
+        --dest-pod-name) need_arg "$1" "${2:-}"; DEST_POD_NAME="$2"; shift 2 ;;
+        --dest-pod-namespace) need_arg "$1" "${2:-}"; DEST_POD_NAMESPACE="$2"; shift 2 ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
         --tunnel-mode) need_arg "$1" "${2:-}"; TUNNEL_MODE="$2"; shift 2 ;;
@@ -198,7 +206,7 @@ fi
 # job YAML via envsubst → /bin/sh -c.  Defence-in-depth: the dashboard
 # already validates these, but migrate.sh can also be called directly.
 shell_safe_re='^[a-zA-Z0-9_./:@=-]+$'
-for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT POD_NAME POD_NAMESPACE; do
+for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT POD_NAME POD_NAMESPACE DEST_POD_NAME DEST_POD_NAMESPACE; do
     val="${!var_name}"
     if [[ -n "$val" && ! "$val" =~ $shell_safe_re ]]; then
         flag_name="${var_name,,}"
@@ -232,6 +240,13 @@ if [[ -n "$LOG_FORMAT" ]]; then
 fi
 
 SRC_EXTRA_ARGS="$DEST_EXTRA_ARGS --tunnel-mode $TUNNEL_MODE"
+
+# Append dest pod-picker flags after SRC_EXTRA_ARGS is forked off DEST_EXTRA_ARGS,
+# so they only land on the dest job (the source job has its own --pod-name flow).
+if [[ -n "$DEST_POD_NAME" ]]; then
+    DEST_EXTRA_ARGS="$DEST_EXTRA_ARGS --dest-pod-name $DEST_POD_NAME --dest-pod-namespace $DEST_POD_NAMESPACE"
+fi
+
 if [[ "$DOWNTIME_SET" == "true" ]]; then
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --downtime $DOWNTIME"
 fi

@@ -5,10 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
 )
+
+// destDefaultQMPSocket is the well-known socket path that deploy/migrate.sh
+// fills into the dest job when no explicit --qmp-dest is provided. It is
+// intentionally overridable here so the pod-resolver can replace it with the
+// real sandbox-derived path at runtime.
+const destDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
 
 // RunDestination prepares the destination node for incoming live migration.
 //
@@ -34,6 +41,23 @@ import (
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
 func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
+	if cfg.DestPodName != "" {
+		ip, err := lookupPodIP(ctx, cfg.DestPodNamespace, cfg.DestPodName)
+		if err != nil {
+			return fmt.Errorf("lookup dest pod IP: %w", err)
+		}
+		res, err := resolveSandbox(sandboxRoot, procImpl, ip)
+		if err != nil {
+			return fmt.Errorf("resolve dest sandbox: %w", err)
+		}
+		// Override both an empty QMPSocket and the migrate.sh-generated default,
+		// since the orchestrator can't know the real sandbox UUID up front and
+		// passes the well-known placeholder path through to the dest job.
+		if cfg.QMPSocket == "" || cfg.QMPSocket == destDefaultQMPSocket {
+			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
+		}
+	}
+
 	if cfg.MultifdChannels < 0 {
 		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
 	}

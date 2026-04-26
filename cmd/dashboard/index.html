@@ -119,6 +119,15 @@
                             </select>
                         </div>
                         <div>
+                            <label for="dest_pod_select" class="block text-xs text-slate-400 mb-1">Dest Pod (optional)</label>
+                            <select id="dest_pod_select" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <option value="">— pick a node first —</option>
+                            </select>
+                            <input type="hidden" name="dest_pod_name" id="dest_pod_name">
+                            <input type="hidden" name="dest_pod_namespace" id="dest_pod_namespace">
+                            <p class="text-xs text-slate-400 -mt-1">Optional: pick a destination kata pod and the resolver will derive its QMP socket. Leave blank to use the orchestrator default.</p>
+                        </div>
+                        <div>
                             <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
                             <input type="text" name="image" id="image" required aria-required="true" placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
                         </div>
@@ -904,12 +913,15 @@
                 opt.dataset.namespace = p.namespace;
                 opt.dataset.name = p.name;
                 opt.dataset.node = p.node;
+                opt.dataset.podIp = p.pod_ip || '';
                 podSel.appendChild(opt);
             }
+            var nodesByName = {};
             podSel.addEventListener('change', function() {
                 var o = podSel.selectedOptions[0];
                 document.getElementById('source_pod_name').value = (o && o.dataset.name) || '';
                 document.getElementById('source_pod_namespace').value = (o && o.dataset.namespace) || '';
+                document.getElementById('vm_ip').value = (o && o.dataset.podIp) || '';
                 var destSel = document.getElementById('dest_node_select');
                 for (var j = 0; j < destSel.options.length; j++) {
                     var dOpt = destSel.options[j];
@@ -920,11 +932,48 @@
             var nodeSel = document.getElementById('dest_node_select');
             for (var k = 0; k < nodes.length; k++) {
                 var n = nodes[k];
+                nodesByName[n.name] = n.internal_ip;
                 var nOpt = document.createElement('option');
                 nOpt.value = n.name;
                 nOpt.textContent = n.name + ' (' + n.internal_ip + ')';
                 nodeSel.appendChild(nOpt);
             }
+            // Repopulate the dest-pod dropdown with kata pods on the chosen node.
+            // Leaving it blank is fine — the resolver only runs server-side when a
+            // dest pod is selected, and the orchestrator falls back to its default.
+            var destPodSel = document.getElementById('dest_pod_select');
+            function refreshDestPods() {
+                var selectedNode = nodeSel.value;
+                while (destPodSel.firstChild) destPodSel.removeChild(destPodSel.firstChild);
+                var placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = selectedNode ? '— optional: pick a dest pod —' : '— pick a node first —';
+                destPodSel.appendChild(placeholder);
+                if (!selectedNode) return;
+                for (var m = 0; m < pods.length; m++) {
+                    var dp = pods[m];
+                    if (dp.node !== selectedNode) continue;
+                    var dpOpt = document.createElement('option');
+                    dpOpt.value = dp.namespace + '/' + dp.name;
+                    dpOpt.textContent = dp.namespace + '/' + dp.name + ' (' + (dp.pod_ip || 'no ip') + ')';
+                    dpOpt.dataset.namespace = dp.namespace;
+                    dpOpt.dataset.name = dp.name;
+                    destPodSel.appendChild(dpOpt);
+                }
+            }
+            nodeSel.addEventListener('change', function() {
+                document.getElementById('dest_ip').value = nodesByName[nodeSel.value] || '';
+                // Reset hidden dest-pod inputs whenever the node changes; the user
+                // must re-pick a pod (or leave it blank) for the new node.
+                document.getElementById('dest_pod_name').value = '';
+                document.getElementById('dest_pod_namespace').value = '';
+                refreshDestPods();
+            });
+            destPodSel.addEventListener('change', function() {
+                var dpo = destPodSel.selectedOptions[0];
+                document.getElementById('dest_pod_name').value = (dpo && dpo.dataset.name) || '';
+                document.getElementById('dest_pod_namespace').value = (dpo && dpo.dataset.namespace) || '';
+            });
         } catch (e) {
             console.error('populatePickers failed:', e);
         }

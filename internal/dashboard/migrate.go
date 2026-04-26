@@ -57,7 +57,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace"}
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace"}
 	for _, key := range formKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
@@ -204,6 +204,11 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			if v := r.PostFormValue(p.key); v != "" {
 				args = append(args, p.flag, v)
 			}
+		}
+		// Dest pod picker: when set, the dest job's resolver derives qmp from
+		// the pod's sandbox UUID instead of using the migrate.sh placeholder.
+		if v := r.PostFormValue("dest_pod_name"); v != "" {
+			args = append(args, "--dest-pod-name", v, "--dest-pod-namespace", r.PostFormValue("dest_pod_namespace"))
 		}
 		logSourceNode = resolvedSrcNode
 		logDestIP = resolvedDestIP

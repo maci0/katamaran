@@ -120,6 +120,11 @@ type DestConfig struct {
 	DriveID         string
 	SharedStorage   bool
 	MultifdChannels int
+	// DestPodName and DestPodNamespace are an alternative to QMPSocket: when set,
+	// the destination binary resolves the pod's sandbox container at runtime to
+	// derive the QMP socket path. Symmetric to SourceConfig.PodName.
+	DestPodName      string
+	DestPodNamespace string
 }
 
 // cleanupCtx returns a context with cleanupTimeout that is independent of the
