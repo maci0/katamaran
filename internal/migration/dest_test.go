@@ -441,7 +441,9 @@ func TestRunDestination_NonShared_CommandArguments(t *testing.T) {
 
 	var caps qmp.MigrateSetCapabilitiesArgs
 	decodeRecordedArgs(t, findRecordedCommand(t, commands, "migrate-set-capabilities"), &caps)
-	if len(caps.Capabilities) != 1 || caps.Capabilities[0] != (qmp.MigrationCapability{Capability: "multifd", State: true}) {
+	if len(caps.Capabilities) != 2 ||
+		caps.Capabilities[0] != (qmp.MigrationCapability{Capability: "auto-converge", State: true}) ||
+		caps.Capabilities[1] != (qmp.MigrationCapability{Capability: "multifd", State: true}) {
 		t.Fatalf("unexpected destination capabilities: %+v", caps.Capabilities)
 	}
 
