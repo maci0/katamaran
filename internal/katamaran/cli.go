@@ -225,9 +225,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			printUsage(stderr)
 			return 2
 		}
-		// XOR check: exactly one of (--qmp + --vm-ip) or (--pod-name + --pod-namespace)
-		// must be supplied. Use fs.Visit to detect explicitly-set flags, since
-		// --qmp has a non-empty default value.
+		// Mode selection: pod mode requires both pod flags; legacy mode requires
+		// --vm-ip (and uses --qmp's default if not explicitly set). Mixing the
+		// two pod flags with --vm-ip or an explicit --qmp is rejected.
 		seen := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 		visitedPodName := seen["pod-name"]
@@ -238,12 +238,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		hasPod := *podName != "" && *podNS != ""
-		hasExplicit := seen["qmp"] && seen["vm-ip"]
-		if hasPod == hasExplicit {
-			_, _ = fmt.Fprintf(stderr, "Error: source mode requires exactly one of: (--qmp + --vm-ip) or (--pod-name + --pod-namespace)\n\n")
+		if hasPod && (seen["vm-ip"] || seen["qmp"]) {
+			_, _ = fmt.Fprintf(stderr, "Error: --pod-name/--pod-namespace cannot be combined with --qmp or --vm-ip\n\n")
 			printUsage(stderr)
 			return 2
 		}
+		if !hasPod && *vmIP == "" {
+			_, _ = fmt.Fprintf(stderr, "Error: source mode requires either (--vm-ip [+ --qmp]) or (--pod-name + --pod-namespace)\n\n")
+			printUsage(stderr)
+			return 2
+		}
+		hasExplicit := !hasPod
 
 		var parsedDest, parsedVM netip.Addr
 		var err1 error

@@ -143,10 +143,8 @@ func TestRun_SourceMissingRequiredFlags(t *testing.T) {
 		t.Fatalf("exit code %d, want 2", code)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "exactly one of") ||
-		!strings.Contains(out, "--qmp + --vm-ip") ||
-		!strings.Contains(out, "--pod-name + --pod-namespace") {
-		t.Fatalf("expected XOR error listing both flag-pairs, got: %s", out)
+	if !strings.Contains(out, "--vm-ip") || !strings.Contains(out, "--pod-name + --pod-namespace") {
+		t.Fatalf("expected error listing both flag options, got: %s", out)
 	}
 }
 
@@ -199,10 +197,8 @@ func TestRun_SourceBothFlagPairsRejected(t *testing.T) {
 		t.Fatalf("exit code %d, want 2", code)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, "exactly one of") ||
-		!strings.Contains(out, "--qmp + --vm-ip") ||
-		!strings.Contains(out, "--pod-name + --pod-namespace") {
-		t.Fatalf("expected XOR error listing both flag-pairs, got: %s", out)
+	if !strings.Contains(out, "cannot be combined") {
+		t.Fatalf("expected mixing-error mentioning combined flags, got: %s", out)
 	}
 }
 
