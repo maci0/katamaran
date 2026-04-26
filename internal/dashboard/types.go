@@ -59,3 +59,15 @@ type App struct {
 	loadgenType    string // "ping" or "http"; empty when not running
 	loadgenCancel  context.CancelFunc
 }
+
+type PodInfo struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Node      string `json:"node"`
+	PodIP     string `json:"pod_ip"`
+}
+
+type NodeInfo struct {
+	Name       string `json:"name"`
+	InternalIP string `json:"internal_ip"`
+}
