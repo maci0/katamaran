@@ -104,59 +104,72 @@
                     <p class="text-xs text-slate-400 mb-4">Fill in the migration details, start the move, then watch the live chart and log for cutover health.</p>
                     <form id="migration-form" class="space-y-3" novalidate aria-label="Migration configuration">
                         <p class="text-xs text-slate-400 -mt-1 mb-1"><span class="text-red-400" aria-hidden="true">*</span> Required field</p>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                                <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="source_node" id="source_node" placeholder="worker-a" required aria-required="true" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
-                            </div>
-                            <div>
-                                <label for="dest_node" class="block text-xs text-slate-400 mb-1">Dest Node <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="dest_node" id="dest_node" placeholder="worker-b" required aria-required="true" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
-                            </div>
+                        <div>
+                            <label for="source_pod_select" class="block text-xs text-slate-400 mb-1">Source Pod <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <select id="source_pod_select" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <option value="">— select a kata pod —</option>
+                            </select>
+                            <input type="hidden" name="source_pod_name" id="source_pod_name">
+                            <input type="hidden" name="source_pod_namespace" id="source_pod_namespace">
                         </div>
                         <div>
-                            <label for="tap" class="block text-xs text-slate-400 mb-1">Tap Interface <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="tap" id="tap" value="tap0_kata" required aria-required="true" aria-describedby="tap-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
-                            <p id="tap-help" class="text-xs text-slate-400 -mt-1">Network tap device inside the Kata VM sandbox</p>
+                            <label for="dest_node_select" class="block text-xs text-slate-400 mb-1">Dest Node <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <select id="dest_node_select" name="dest_node" required aria-required="true" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                <option value="">— select a node —</option>
+                            </select>
                         </div>
                         <div>
-                            <label for="tap_netns" class="block text-xs text-slate-400 mb-1">Tap Netns</label>
-                            <input type="text" name="tap_netns" id="tap_netns" placeholder="/proc/.../ns/net" aria-describedby="tap-netns-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
-                            <p id="tap-netns-help" class="text-xs text-slate-400 -mt-1">Path to the network namespace for the tap device</p>
-                        </div>
-                        <div>
-                            <label for="qmp_source" class="block text-xs text-slate-400 mb-1">Source QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="qmp_source" id="qmp_source" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
-                        </div>
-                        <div>
-                            <label for="qmp_dest" class="block text-xs text-slate-400 mb-1">Dest QMP Socket <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="qmp_dest" id="qmp_dest" required aria-required="true" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
-                        </div>
-                        <p id="qmp-help" class="text-xs text-slate-400 -mt-1">Path to the QEMU control socket inside the pod</p>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                                <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="dest_ip" id="dest_ip" required aria-required="true" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.0.0.25" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
-                            </div>
-                            <div>
-                                <label for="vm_ip" class="block text-xs text-slate-400 mb-1">VM IP <span class="text-red-400" aria-hidden="true">*</span></label>
-                                <input type="text" name="vm_ip" id="vm_ip" required aria-required="true" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.244.0.5" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
-                            </div>
+                            <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
+                            <input type="text" name="image" id="image" required aria-required="true" placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
                         </div>
                         <div>
                             <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
                             <input type="number" name="downtime" id="downtime" value="25" min="1" max="60000" inputmode="numeric" aria-describedby="downtime-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
                             <p id="downtime-help" class="text-xs text-slate-400 -mt-1">Range: 1–60,000</p>
                         </div>
-                        <div>
-                            <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="image" id="image" required aria-required="true" placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
-                        </div>
                         <label class="flex items-center gap-2 cursor-pointer py-1">
                             <input type="checkbox" name="shared_storage" id="shared_storage" value="true" aria-describedby="shared-storage-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
                             <span class="text-xs text-slate-300">Shared Storage <span class="text-slate-400">(skip disk copy)</span></span>
                             <span id="shared-storage-help" class="sr-only">Use shared storage instead of Network Block Device replication</span>
                         </label>
+                        <details class="border border-slate-700 rounded-lg p-3">
+                            <summary class="cursor-pointer text-sm font-semibold text-slate-300">Advanced (override auto-discovery)</summary>
+                            <div class="space-y-3 mt-3">
+                                <div>
+                                    <label for="source_node" class="block text-xs text-slate-400 mb-1">Source Node</label>
+                                    <input type="text" name="source_node" id="source_node" placeholder="worker-a" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
+                                </div>
+                                <div>
+                                    <label for="tap" class="block text-xs text-slate-400 mb-1">Tap Interface</label>
+                                    <input type="text" name="tap" id="tap" value="tap0_kata" aria-describedby="tap-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+                                    <p id="tap-help" class="text-xs text-slate-400 -mt-1">Network tap device inside the Kata VM sandbox</p>
+                                </div>
+                                <div>
+                                    <label for="tap_netns" class="block text-xs text-slate-400 mb-1">Tap Netns</label>
+                                    <input type="text" name="tap_netns" id="tap_netns" placeholder="/proc/.../ns/net" aria-describedby="tap-netns-help" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
+                                    <p id="tap-netns-help" class="text-xs text-slate-400 -mt-1">Path to the network namespace for the tap device</p>
+                                </div>
+                                <div>
+                                    <label for="qmp_source" class="block text-xs text-slate-400 mb-1">Source QMP Socket</label>
+                                    <input type="text" name="qmp_source" id="qmp_source" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                                </div>
+                                <div>
+                                    <label for="qmp_dest" class="block text-xs text-slate-400 mb-1">Dest QMP Socket</label>
+                                    <input type="text" name="qmp_dest" id="qmp_dest" placeholder="/run/vc/vm/.../qmp.sock" spellcheck="false" autocapitalize="none" autocorrect="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400" aria-describedby="qmp-help">
+                                </div>
+                                <p id="qmp-help" class="text-xs text-slate-400 -mt-1">Path to the QEMU control socket inside the pod</p>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label for="dest_ip" class="block text-xs text-slate-400 mb-1">Dest IP</label>
+                                        <input type="text" name="dest_ip" id="dest_ip" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.0.0.25" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
+                                    </div>
+                                    <div>
+                                        <label for="vm_ip" class="block text-xs text-slate-400 mb-1">VM IP</label>
+                                        <input type="text" name="vm_ip" id="vm_ip" inputmode="decimal" spellcheck="false" autocapitalize="none" autocorrect="off" placeholder="10.244.0.5" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-400">
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
                         <div class="flex gap-2 mt-2">
                             <button type="submit" id="btn-migrate" aria-label="Start Migration" class="flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9654; Start Migration</button>
                             <button type="button" id="btn-stop-mig" disabled aria-label="Stop migration" class="bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop</button>
@@ -407,16 +420,22 @@
             return;
         }
         var destIpField = document.getElementById('dest_ip');
-        if (!validateIPv4Field(destIpField, 'Destination IP is required', 'Enter a valid IPv4 address')) {
+        if (destIpField.value.trim() && !isIPv4(destIpField.value.trim())) {
+            markFieldInvalid(destIpField, 'Enter a valid IPv4 address');
             destIpField.focus();
             showToast('Enter a valid destination IP address', 'error');
             return;
+        } else {
+            clearFieldState(destIpField);
         }
         var vmIpField = document.getElementById('vm_ip');
-        if (!validateIPv4Field(vmIpField, 'VM IP is required', 'Enter a valid IPv4 address')) {
+        if (vmIpField.value.trim() && !isIPv4(vmIpField.value.trim())) {
+            markFieldInvalid(vmIpField, 'Enter a valid IPv4 address');
             vmIpField.focus();
             showToast('Enter a valid VM IP address', 'error');
             return;
+        } else {
+            clearFieldState(vmIpField);
         }
         var dtField = document.getElementById('downtime');
         var dtVal = parseInt(dtField.value, 10);
@@ -687,7 +706,7 @@
             pingBtn.disabled = data.loadgen_running;
             httpBtn.disabled = data.loadgen_running;
             stopLoadBtn.disabled = !data.loadgen_running;
-            document.querySelectorAll('#migration-form input').forEach(function(f) { f.disabled = data.migrating; });
+            document.querySelectorAll('#migration-form input, #migration-form select').forEach(function(f) { f.disabled = data.migrating; });
             migrateBtn.textContent = data.migrating ? 'Migration in progress…' : '\u25B6 Start Migration';
             migrateBtn.setAttribute('aria-label', data.migrating ? 'Migration in progress' : 'Start migration');
             stopMigBtn.textContent = '\u25A0 Stop';
@@ -863,6 +882,54 @@
             fetchInFlight = false;
         }
     }
+    async function populatePickers() {
+        try {
+            var podsResp, nodesResp;
+            var responses = await Promise.all([
+                fetch('/api/pods'),
+                fetch('/api/nodes')
+            ]);
+            podsResp = responses[0];
+            nodesResp = responses[1];
+            if (!podsResp.ok || !nodesResp.ok) return;
+            var pods = await podsResp.json();
+            var nodes = await nodesResp.json();
+
+            var podSel = document.getElementById('source_pod_select');
+            for (var i = 0; i < pods.length; i++) {
+                var p = pods[i];
+                var opt = document.createElement('option');
+                opt.value = p.namespace + '/' + p.name;
+                opt.textContent = p.namespace + '/' + p.name + ' @ ' + p.node + ' (' + (p.pod_ip || 'no ip') + ')';
+                opt.dataset.namespace = p.namespace;
+                opt.dataset.name = p.name;
+                opt.dataset.node = p.node;
+                podSel.appendChild(opt);
+            }
+            podSel.addEventListener('change', function() {
+                var o = podSel.selectedOptions[0];
+                document.getElementById('source_pod_name').value = (o && o.dataset.name) || '';
+                document.getElementById('source_pod_namespace').value = (o && o.dataset.namespace) || '';
+                var destSel = document.getElementById('dest_node_select');
+                for (var j = 0; j < destSel.options.length; j++) {
+                    var dOpt = destSel.options[j];
+                    dOpt.hidden = o && dOpt.value === o.dataset.node;
+                }
+            });
+
+            var nodeSel = document.getElementById('dest_node_select');
+            for (var k = 0; k < nodes.length; k++) {
+                var n = nodes[k];
+                var nOpt = document.createElement('option');
+                nOpt.value = n.name;
+                nOpt.textContent = n.name + ' (' + n.internal_ip + ')';
+                nodeSel.appendChild(nOpt);
+            }
+        } catch (e) {
+            console.error('populatePickers failed:', e);
+        }
+    }
+    populatePickers();
     refreshStatus();
     setInterval(refreshStatus, 1000);
     </script>
