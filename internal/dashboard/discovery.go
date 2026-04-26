@@ -1,11 +1,13 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const kataRuntimeClass = "kata-qemu"
@@ -13,9 +15,12 @@ const kataRuntimeClass = "kata-qemu"
 // ListKataPods runs `kubectl get pods -A -o json` and returns pods whose
 // runtimeClassName matches the kata-qemu runtime.
 func ListKataPods(ctx context.Context) ([]PodInfo, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "-A", "-o", "json").Output()
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", "-A", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("kubectl get pods: %w", err)
+		return nil, fmt.Errorf("kubectl get pods: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var raw struct {
 		Items []struct {
@@ -45,9 +50,12 @@ func ListKataPods(ctx context.Context) ([]PodInfo, error) {
 // ListKataNodes runs `kubectl get nodes -o json` and returns nodes labeled
 // katacontainers.io/kata-runtime=true with their InternalIP.
 func ListKataNodes(ctx context.Context) ([]NodeInfo, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", "katacontainers.io/kata-runtime=true", "-o", "json").Output()
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "nodes", "-l", "katacontainers.io/kata-runtime=true", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("kubectl get nodes: %w", err)
+		return nil, fmt.Errorf("kubectl get nodes: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var raw struct {
 		Items []struct {
@@ -76,10 +84,15 @@ func ListKataNodes(ctx context.Context) ([]NodeInfo, error) {
 
 // lookupPodNode returns the spec.nodeName of a single pod.
 func lookupPodNode(ctx context.Context, ns, name string) (string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "-n", ns, "get", "pod", name,
-		"-o", "jsonpath={.spec.nodeName}").Output()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kubectl", "-n", ns, "get", "pod", name,
+		"-o", "jsonpath={.spec.nodeName}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("kubectl: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	v := strings.TrimSpace(string(out))
 	if v == "" {
@@ -90,10 +103,15 @@ func lookupPodNode(ctx context.Context, ns, name string) (string, error) {
 
 // lookupNodeInternalIP returns the InternalIP address of the named node.
 func lookupNodeInternalIP(ctx context.Context, name string) (string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "node", name,
-		"-o", "jsonpath={.status.addresses[?(@.type==\"InternalIP\")].address}").Output()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "node", name,
+		"-o", "jsonpath={.status.addresses[?(@.type==\"InternalIP\")].address}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("kubectl: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	v := strings.TrimSpace(string(out))
 	if v == "" {
