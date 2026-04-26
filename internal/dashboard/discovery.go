@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 const kataRuntimeClass = "kata-qemu"
@@ -71,4 +72,32 @@ func ListKataNodes(ctx context.Context) ([]NodeInfo, error) {
 		nodes = append(nodes, NodeInfo{Name: it.Metadata.Name, InternalIP: ip})
 	}
 	return nodes, nil
+}
+
+// lookupPodNode returns the spec.nodeName of a single pod.
+func lookupPodNode(ctx context.Context, ns, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "-n", ns, "get", "pod", name,
+		"-o", "jsonpath={.spec.nodeName}").Output()
+	if err != nil {
+		return "", err
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "", fmt.Errorf("pod %s/%s has no nodeName", ns, name)
+	}
+	return v, nil
+}
+
+// lookupNodeInternalIP returns the InternalIP address of the named node.
+func lookupNodeInternalIP(ctx context.Context, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "node", name,
+		"-o", "jsonpath={.status.addresses[?(@.type==\"InternalIP\")].address}").Output()
+	if err != nil {
+		return "", err
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "", fmt.Errorf("node %s has no InternalIP", name)
+	}
+	return v, nil
 }

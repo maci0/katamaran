@@ -1467,3 +1467,127 @@ func TestRunCommand_ScriptSuccess(t *testing.T) {
 		t.Fatal("expected isMigrating=false after completion")
 	}
 }
+
+func TestMigrateHandler_PodPickerMode(t *testing.T) {
+	// Stub kubectl: dispatches on `get pod` vs `get node` to return the
+	// nodeName (for pod lookup) or InternalIP (for node lookup).
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(stub, []byte(`#!/bin/sh
+# Args may be: -n <ns> get pod <name> -o jsonpath=...
+#         or:  get node <name> -o jsonpath=...
+for a in "$@"; do
+  case "$a" in
+    pod) kind=pod ;;
+    node) kind=node ;;
+  esac
+done
+case "$kind" in
+  pod) printf 'src-node' ;;
+  node) printf '192.168.1.20' ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	// Migrate script writes its argv (one per line) to a file we can inspect.
+	scriptDir := t.TempDir()
+	argFile := filepath.Join(scriptDir, "args.txt")
+	scriptPath := filepath.Join(scriptDir, "migrate.sh")
+	scriptBody := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argFile + "\nexit 0\n"
+	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{migrateScript: scriptPath}
+	t.Cleanup(func() {
+		app.migrationMutex.Lock()
+		if app.migrationCancel != nil {
+			app.migrationCancel()
+		}
+		app.migrationMutex.Unlock()
+	})
+
+	form := url.Values{}
+	form.Set("source_pod_namespace", "default")
+	form.Set("source_pod_name", "vm-a")
+	form.Set("dest_node", "dst-node")
+	form.Set("image", "katamaran:dev")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %v: %s", w.Code, w.Body.String())
+	}
+
+	waitMigrationDone(t, app, 5*time.Second)
+
+	raw, err := os.ReadFile(argFile)
+	if err != nil {
+		t.Fatalf("read recorded argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+
+	// Helper: assert flag is present with the given value.
+	hasFlag := func(flag, val string) bool {
+		for i := 0; i < len(argv)-1; i++ {
+			if argv[i] == flag && argv[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+
+	expects := []struct{ flag, val string }{
+		{"--pod-name", "vm-a"},
+		{"--pod-namespace", "default"},
+		{"--source-node", "src-node"},
+		{"--dest-node", "dst-node"},
+		{"--dest-ip", "192.168.1.20"},
+		{"--image", "katamaran:dev"},
+	}
+	for _, e := range expects {
+		if !hasFlag(e.flag, e.val) {
+			t.Errorf("argv missing %s %s; argv=%v", e.flag, e.val, argv)
+		}
+	}
+}
+
+func TestMigrateHandler_PodPickerSameNodeRejected(t *testing.T) {
+	// Stub kubectl so the source pod resolves to the same node as dest.
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(stub, []byte(`#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    pod) kind=pod ;;
+    node) kind=node ;;
+  esac
+done
+case "$kind" in
+  pod) printf 'same-node' ;;
+  node) printf '10.0.0.1' ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	app := &App{migrateScript: dummyMigrateScript(t)}
+	form := url.Values{}
+	form.Set("source_pod_namespace", "default")
+	form.Set("source_pod_name", "vm-a")
+	form.Set("dest_node", "same-node")
+	form.Set("image", "katamaran:dev")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when source==dest, got %v: %s", w.Code, w.Body.String())
+	}
+}

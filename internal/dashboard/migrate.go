@@ -57,7 +57,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime"}
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace"}
 	for _, key := range formKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
@@ -82,7 +82,18 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// Reject requests missing required fields. The frontend validates
 	// these too, but direct API callers (curl, scripts) bypass that.
 	// Aligned with migrate.sh's required flags.
-	for _, key := range []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "dest_ip", "vm_ip", "tap", "image"} {
+	//
+	// Pod-picker mode: when source_pod_name is set, the user picked a pod
+	// from the dropdown and we resolve source_node + dest_ip via kubectl;
+	// the legacy explicit-fields path stays unchanged for backward compat.
+	podMode := r.PostFormValue("source_pod_name") != ""
+	required := []string{"image"}
+	if podMode {
+		required = append(required, "source_pod_namespace", "source_pod_name", "dest_node")
+	} else {
+		required = append(required, "source_node", "dest_node", "qmp_source", "qmp_dest", "dest_ip", "vm_ip", "tap")
+	}
+	for _, key := range required {
 		if r.PostFormValue(key) == "" {
 			jsonError(w, fmt.Sprintf("Missing required field: %s", key), http.StatusBadRequest)
 			return
@@ -99,6 +110,30 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		downtimeArg = strconv.Itoa(d)
+	}
+
+	// Resolve pod-picker fields via kubectl up front, before acquiring the
+	// migration lock — keeps state-rollback off the failure paths.
+	var resolvedSrcNode, resolvedDestIP string
+	if podMode {
+		pod := r.PostFormValue("source_pod_name")
+		ns := r.PostFormValue("source_pod_namespace")
+		dest := r.PostFormValue("dest_node")
+		var err error
+		resolvedSrcNode, err = lookupPodNode(r.Context(), ns, pod)
+		if err != nil {
+			jsonError(w, "lookup source pod: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		resolvedDestIP, err = lookupNodeInternalIP(r.Context(), dest)
+		if err != nil {
+			jsonError(w, "lookup dest node: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if resolvedSrcNode == dest {
+			jsonError(w, "source and dest node must differ", http.StatusBadRequest)
+			return
+		}
 	}
 
 	a.migrationMutex.Lock()
@@ -148,16 +183,31 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	args := []string{
-		scriptPath,
-		"--source-node", r.PostFormValue("source_node"),
-		"--dest-node", r.PostFormValue("dest_node"),
-		"--qmp-source", r.PostFormValue("qmp_source"),
-		"--qmp-dest", r.PostFormValue("qmp_dest"),
-		"--tap", r.PostFormValue("tap"),
-		"--dest-ip", r.PostFormValue("dest_ip"),
-		"--vm-ip", r.PostFormValue("vm_ip"),
-		"--image", r.PostFormValue("image"),
+	args := []string{scriptPath, "--image", r.PostFormValue("image")}
+	var logSourceNode, logDestIP, logVMIP string
+	if podMode {
+		args = append(args,
+			"--source-node", resolvedSrcNode,
+			"--dest-node", r.PostFormValue("dest_node"),
+			"--dest-ip", resolvedDestIP,
+			"--pod-name", r.PostFormValue("source_pod_name"),
+			"--pod-namespace", r.PostFormValue("source_pod_namespace"),
+		)
+		logSourceNode = resolvedSrcNode
+		logDestIP = resolvedDestIP
+	} else {
+		args = append(args,
+			"--source-node", r.PostFormValue("source_node"),
+			"--dest-node", r.PostFormValue("dest_node"),
+			"--qmp-source", r.PostFormValue("qmp_source"),
+			"--qmp-dest", r.PostFormValue("qmp_dest"),
+			"--tap", r.PostFormValue("tap"),
+			"--dest-ip", r.PostFormValue("dest_ip"),
+			"--vm-ip", r.PostFormValue("vm_ip"),
+		)
+		logSourceNode = r.PostFormValue("source_node")
+		logDestIP = r.PostFormValue("dest_ip")
+		logVMIP = r.PostFormValue("vm_ip")
 	}
 
 	if v := r.PostFormValue("tap_netns"); v != "" {
@@ -171,7 +221,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--downtime", downtimeArg)
 	}
 
-	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", r.PostFormValue("source_node"), "dest_node", r.PostFormValue("dest_node"), "image", r.PostFormValue("image"), "dest_ip", r.PostFormValue("dest_ip"), "vm_ip", r.PostFormValue("vm_ip"), "shared_storage", r.PostFormValue("shared_storage") == "true")
+	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", r.PostFormValue("dest_node"), "image", r.PostFormValue("image"), "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", r.PostFormValue("shared_storage") == "true", "pod_mode", podMode)
 	go a.runCommand(ctx, args, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
