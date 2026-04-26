@@ -193,6 +193,18 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			"--pod-name", r.PostFormValue("source_pod_name"),
 			"--pod-namespace", r.PostFormValue("source_pod_namespace"),
 		)
+		// Advanced overrides: any non-empty value from the form replaces the
+		// auto-derived defaults inside the source/dest jobs.
+		for _, p := range []struct{ flag, key string }{
+			{"--qmp-source", "qmp_source"},
+			{"--qmp-dest", "qmp_dest"},
+			{"--vm-ip", "vm_ip"},
+			{"--tap", "tap"},
+		} {
+			if v := r.PostFormValue(p.key); v != "" {
+				args = append(args, p.flag, v)
+			}
+		}
 		logSourceNode = resolvedSrcNode
 		logDestIP = resolvedDestIP
 	} else {
