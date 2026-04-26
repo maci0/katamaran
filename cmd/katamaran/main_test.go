@@ -171,6 +171,21 @@ func TestRun_SourcePodFlagsAccepted(t *testing.T) {
 	}
 }
 
+func TestRun_SourcePartialPodFlagsRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "source",
+		"--dest-ip", "10.0.0.1",
+		"--pod-name", "foo",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--pod-name and --pod-namespace must be supplied together") {
+		t.Fatalf("expected partial pod-pair error, got: %s", stderr.String())
+	}
+}
+
 func TestRun_SourceBothFlagPairsRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := katamaran.Run(context.Background(), []string{

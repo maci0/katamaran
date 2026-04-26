@@ -215,6 +215,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// --qmp has a non-empty default value.
 		seen := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+		visitedPodName := seen["pod-name"]
+		visitedPodNS := seen["pod-namespace"]
+		if visitedPodName != visitedPodNS {
+			_, _ = fmt.Fprintf(stderr, "Error: --pod-name and --pod-namespace must be supplied together\n\n")
+			printUsage(stderr)
+			return 2
+		}
 		hasPod := *podName != "" && *podNS != ""
 		hasExplicit := seen["qmp"] && seen["vm-ip"]
 		if hasPod == hasExplicit {
@@ -247,6 +254,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				printUsage(stderr)
 				return 2
 			}
+		} else {
+			// TODO(task-7): in pod mode, populate parsedVM after resolver runs
+			// and re-run the IP family check that we currently skip.
 		}
 		tm := migration.TunnelMode(*tunnelMode)
 		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
