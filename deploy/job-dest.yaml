@@ -12,15 +12,14 @@ spec:
   ttlSecondsAfterFinished: 300
   template:
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: katamaran-source
+      automountServiceAccountToken: true
       nodeName: ${NODE_NAME}
-      # hostNetwork is intentionally false: in --replay-cmdline mode the dest
-      # pod IS the helper netns for the spawned QEMU. QEMU inherits this
-      # pod's netns (no nsenter needed) and the pod's CNI-assigned IP becomes
-      # the migration endpoint reachable from the source. Non-replay mode
-      # does not need hostNetwork either — tc qdisc operations on the kata
-      # sandbox tap are routed through `nsenter --net=/proc/<pid>/ns/net`.
-      hostNetwork: false
+      # hostNetwork: true so the dest QEMU's migrate-incoming listener on
+      # tcp:[::]:4444 binds the node's IP (which the source sees as
+      # `--dest-ip`). With pod-network IPs the source would need separate
+      # discovery of the dest pod IP to reach the listener.
+      hostNetwork: true
       hostPID: true
       restartPolicy: Never
       initContainers:

@@ -135,6 +135,43 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 			// -incoming takes one positional argument (e.g. tcp:[::]:4444).
 			skipNext = true
 			continue
+		case "-qmp":
+			// -qmp may be specified multiple times. The kata-shim passes its
+			// primary QMP via inherited fd=N (e.g. `unix:fd=3,server=on`),
+			// which has no replay analog because the receiving fork-exec
+			// chain doesn't carry that fd. The "extra" socket bound to
+			// path=... is the one we want to keep.
+			if i+1 < len(args) && strings.Contains(args[i+1], "fd=") {
+				skipNext = true
+				continue
+			}
+			out = append(out, a)
+			continue
+		case "-netdev":
+			// -netdev tap,...,vhostfds=N,fds=M references inherited file
+			// descriptors. Strip those keys so QEMU opens the tap itself.
+			// Also append script=no,downscript=no so QEMU doesn't try to run
+			// /opt/kata/etc/qemu-ifup which doesn't exist in our pod context.
+			if i+1 < len(args) {
+				next := stripFDKeys(args[i+1])
+				if strings.HasPrefix(next, "tap,") || next == "tap" || strings.HasPrefix(next, "tap:") {
+					if !strings.Contains(next, "script=") {
+						next += ",script=no,downscript=no"
+					}
+				}
+				out = append(out, a, next)
+			}
+			skipNext = true
+			continue
+		case "-device":
+			// vhost-vsock-pci passes vhostfd=N from kata-shim; drop the key
+			// so QEMU opens /dev/vhost-vsock itself.
+			if i+1 < len(args) {
+				next := stripFDKeys(args[i+1])
+				out = append(out, a, next)
+			}
+			skipNext = true
+			continue
 		}
 
 		if srcSandboxDir != "" && dstSandboxDir != "" {
@@ -152,6 +189,27 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 
 	out = append(out, "-incoming", "defer", "-daemonize")
 	return binary, out, nil
+}
+
+// stripFDKeys removes vhostfd, vhostfds, and fds key=value pairs from a
+// comma-separated QEMU arg value. Used when respawning a captured cmdline:
+// fd= references point at file descriptors inherited from the kata-shim
+// parent and are invalid in a fresh exec.
+func stripFDKeys(v string) string {
+	parts := strings.Split(v, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		k := p
+		if eq := strings.IndexByte(p, '='); eq != -1 {
+			k = p[:eq]
+		}
+		switch k {
+		case "fd", "fds", "vhostfd", "vhostfds":
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, ",")
 }
 
 // readCmdlineFile loads a captured QEMU cmdline file. The file is the result
@@ -307,6 +365,12 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	if err := os.MkdirAll(dstSandboxDir, 0o755); err != nil {
 		return fmt.Errorf("create dest sandbox dir %s: %w", dstSandboxDir, err)
 	}
+	// Wipe stale sockets from prior failed attempts so waitForSocket doesn't
+	// return immediately on a leftover file. The dest sandbox dir is reused
+	// across restart attempts of the dest job pod.
+	for _, name := range []string{"extra-monitor.sock", "vhost-fs.sock", "console.sock"} {
+		_ = os.Remove(filepath.Join(dstSandboxDir, name))
+	}
 	sharedDir := filepath.Join(kataSharedSandboxRoot, dstSandboxID, "shared")
 	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
 		return fmt.Errorf("create virtiofs shared dir %s: %w", sharedDir, err)
@@ -407,12 +471,29 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 // when migration completes (or when the dest job pod is torn down).
 var spawnDetachedProcess = func(_ context.Context, name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe %s: %w", name, err)
+	}
 	cmd.Stdout = nil
-	cmd.Stderr = nil
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
+	// Stream stderr to the dest pod's logs so QEMU/virtiofsd failures are
+	// observable via `kubectl logs`.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := stderr.Read(buf)
+			if n > 0 {
+				slog.Warn("child process stderr", "process", name, "output", string(buf[:n]))
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
 	// Reap eventually so we don't leak a zombie if the child exits early.
 	go func() { _ = cmd.Wait() }()
 	return nil
