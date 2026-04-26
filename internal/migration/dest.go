@@ -164,16 +164,20 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	}()
 
 	// Step 2: Configure migration capabilities and open incoming listener.
-	// Multifd must be enabled BEFORE migrate-incoming so the destination
-	// opens the parallel channel listeners alongside the main listener.
+	// Capabilities must match the source's; otherwise the migration handshake
+	// fails with "Failed to peek at channel" or similar magic-mismatch errors.
+	caps := []qmp.MigrationCapability{
+		{Capability: "auto-converge", State: true},
+	}
 	if cfg.MultifdChannels > 0 {
-		if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
-			Capabilities: []qmp.MigrationCapability{
-				{Capability: "multifd", State: true},
-			},
-		}); err != nil {
-			return fmt.Errorf("setting destination migration capabilities: %w", err)
-		}
+		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
+	}
+	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
+		Capabilities: caps,
+	}); err != nil {
+		return fmt.Errorf("setting destination migration capabilities: %w", err)
+	}
+	if cfg.MultifdChannels > 0 {
 		if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 			MultifdChannels: int64(cfg.MultifdChannels),
 		}); err != nil {

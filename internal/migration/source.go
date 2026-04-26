@@ -63,7 +63,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if err != nil {
 			return fmt.Errorf("resolve sandbox: %w", err)
 		}
-		if cfg.QMPSocket == "" {
+		// Override QMPSocket in pod mode unless the user supplied an explicit
+		// non-default override. The CLI default is `/run/vc/vm/extra-monitor.sock`
+		// (no sandbox UUID) — anything matching that gets replaced with the
+		// resolved sandbox-specific path.
+		if cfg.QMPSocket == "" || cfg.QMPSocket == "/run/vc/vm/extra-monitor.sock" {
 			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
 		}
 		resolvedQEMUPID = res.PID

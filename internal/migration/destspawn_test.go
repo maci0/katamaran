@@ -127,21 +127,20 @@ func TestTransformCmdline_StripsAndAppendsIncomingDefer(t *testing.T) {
 
 	// -incoming and -daemonize from the source must be gone (the original
 	// -incoming carries a positional URI that must also be stripped).
-	for i, a := range out {
-		if a == "-daemonize" && i < len(out)-1 {
-			t.Fatalf("-daemonize appears in middle of args: %v", out)
+	for _, a := range out {
+		if a == "-daemonize" {
+			t.Fatalf("-daemonize must NOT appear in transformed args (we run QEMU foreground): %v", out)
 		}
 		if a == "tcp:[::]:4444" {
 			t.Fatalf("source -incoming URI %q leaked into output: %v", a, out)
 		}
 	}
 
-	// And we expect -incoming defer + -daemonize at the tail.
-	if len(out) < 3 ||
-		out[len(out)-3] != "-incoming" ||
-		out[len(out)-2] != "defer" ||
-		out[len(out)-1] != "-daemonize" {
-		t.Fatalf("expected tail '-incoming defer -daemonize', got: %v", out)
+	// And we expect -incoming defer at the tail.
+	if len(out) < 2 ||
+		out[len(out)-2] != "-incoming" ||
+		out[len(out)-1] != "defer" {
+		t.Fatalf("expected tail '-incoming defer', got: %v", out)
 	}
 
 	// -name sandbox-abcd should still be present.
@@ -442,13 +441,13 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	if !strings.Contains(spawned[1].name, "qemu") {
 		t.Fatalf("second spawn should be qemu, got %s", spawned[1].name)
 	}
-	// Verify QEMU got -incoming defer + -daemonize at tail.
+	// Verify QEMU got -incoming defer at tail (no -daemonize: we run foreground).
 	q := spawned[1].args
-	if len(q) < 3 || q[len(q)-3] != "-incoming" || q[len(q)-2] != "defer" || q[len(q)-1] != "-daemonize" {
-		t.Fatalf("qemu args missing trailing -incoming defer -daemonize: %v", q)
+	if len(q) < 2 || q[len(q)-2] != "-incoming" || q[len(q)-1] != "defer" {
+		t.Fatalf("qemu args missing trailing -incoming defer: %v", q)
 	}
 	// Original source -incoming positional must be gone.
-	if slices.Contains(q[:len(q)-3], "tcp:[::]:4444") {
+	if slices.Contains(q[:len(q)-2], "tcp:[::]:4444") {
 		t.Fatalf("source -incoming URI leaked into qemu args: %v", q)
 	}
 	// Nvdimm path must have been substituted to a /tmp temp.

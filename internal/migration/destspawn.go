@@ -187,7 +187,10 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 		out = append(out, a)
 	}
 
-	out = append(out, "-incoming", "defer", "-daemonize")
+	// Append -incoming defer; do NOT add -daemonize. We keep QEMU in the
+	// foreground so its stderr stays connected to the dest pod's logger
+	// (daemonized QEMU silently closes stderr after fork).
+	out = append(out, "-incoming", "defer")
 	return binary, out, nil
 }
 
@@ -475,27 +478,36 @@ var spawnDetachedProcess = func(_ context.Context, name string, args []string) e
 	if err != nil {
 		return fmt.Errorf("stderr pipe %s: %w", name, err)
 	}
-	cmd.Stdout = nil
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe %s: %w", name, err)
+	}
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
-	// Stream stderr to the dest pod's logs so QEMU/virtiofsd failures are
-	// observable via `kubectl logs`.
-	go func() {
+	slog.Info("child process started", "process", name, "pid", cmd.Process.Pid)
+	// Stream both stderr and stdout to slog as they appear. Keeps QEMU
+	// crash diagnostics visible via `kubectl logs` even after the parent
+	// process moves on to RunDestination.
+	streamPipe := func(stream string, r interface{ Read([]byte) (int, error) }) {
 		buf := make([]byte, 4096)
 		for {
-			n, rerr := stderr.Read(buf)
+			n, rerr := r.Read(buf)
 			if n > 0 {
-				slog.Warn("child process stderr", "process", name, "output", string(buf[:n]))
+				slog.Warn("child process output", "process", name, "stream", stream, "output", string(buf[:n]))
 			}
 			if rerr != nil {
 				return
 			}
 		}
+	}
+	go streamPipe("stderr", stderr)
+	go streamPipe("stdout", stdout)
+	go func() {
+		err := cmd.Wait()
+		slog.Warn("child process exited", "process", name, "pid", cmd.Process.Pid, "error", fmt.Sprintf("%v", err))
 	}()
-	// Reap eventually so we don't leak a zombie if the child exits early.
-	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
