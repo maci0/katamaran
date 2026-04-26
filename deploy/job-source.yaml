@@ -90,7 +90,7 @@ spec:
           limits:
             cpu: "1"
             memory: 256Mi
-        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode source --qmp ${QMP_SOCKET} --dest-ip ${DEST_IP} --vm-ip ${VM_IP} ${EXTRA_ARGS}"]
+        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode source --dest-ip ${DEST_IP} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc

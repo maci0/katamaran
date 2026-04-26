@@ -136,12 +136,15 @@ fi
 missing_args=()
 [[ -z "$SOURCE_NODE" ]] && missing_args+=(--source-node)
 [[ -z "$DEST_NODE" ]] && missing_args+=(--dest-node)
-[[ -z "$TAP_IFACE" ]] && missing_args+=(--tap)
-[[ -z "$QMP_SOURCE" ]] && missing_args+=(--qmp-source)
 [[ -z "$QMP_DEST" ]] && missing_args+=(--qmp-dest)
 [[ -z "$DEST_IP" ]] && missing_args+=(--dest-ip)
-[[ -z "$VM_IP" ]] && missing_args+=(--vm-ip)
 [[ -z "$IMAGE_REF" ]] && missing_args+=(--image)
+if [[ -z "$POD_NAME" ]]; then
+    # Legacy mode: explicit source values are required.
+    [[ -z "$TAP_IFACE" ]] && missing_args+=(--tap)
+    [[ -z "$QMP_SOURCE" ]] && missing_args+=(--qmp-source)
+    [[ -z "$VM_IP" ]] && missing_args+=(--vm-ip)
+fi
 if [[ ${#missing_args[@]} -gt 0 ]]; then
     echo "Error: missing required flag(s): ${missing_args[*]}" >&2
     usage 2
@@ -236,7 +239,18 @@ if [[ "$AUTO_DOWNTIME" == "true" ]]; then
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime"
 fi
 if [[ -n "$POD_NAME" ]]; then
+    # Pod mode: source job's resolver derives qmp/vm-ip/tap from the pod spec.
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --pod-name $POD_NAME --pod-namespace $POD_NAMESPACE"
+else
+    # Legacy mode: pass explicit qmp/vm-ip/tap through EXTRA_ARGS so the source
+    # container command (which no longer hardcodes them) receives them.
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --qmp $QMP_SOURCE --vm-ip $VM_IP"
+    if [[ -n "$TAP_IFACE" ]]; then
+        SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --tap $TAP_IFACE"
+        if [[ -n "$TAP_NETNS" ]]; then
+            SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --tap-netns $TAP_NETNS"
+        fi
+    fi
 fi
 
 # Cleanup trap
