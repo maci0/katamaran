@@ -74,6 +74,16 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		// Emit netns/iface so the orchestrator (deploy/migrate.sh) can pass them
 		// to the dest job. Format is parser-friendly and unique per migration.
 		fmt.Printf("KATAMARAN_RESOLVED tap_netns=/proc/%d/ns/net tap=tap0_kata\n", res.PID)
+		// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
+		// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
+		// TCP migration stream. Mirrors scripts/e2e.sh:454. Best-effort: a pod
+		// without the filter (e.g. host-network) is fine.
+		netnsPath := fmt.Sprintf("/proc/%d/ns/net", res.PID)
+		if err := runCmd(ctx, "nsenter", "--net="+netnsPath, "tc", "filter", "del", "dev", "eth0", "ingress"); err != nil {
+			slog.Warn("tc filter del eth0 ingress failed (probably already absent)", "error", err)
+		} else {
+			slog.Info("Removed kata tc mirred ingress filter on eth0", "netns", netnsPath)
+		}
 	}
 
 	// Capture the QEMU cmdline for the dest job to replay with -incoming defer.
@@ -130,12 +140,19 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// startup and fail. The wait is bounded so a botched orchestration does
 	// not hang the source job indefinitely.
 	if cfg.EmitCmdlineTo != "" {
-		slog.Info("Waiting for destination RAM-migration listener",
-			"dest", cfg.DestIP, "port", ramMigrationPort, "timeout", destReadyTimeout)
-		if err := waitForDestReady(ctx, cfg.DestIP, ramMigrationPort, destReadyTimeout); err != nil {
-			return fmt.Errorf("waiting for destination to come up: %w", err)
+		// In replay-cmdline mode we cannot TCP-probe dest:4444: the probe
+		// connects, sends nothing, closes. Dest QEMU's incoming-migration
+		// listener peeks for the migration magic on every connection, sees
+		// EOF, and dies with "Failed to peek at channel". Instead, sleep a
+		// fixed conservative window for dest QEMU to come up, then let the
+		// QMP `migrate` command be the first connection.
+		slog.Info("Waiting (sleep) for dest QEMU to come up",
+			"sleep", destReplaySleep)
+		select {
+		case <-time.After(destReplaySleep):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		slog.Info("Destination RAM-migration listener is reachable")
 	}
 
 	migrationStart := time.Now()

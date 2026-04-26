@@ -50,6 +50,11 @@ var (
 	// virtiofsd needs a beat to bind its UNIX socket before QEMU connects.
 	destReplayVirtiofsdSettleDelay = 2 * time.Second
 
+	// destReplaySleep is the fixed wait the source uses (in replay mode) for
+	// the dest QEMU to be up, instead of TCP-probing. See source.go for why
+	// the probe is incompatible with QEMU's migration peek.
+	destReplaySleep = 8 * time.Second
+
 	// destReadyTimeout caps how long the source waits for the destination's
 	// RAM-migration listener to come up. The orchestrator must (1) ship the
 	// captured cmdline to the dest node, (2) start the dest job, and
