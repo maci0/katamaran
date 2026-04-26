@@ -45,6 +45,8 @@ QMP_DEST=""
 DEST_IP=""
 VM_IP=""
 IMAGE_REF=""
+POD_NAME=""
+POD_NAMESPACE=""
 export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 
 usage() {
@@ -110,6 +112,8 @@ while [[ $# -gt 0 ]]; do
         --dest-ip) need_arg "$1" "${2:-}"; DEST_IP="$2"; shift 2 ;;
         --vm-ip) need_arg "$1" "${2:-}"; VM_IP="$2"; shift 2 ;;
         --image) need_arg "$1" "${2:-}"; IMAGE_REF="$2"; shift 2 ;;
+        --pod-name) need_arg "$1" "${2:-}"; POD_NAME="$2"; shift 2 ;;
+        --pod-namespace) need_arg "$1" "${2:-}"; POD_NAMESPACE="$2"; shift 2 ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
         --tunnel-mode) need_arg "$1" "${2:-}"; TUNNEL_MODE="$2"; shift 2 ;;
@@ -122,6 +126,12 @@ while [[ $# -gt 0 ]]; do
         *) echo "Error: unknown option: $1" >&2; usage 2 ;;
     esac
 done
+
+# In pod mode, default --qmp-dest to a well-known path on the destination node;
+# the dest container will create the parent directory for the QEMU socket.
+if [[ -z "$QMP_DEST" && -n "$POD_NAME" ]]; then
+    QMP_DEST="/run/vc/vm/katamaran-dest/qmp.sock"
+fi
 
 missing_args=()
 [[ -z "$SOURCE_NODE" ]] && missing_args+=(--source-node)
@@ -185,7 +195,7 @@ fi
 # job YAML via envsubst → /bin/sh -c.  Defence-in-depth: the dashboard
 # already validates these, but migrate.sh can also be called directly.
 shell_safe_re='^[a-zA-Z0-9_./:@=-]+$'
-for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT; do
+for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT POD_NAME POD_NAMESPACE; do
     val="${!var_name}"
     if [[ -n "$val" && ! "$val" =~ $shell_safe_re ]]; then
         flag_name="${var_name,,}"
@@ -224,6 +234,9 @@ if [[ "$DOWNTIME_SET" == "true" ]]; then
 fi
 if [[ "$AUTO_DOWNTIME" == "true" ]]; then
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime"
+fi
+if [[ -n "$POD_NAME" ]]; then
+    SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --pod-name $POD_NAME --pod-namespace $POD_NAMESPACE"
 fi
 
 # Cleanup trap

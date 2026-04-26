@@ -58,7 +58,7 @@ spec:
           limits:
             cpu: "1"
             memory: 256Mi
-        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
+        command: ["/bin/sh", "-c", "mkdir -p \"$(dirname \"${QMP_SOCKET}\")\" && /usr/local/bin/katamaran --mode dest --qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc
