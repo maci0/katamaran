@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1010,5 +1013,123 @@ func TestRunSource_ContextCancelled(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+}
+
+// fakeProcFS is a procFS stub for tests: it pretends each known sandbox UUID
+// maps to a fixed PID and that exactly one sandbox's netns contains the
+// configured pod IP. Anything else returns the zero result.
+type fakeProcFS struct {
+	pids       map[string]int   // sandbox UUID -> PID
+	netnsByPID map[int][]string // PID -> IPs that exist in that netns
+	pidErr     error            // forced error from PIDForSandbox
+	netnsErr   error            // forced error from NetnsHasIP
+}
+
+func (f fakeProcFS) PIDForSandbox(uuid string) (int, error) {
+	if f.pidErr != nil {
+		return 0, f.pidErr
+	}
+	pid, ok := f.pids[uuid]
+	if !ok {
+		return 0, errors.New("no such sandbox")
+	}
+	return pid, nil
+}
+
+func (f fakeProcFS) NetnsHasIP(pid int, ip string) (bool, error) {
+	if f.netnsErr != nil {
+		return false, f.netnsErr
+	}
+	for _, candidate := range f.netnsByPID[pid] {
+		if candidate == ip {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// TestRunSource_PodResolver_PopulatesConfig verifies that when SourceConfig
+// has PodName set, RunSource resolves VMIP and QMPSocket from the pod
+// before any other validation runs. We prove the resolver ran by making it
+// populate VMIP with an IPv6 address (mismatching the IPv4 DestIP) and
+// asserting that the family-mismatch validator fires with that resolved IP.
+func TestRunSource_PodResolver_PopulatesConfig(t *testing.T) {
+	const (
+		sandboxUUID = "11111111-2222-3333-4444-555555555555"
+		fakeQEMUPID = 4242
+		resolvedIP  = "fd00::1" // IPv6 — guaranteed to mismatch testDestIP (IPv4)
+	)
+
+	// Stub the apiserver lookup so the resolver returns a known IP.
+	origLookup := lookupPodIP
+	lookupPodIP = func(_ context.Context, ns, name string) (string, error) {
+		if ns != "default" || name != "vm-a" {
+			return "", fmt.Errorf("unexpected lookup args: ns=%q name=%q", ns, name)
+		}
+		return resolvedIP, nil
+	}
+	t.Cleanup(func() { lookupPodIP = origLookup })
+
+	// Stub the procFS so the sandbox-by-IP resolver returns our fake sandbox.
+	origProc := procImpl
+	procImpl = fakeProcFS{
+		pids:       map[string]int{sandboxUUID: fakeQEMUPID},
+		netnsByPID: map[int][]string{fakeQEMUPID: {resolvedIP}},
+	}
+	t.Cleanup(func() { procImpl = origProc })
+
+	// resolveSandbox os.ReadDirs sandboxRoot for sandbox UUIDs; create one.
+	tmpRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpRoot, sandboxUUID), 0o755); err != nil {
+		t.Fatalf("setup tmp sandbox dir: %v", err)
+	}
+	origRoot := sandboxRoot
+	sandboxRoot = tmpRoot
+	t.Cleanup(func() { sandboxRoot = origRoot })
+
+	err := RunSource(context.Background(), SourceConfig{
+		PodName:         "vm-a",
+		PodNamespace:    "default",
+		DestIP:          testDestIP, // IPv4
+		DriveID:         "drive-virtio-disk0",
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+		// VMIP and QMPSocket intentionally left zero — must be populated by resolver.
+	})
+	if err == nil {
+		t.Fatal("expected family-mismatch error, got nil (resolver may not have run)")
+	}
+	// The resolver must have populated VMIP with the IPv6 address; the family
+	// validator must then have fired with both addresses interpolated.
+	if !strings.Contains(err.Error(), "address families must match") {
+		t.Fatalf("expected family-mismatch error proving resolver ran, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), resolvedIP) {
+		t.Fatalf("expected resolved IP %q in error (proves resolver populated VMIP), got: %v", resolvedIP, err)
+	}
+}
+
+// TestRunSource_PodResolver_LookupError ensures lookup failures surface as a
+// clear "lookup pod IP" error rather than a downstream validation failure.
+func TestRunSource_PodResolver_LookupError(t *testing.T) {
+	origLookup := lookupPodIP
+	lookupPodIP = func(_ context.Context, _, _ string) (string, error) {
+		return "", errors.New("apiserver unreachable")
+	}
+	t.Cleanup(func() { lookupPodIP = origLookup })
+
+	err := RunSource(context.Background(), SourceConfig{
+		PodName:         "vm-a",
+		PodNamespace:    "default",
+		DestIP:          testDestIP,
+		DriveID:         "drive-virtio-disk0",
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+	})
+	if err == nil || !strings.Contains(err.Error(), "lookup pod IP") {
+		t.Fatalf("expected 'lookup pod IP' error, got: %v", err)
 	}
 }

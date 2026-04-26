@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -18,6 +19,14 @@ import (
 var (
 	errMigrationFailed    = errors.New("migration failed")
 	errMigrationCancelled = errors.New("migration cancelled")
+)
+
+// Test injection points for the pod-resolver flow. Production code uses
+// LookupPodIP and realProc{}; tests swap these to stub apiserver / procfs.
+var (
+	lookupPodIP        = LookupPodIP
+	procImpl    procFS = realProc{}
+	sandboxRoot        = "/run/vc/vm"
 )
 
 // RunSource initiates live migration from the source node to the destination.
@@ -39,6 +48,28 @@ var (
 //   - Cancels the drive-mirror block job (disarms the deferred cleanup)
 //   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	if cfg.PodName != "" {
+		ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
+		if err != nil {
+			return fmt.Errorf("lookup pod IP: %w", err)
+		}
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			return fmt.Errorf("parse resolved pod IP %q: %w", ip, err)
+		}
+		cfg.VMIP = addr
+		res, err := resolveSandbox(sandboxRoot, procImpl, ip)
+		if err != nil {
+			return fmt.Errorf("resolve sandbox: %w", err)
+		}
+		if cfg.QMPSocket == "" {
+			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
+		}
+		// Emit netns/iface so the orchestrator (deploy/migrate.sh) can pass them
+		// to the dest job. Format is parser-friendly and unique per migration.
+		fmt.Printf("KATAMARAN_RESOLVED tap_netns=/proc/%d/ns/net tap=tap0_kata\n", res.PID)
+	}
+
 	cfg.DestIP = cfg.DestIP.Unmap()
 	cfg.VMIP = cfg.VMIP.Unmap()
 	if !cfg.DestIP.IsValid() {
