@@ -1379,6 +1379,64 @@ func TestRunCommand_ScriptFailure(t *testing.T) {
 	}
 }
 
+func TestPodsAndNodesEndpoints(t *testing.T) {
+	// Stub kubectl: branches on $1 (pods/nodes) to return appropriate JSON.
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(stub, []byte(`#!/bin/sh
+case "$1" in
+  get)
+    case "$2" in
+      pods)
+        cat <<'EOF'
+{"items":[{"metadata":{"namespace":"default","name":"vm-a"},"spec":{"runtimeClassName":"kata-qemu","nodeName":"n1"},"status":{"podIP":"10.0.0.5"}}]}
+EOF
+        ;;
+      nodes)
+        cat <<'EOF'
+{"items":[{"metadata":{"name":"n1"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.1.10"}]}}]}
+EOF
+        ;;
+    esac
+    ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	app := &App{}
+	mux := app.newMux(false)
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"pods", "/api/pods"},
+		{"nodes", "/api/nodes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json prefix", ct)
+			}
+			var arr []map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &arr); err != nil {
+				t.Fatalf("decode JSON array: %v; body=%s", err, w.Body.String())
+			}
+			if len(arr) == 0 {
+				t.Fatalf("expected non-empty array, got %v", arr)
+			}
+		})
+	}
+}
+
 func TestRunCommand_ScriptSuccess(t *testing.T) {
 	t.Parallel()
 	app := &App{migrateScript: dummyMigrateScript(t)}

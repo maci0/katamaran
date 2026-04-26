@@ -179,6 +179,8 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux.HandleFunc("/api/", handleAPIFallback)
 	mux.HandleFunc("POST /api/migrate", a.handleMigrate)
 	mux.HandleFunc("POST /api/migrate/stop", a.handleMigrateStop)
+	mux.HandleFunc("GET /api/pods", a.handleListPods)
+	mux.HandleFunc("GET /api/nodes", a.handleListNodes)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("POST /api/ping", a.handlePingStart)
 	mux.HandleFunc("POST /api/ping/stop", a.handleLoadgenStop)
@@ -197,6 +199,8 @@ var apiAllowedMethods = map[string]string{
 	"/api/migrate":      http.MethodPost,
 	"/api/migrate/stop": http.MethodPost,
 	"/api/status":       http.MethodGet + ", " + http.MethodHead,
+	"/api/pods":         http.MethodGet + ", " + http.MethodHead,
+	"/api/nodes":        http.MethodGet + ", " + http.MethodHead,
 	"/api/ping":         http.MethodPost,
 	"/api/ping/stop":    http.MethodPost,
 	"/api/httpgen":      http.MethodPost,
@@ -262,6 +266,26 @@ func (a *App) getCounter(name string) int64 {
 // serveHome serves the dashboard's index.html file.
 func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "index.html")
+}
+
+// handleListPods returns kata-runtime pods discovered via kubectl.
+func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
+	pods, err := ListKataPods(r.Context())
+	if err != nil {
+		jsonError(w, "list pods: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, pods)
+}
+
+// handleListNodes returns nodes labeled for the kata runtime via kubectl.
+func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	nodes, err := ListKataNodes(r.Context())
+	if err != nil {
+		jsonError(w, "list nodes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, nodes)
 }
 
 // handleStatus returns the current state of the dashboard, including active migrations and loadgen logs.
