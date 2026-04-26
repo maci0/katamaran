@@ -1,35 +1,7 @@
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: katamaran-source
-  namespace: kube-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: katamaran-source
-rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get"]
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: katamaran-source
-subjects:
-- kind: ServiceAccount
-  name: katamaran-source
-  namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: katamaran-source
-  apiGroup: rbac.authorization.k8s.io
----
 # Source-side migration Job template.
+# The katamaran-source ServiceAccount + ClusterRole + ClusterRoleBinding
+# are applied at install-time via deploy/dashboard.yaml (or out-of-band)
+# so the dashboard's runtime kubectl apply doesn't need RBAC write perms.
 # Rendered via envsubst by deploy/migrate.sh.
 # Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID
 apiVersion: batch/v1

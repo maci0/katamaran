@@ -56,6 +56,40 @@ roleRef:
   name: katamaran-dashboard-cluster
   apiGroup: rbac.authorization.k8s.io
 ---
+# Source job ServiceAccount + RBAC. Pre-applied at install time so the
+# dashboard's runtime kubectl-apply on job-source.yaml only handles the Job
+# resource and does not need RBAC write permissions.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: katamaran-source
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: katamaran-source
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: katamaran-source
+subjects:
+- kind: ServiceAccount
+  name: katamaran-source
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: katamaran-source
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
