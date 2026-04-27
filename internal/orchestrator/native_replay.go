@@ -149,8 +149,11 @@ func (n *Native) createStagerPod(ctx context.Context, podName, destNode string) 
 			NodeName:      destNode,
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
-				Name:    "stager",
-				Image:   "registry.k8s.io/pause:3.10.1",
+				Name: "stager",
+				// Need a shell + tee + sleep, so we cannot use the kubernetes
+				// pause image (which only ships /pause). busybox is small and
+				// has the userland we need.
+				Image:   "busybox:1.36",
 				Command: []string{"sleep", "300"},
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: &priv,

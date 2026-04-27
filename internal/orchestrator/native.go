@@ -326,9 +326,10 @@ func buildExtraArgs(req Request) string {
 	if req.AutoDowntime {
 		args = append(args, "--auto-downtime")
 	}
-	if req.MultifdChannels > 0 {
-		args = append(args, "--multifd-channels", strconv.Itoa(req.MultifdChannels))
-	}
+	// Always pass --multifd-channels (including 0) so the source binary
+	// does not fall back to its own non-zero default and create a multifd
+	// mismatch with the dest (which sets multifd from this same value).
+	args = append(args, "--multifd-channels", strconv.Itoa(req.MultifdChannels))
 	if req.LogLevel != "" {
 		args = append(args, "--log-level", req.LogLevel)
 	}
