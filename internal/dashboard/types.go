@@ -60,14 +60,6 @@ type App struct {
 	loadgenCancel  context.CancelFunc
 }
 
-type PodInfo struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Node      string `json:"node"`
-	PodIP     string `json:"pod_ip"`
-}
-
-type NodeInfo struct {
-	Name       string `json:"name"`
-	InternalIP string `json:"internal_ip"`
-}
+// PodInfo and NodeInfo are defined in the orchestrator package and re-exported
+// from discovery.go via type aliases. Kept out of this file so the wire format
+// has a single source of truth.
