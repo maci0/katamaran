@@ -31,17 +31,16 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "no source spec",
 			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x"},
-			wantErr: "exactly one of SourcePod",
-		},
-		{
-			name:    "both source specs",
-			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, SourceQMP: "/q", VMIP: "10.0.0.1"},
-			wantErr: "exactly one of SourcePod",
+			wantErr: "either SourcePod or",
 		},
 		{
 			name:    "partial source pod",
 			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Name: "p"}},
 			wantErr: "Name and Namespace",
+		},
+		{
+			name: "pod mode with advanced overrides",
+			req:  Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, SourceQMP: "/q-override", VMIP: "10.0.0.99"},
 		},
 		{
 			name: "valid pod mode",

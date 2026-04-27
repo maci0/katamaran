@@ -128,9 +128,16 @@ func (s *Script) Stop(_ context.Context, id MigrationID) error {
 // started).
 var ErrUnknownID = errors.New("unknown migration ID")
 
-// buildArgs translates a Request into the deploy/migrate.sh CLI. Mirrors the
+// BuildArgs translates a Request into the deploy/migrate.sh CLI. Mirrors the
 // argument layout that internal/dashboard/migrate.go assembles today, so the
 // dashboard can switch over with no behavioural change.
+func (s *Script) BuildArgs(req Request) ([]string, error) {
+	if err := Validate(req); err != nil {
+		return nil, err
+	}
+	return s.buildArgs(req)
+}
+
 func (s *Script) buildArgs(req Request) ([]string, error) {
 	scriptPath := s.ScriptPath
 	if scriptPath == "" {
@@ -145,12 +152,22 @@ func (s *Script) buildArgs(req Request) ([]string, error) {
 	}
 	if req.SourcePod != nil {
 		args = append(args, "--pod-name", req.SourcePod.Name, "--pod-namespace", req.SourcePod.Namespace)
+		// Advanced overrides in pod mode: a non-empty value replaces the
+		// resolver's auto-derived default for that field. Empty = use the
+		// auto-derived value.
+		if req.SourceQMP != "" {
+			args = append(args, "--qmp-source", req.SourceQMP)
+		}
+		if req.VMIP != "" {
+			args = append(args, "--vm-ip", req.VMIP)
+		}
 	} else {
 		args = append(args, "--qmp-source", req.SourceQMP, "--vm-ip", req.VMIP)
 	}
 	if req.DestPod != nil {
 		args = append(args, "--dest-pod-name", req.DestPod.Name, "--dest-pod-namespace", req.DestPod.Namespace)
-	} else if req.DestQMP != "" {
+	}
+	if req.DestQMP != "" {
 		args = append(args, "--qmp-dest", req.DestQMP)
 	}
 	if req.TapIface != "" {
@@ -189,6 +206,13 @@ func (s *Script) buildArgs(req Request) ([]string, error) {
 	return args, nil
 }
 
+// Validate checks a Request for required fields and mode consistency. Exposed
+// so callers (e.g. the dashboard's HTTP handler) can pre-validate before
+// calling Apply or BuildArgs.
+func Validate(req Request) error {
+	return validate(req)
+}
+
 func validate(req Request) error {
 	if req.SourceNode == "" || req.DestNode == "" {
 		return errors.New("SourceNode and DestNode are required")
@@ -202,16 +226,13 @@ func validate(req Request) error {
 	if req.Image == "" {
 		return errors.New("Image is required")
 	}
-	hasPod := req.SourcePod != nil
-	hasExplicit := req.SourceQMP != "" && req.VMIP != ""
-	if hasPod == hasExplicit {
-		return errors.New("exactly one of SourcePod or (SourceQMP+VMIP) is required")
-	}
-	if hasPod && (req.SourcePod.Name == "" || req.SourcePod.Namespace == "") {
+	if req.SourcePod == nil {
+		// Legacy mode: SourceQMP + VMIP required.
+		if req.SourceQMP == "" || req.VMIP == "" {
+			return errors.New("either SourcePod or (SourceQMP + VMIP) is required")
+		}
+	} else if req.SourcePod.Name == "" || req.SourcePod.Namespace == "" {
 		return errors.New("SourcePod requires both Name and Namespace")
-	}
-	if req.DestPod != nil && req.DestQMP != "" {
-		return errors.New("DestPod and DestQMP are mutually exclusive")
 	}
 	if req.DestPod != nil && (req.DestPod.Name == "" || req.DestPod.Namespace == "") {
 		return errors.New("DestPod requires both Name and Namespace")

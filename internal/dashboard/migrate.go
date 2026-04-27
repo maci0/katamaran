@@ -13,7 +13,53 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/maci0/katamaran/internal/orchestrator"
 )
+
+// formToOrchestratorRequest reads the (already-validated) form fields and
+// builds an orchestrator.Request. resolvedSrcNode and resolvedDestIP are the
+// values handleMigrate looked up via kubectl when the form is in pod mode;
+// pass empty strings in legacy mode.
+func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, resolvedDestIP, downtimeArg string) orchestrator.Request {
+	req := orchestrator.Request{
+		DestNode:      r.PostFormValue("dest_node"),
+		Image:         r.PostFormValue("image"),
+		SharedStorage: r.PostFormValue("shared_storage") == "true",
+		ReplayCmdline: r.PostFormValue("replay_cmdline") == "true",
+		TapNetns:      r.PostFormValue("tap_netns"),
+	}
+	if podMode {
+		req.SourceNode = resolvedSrcNode
+		req.DestIP = resolvedDestIP
+		req.SourcePod = &orchestrator.PodRef{
+			Namespace: r.PostFormValue("source_pod_namespace"),
+			Name:      r.PostFormValue("source_pod_name"),
+		}
+		// Advanced overrides — apply only when non-empty.
+		req.SourceQMP = r.PostFormValue("qmp_source")
+		req.DestQMP = r.PostFormValue("qmp_dest")
+		req.VMIP = r.PostFormValue("vm_ip")
+		req.TapIface = r.PostFormValue("tap")
+		if dpNS := r.PostFormValue("dest_pod_namespace"); dpNS != "" {
+			req.DestPod = &orchestrator.PodRef{
+				Namespace: dpNS,
+				Name:      r.PostFormValue("dest_pod_name"),
+			}
+		}
+	} else {
+		req.SourceNode = r.PostFormValue("source_node")
+		req.DestIP = r.PostFormValue("dest_ip")
+		req.SourceQMP = r.PostFormValue("qmp_source")
+		req.DestQMP = r.PostFormValue("qmp_dest")
+		req.VMIP = r.PostFormValue("vm_ip")
+		req.TapIface = r.PostFormValue("tap")
+	}
+	if d, err := strconv.Atoi(downtimeArg); err == nil && d > 0 {
+		req.DowntimeMS = d
+	}
+	return req
+}
 
 // migrateScriptPath finds the absolute path to the migrate.sh script.
 func migrateScriptPath() (string, error) {
@@ -188,70 +234,30 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	args := []string{scriptPath, "--image", r.PostFormValue("image")}
-	var logSourceNode, logDestIP, logVMIP string
-	if podMode {
-		args = append(args,
-			"--source-node", resolvedSrcNode,
-			"--dest-node", r.PostFormValue("dest_node"),
-			"--dest-ip", resolvedDestIP,
-			"--pod-name", r.PostFormValue("source_pod_name"),
-			"--pod-namespace", r.PostFormValue("source_pod_namespace"),
-		)
-		// Advanced overrides: any non-empty value from the form replaces the
-		// auto-derived defaults inside the source/dest jobs.
-		for _, p := range []struct{ flag, key string }{
-			{"--qmp-source", "qmp_source"},
-			{"--qmp-dest", "qmp_dest"},
-			{"--vm-ip", "vm_ip"},
-			{"--tap", "tap"},
-		} {
-			if v := r.PostFormValue(p.key); v != "" {
-				args = append(args, p.flag, v)
-			}
-		}
-		// Dest pod picker: when set, the dest job's resolver derives qmp from
-		// the pod's sandbox UUID instead of using the migrate.sh placeholder.
-		if v := r.PostFormValue("dest_pod_name"); v != "" {
-			args = append(args, "--dest-pod-name", v, "--dest-pod-namespace", r.PostFormValue("dest_pod_namespace"))
-		}
-		logSourceNode = resolvedSrcNode
-		logDestIP = resolvedDestIP
-	} else {
-		args = append(args,
-			"--source-node", r.PostFormValue("source_node"),
-			"--dest-node", r.PostFormValue("dest_node"),
-			"--qmp-source", r.PostFormValue("qmp_source"),
-			"--qmp-dest", r.PostFormValue("qmp_dest"),
-			"--tap", r.PostFormValue("tap"),
-			"--dest-ip", r.PostFormValue("dest_ip"),
-			"--vm-ip", r.PostFormValue("vm_ip"),
-		)
-		logSourceNode = r.PostFormValue("source_node")
-		logDestIP = r.PostFormValue("dest_ip")
-		logVMIP = r.PostFormValue("vm_ip")
+	// Translate the form into an orchestrator.Request, then let the Script
+	// orchestrator render the migrate.sh CLI. The request shape is the same
+	// type a future operator (or shell-free Native orchestrator) consumes —
+	// keeping the dashboard's form parsing as the only HTTP-coupled layer.
+	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
+	args, err := orchestrator.NewScript(scriptPath).BuildArgs(req)
+	if err != nil {
+		a.migrationMutex.Lock()
+		a.isMigrating = false
+		a.migrationID = ""
+		a.migrationCancel = nil
+		a.migrationsFailed++
+		a.lastMigrationResult = "error"
+		a.lastMigrationError = err.Error()
+		a.migrationMutex.Unlock()
+		dashboardMigrationsActive.Add(-1)
+		dashboardMigrationResultsByOutcome.Add("error", 1)
+		cancel()
+		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	if v := r.PostFormValue("tap_netns"); v != "" {
-		args = append(args, "--tap-netns", v)
-	}
-
-	if r.PostFormValue("shared_storage") == "true" {
-		args = append(args, "--shared-storage")
-	}
-	// In pod-mode the dest pod is typically a fresh pause container with no
-	// live VM; the migration must capture the source QEMU's cmdline and replay
-	// it on the dest with -incoming defer. The opt-in flag mirrors the
-	// migrate.sh switch so the dashboard does not silently impose the
-	// behaviour on legacy explicit-flag callers.
-	if r.PostFormValue("replay_cmdline") == "true" {
-		args = append(args, "--replay-cmdline")
-	}
-	if downtimeArg != "" {
-		args = append(args, "--downtime", downtimeArg)
-	}
-
-	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", r.PostFormValue("dest_node"), "image", r.PostFormValue("image"), "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", r.PostFormValue("shared_storage") == "true", "pod_mode", podMode)
+	logSourceNode, logDestIP, logVMIP := req.SourceNode, req.DestIP, req.VMIP
+	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 	go a.runCommand(ctx, args, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
