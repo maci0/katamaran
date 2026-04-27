@@ -1,0 +1,118 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: migrations.kata.katamaran.io
+spec:
+  group: kata.katamaran.io
+  names:
+    kind: Migration
+    listKind: MigrationList
+    plural: migrations
+    singular: migration
+    shortNames: [mig]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        required: [spec]
+        properties:
+          spec:
+            type: object
+            required: [sourcePod, destNode, image]
+            properties:
+              sourcePod:
+                description: Reference to the source kata pod (namespace + name).
+                type: object
+                required: [namespace, name]
+                properties:
+                  namespace: { type: string }
+                  name:      { type: string }
+              destPod:
+                description: |
+                  Optional reference to a kata pod on the destination node whose
+                  sandbox QMP socket the dest job should connect to. Required when
+                  replayCmdline is false.
+                type: object
+                required: [namespace, name]
+                properties:
+                  namespace: { type: string }
+                  name:      { type: string }
+              destNode:
+                description: Kubernetes node name to migrate to.
+                type: string
+              image:
+                description: katamaran container image used for source/dest jobs.
+                type: string
+              sharedStorage:
+                description: Skip NBD drive-mirror (Ceph/NFS).
+                type: boolean
+                default: false
+              replayCmdline:
+                description: Capture source QEMU cmdline + replay on dest with -incoming defer.
+                type: boolean
+                default: false
+              tunnelMode:
+                type: string
+                enum: [ipip, gre, none]
+                default: ipip
+              downtimeMS:
+                type: integer
+                minimum: 1
+                maximum: 60000
+                default: 25
+              autoDowntime:
+                type: boolean
+                default: false
+              multifdChannels:
+                type: integer
+                minimum: 0
+                default: 0
+          status:
+            type: object
+            properties:
+              phase:
+                description: |
+                  Lifecycle phase: submitted, dest-starting, src-starting,
+                  transferring, cutover, succeeded, failed.
+                type: string
+              migrationID:
+                description: Orchestrator-assigned correlation ID propagated to katamaran logs.
+                type: string
+              message:
+                type: string
+              error:
+                type: string
+              startedAt:
+                type: string
+                format: date-time
+              completedAt:
+                type: string
+                format: date-time
+              ramTransferred:
+                type: integer
+                format: int64
+              ramTotal:
+                type: integer
+                format: int64
+              actualDowntimeMS:
+                type: integer
+                format: int64
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Source
+      type: string
+      jsonPath: .spec.sourcePod.name
+    - name: Dest
+      type: string
+      jsonPath: .spec.destNode
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp

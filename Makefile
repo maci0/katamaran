@@ -1,10 +1,10 @@
-.PHONY: all build build-dashboard build-orchestrator test smoke fuzz fuzz-long image dashboard clean vet help
+.PHONY: all build build-dashboard build-orchestrator build-mgr test smoke fuzz fuzz-long image dashboard mgr clean vet help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
 
 # Default target
-all: build build-dashboard build-orchestrator
+all: build build-dashboard build-orchestrator build-mgr
 
 # Build the katamaran binary
 build:
@@ -18,6 +18,10 @@ build-dashboard:
 # orchestrator package). Used by scripts and a future Migration controller.
 build-orchestrator:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
+
+# Build the Migration CRD controller binary.
+build-mgr:
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-mgr ./cmd/katamaran-mgr/
 
 # Run go vet and gofmt checks
 vet:
@@ -60,6 +64,12 @@ dashboard:
 	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-dashboard:dev -f Dockerfile.dashboard .
 	rm -f dashboard.tar
 	$(CE) save localhost/katamaran-dashboard:dev -o dashboard.tar
+
+# Build the Migration controller container image
+mgr:
+	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-mgr:dev -f Dockerfile.mgr .
+	rm -f mgr.tar
+	$(CE) save localhost/katamaran-mgr:dev -o mgr.tar
 
 # Remove build artifacts
 clean:

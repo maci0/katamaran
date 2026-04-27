@@ -1,0 +1,64 @@
+# RBAC + Deployment for the katamaran-mgr controller. Apply after the CRD
+# (config/crd/migration.yaml) has been registered.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: katamaran-mgr
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: katamaran-mgr
+rules:
+# Migration CRs.
+- apiGroups: ["kata.katamaran.io"]
+  resources: ["migrations"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: ["kata.katamaran.io"]
+  resources: ["migrations/status"]
+  verbs: ["get", "patch", "update"]
+# Pods/nodes for the orchestrator's discoverer + resolver lookups.
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+# Jobs the Native orchestrator submits.
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: katamaran-mgr
+subjects:
+- kind: ServiceAccount
+  name: katamaran-mgr
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: katamaran-mgr
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: katamaran-mgr
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: katamaran-mgr }
+  template:
+    metadata:
+      labels: { app: katamaran-mgr }
+    spec:
+      serviceAccountName: katamaran-mgr
+      containers:
+      - name: mgr
+        image: localhost/katamaran-mgr:dev
+        imagePullPolicy: IfNotPresent
+        args: []
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits:   { cpu: 500m, memory: 256Mi }

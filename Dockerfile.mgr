@@ -1,0 +1,18 @@
+# Stage 1 — builder
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/katamaran-mgr/ cmd/katamaran-mgr/
+COPY internal/ internal/
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -o /katamaran-mgr ./cmd/katamaran-mgr/
+
+# Stage 2 — minimal runtime
+FROM alpine:3.23
+RUN addgroup -g 1000 mgr && adduser -D -u 1000 -G mgr mgr
+COPY --from=builder /katamaran-mgr /usr/local/bin/katamaran-mgr
+USER mgr
+ENTRYPOINT ["/usr/local/bin/katamaran-mgr"]
