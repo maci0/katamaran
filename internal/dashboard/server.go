@@ -15,6 +15,7 @@ import (
 
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/logging"
+	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
 const (
@@ -131,6 +132,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	app := &App{startTime: time.Now(), allowedImage: allowedImage}
+
+	// Opt in to the in-process Native orchestrator (client-go) when
+	// KATAMARAN_NATIVE=1. Default keeps the migrate.sh shell-out path so
+	// existing deployments continue to work unchanged.
+	if os.Getenv("KATAMARAN_NATIVE") == "1" {
+		if nat, err := orchestrator.NewNative(); err != nil {
+			slog.Warn("KATAMARAN_NATIVE=1 but NewNative failed; falling back to script", "error", err)
+		} else {
+			app.orch = nat
+			slog.Info("Migration: using Native orchestrator (client-go)")
+		}
+	}
 
 	expvar.NewString("version").Set(buildinfo.Version)
 	expvar.Publish("migrations_started", expvar.Func(func() any { return app.getCounter("started") }))

@@ -35,6 +35,13 @@ type App struct {
 	migrateScript string
 	allowedImage  string
 
+	// orch is the orchestrator handleMigrate submits to. nil = use the
+	// legacy migrate.sh shell-out path (Script semantics, runCommand). When
+	// set (e.g. KATAMARAN_NATIVE=1 picks orchestrator.NewNative()), the
+	// handler calls orch.Apply + Watch and writes status updates to the
+	// log buffer instead of streaming the script's stdout.
+	orch any // typed as orchestrator.Orchestrator at use site to avoid import cycle in this file
+
 	startTime time.Time
 
 	migrationOutput  []string

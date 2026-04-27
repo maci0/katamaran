@@ -258,9 +258,79 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 	logSourceNode, logDestIP, logVMIP := req.SourceNode, req.DestIP, req.VMIP
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
-	go a.runCommand(ctx, args, migrationID)
+
+	if orch, ok := a.orch.(orchestrator.Orchestrator); ok {
+		// Native path: submit via the orchestrator, stream Phase transitions
+		// into the log buffer. Loses the migrate.sh `>>>` line granularity
+		// but does not require kubectl/migrate.sh in the image.
+		go a.runOrchestrator(ctx, orch, req, migrationID)
+	} else {
+		// Legacy script path: shell out to migrate.sh and tail its stdout.
+		go a.runCommand(ctx, args, migrationID)
+	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
+}
+
+// runOrchestrator submits req to orch, reflects each StatusUpdate into the
+// dashboard log buffer, and finalises migration counters when the watch
+// channel closes. Mirrors the bookkeeping runCommand does so /api/status
+// behaves identically regardless of which orchestrator backs the migration.
+func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID string) {
+	start := time.Now()
+	defer func() {
+		a.migrationMutex.Lock()
+		a.isMigrating = false
+		a.migrationCancel = nil
+		outcome := a.lastMigrationResult
+		a.migrationMutex.Unlock()
+		dashboardMigrationsActive.Add(-1)
+		recordMigrationDuration(time.Since(start), outcome)
+	}()
+
+	a.appendLog(">>> Submitting migration via Native orchestrator…")
+	id, err := orch.Apply(ctx, req)
+	if err != nil {
+		a.appendLog("Error: " + err.Error())
+		a.setMigrationResult("error", err.Error())
+		return
+	}
+	a.appendLog(">>> Migration submitted, id=" + string(id))
+	updates, err := orch.Watch(ctx, id)
+	if err != nil {
+		a.appendLog("Error: " + err.Error())
+		a.setMigrationResult("error", err.Error())
+		return
+	}
+	var terminal orchestrator.StatusPhase
+	var terminalErr error
+	for u := range updates {
+		line := ">>> " + string(u.Phase)
+		if u.Message != "" {
+			line += ": " + u.Message
+		}
+		if u.Error != nil {
+			line += ": " + u.Error.Error()
+		}
+		a.appendLog(line)
+		if u.Phase.IsTerminal() {
+			terminal = u.Phase
+			terminalErr = u.Error
+		}
+	}
+	switch terminal {
+	case orchestrator.PhaseSucceeded:
+		a.setMigrationResult("success", "")
+	case orchestrator.PhaseFailed:
+		msg := "migration failed"
+		if terminalErr != nil {
+			msg = terminalErr.Error()
+		}
+		a.setMigrationResult("error", msg)
+	default:
+		a.setMigrationResult("error", "watch closed without terminal status")
+	}
+	_ = migrationID
 }
 
 // handleMigrateStop processes a request to cancel an ongoing migration.
