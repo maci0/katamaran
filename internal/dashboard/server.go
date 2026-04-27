@@ -245,12 +245,11 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // handleReadyz is a readiness probe for Kubernetes. Unlike the lightweight
 // /healthz liveness check, it verifies the dashboard can actually serve
-// migration requests by confirming the orchestrator is wired (Native or
-// a test override on a.migrateScript).
+// migration requests by confirming the orchestrator is wired.
 func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-store")
-	if a.migrateScript != "" || a.orch != nil {
+	if a.orch != nil {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 		return

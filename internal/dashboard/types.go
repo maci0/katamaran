@@ -30,15 +30,12 @@ type StatusResponse struct {
 }
 
 type App struct {
-	// migrateScript is a no-op test hook kept so tests can directly mark
-	// /readyz as healthy without wiring an orchestrator. It is no longer
-	// consulted at migration submit time — handleMigrate requires a.orch.
-	migrateScript string
-	allowedImage  string
+	allowedImage string
 
 	// orch is the orchestrator handleMigrate submits to. Set by the
 	// production main() to NewNative() (or kubeconfig fallback). Tests
 	// inject a fakeOrchestrator. handleMigrate fails 503 if nil.
+	// readyz also returns 503 until orch is set.
 	orch any // typed as orchestrator.Orchestrator at use site to avoid import cycle in this file
 
 	startTime time.Time

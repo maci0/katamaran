@@ -1208,7 +1208,7 @@ func TestHandleReadyz_WithScript(t *testing.T) {
 	w := httptest.NewRecorder()
 	app.handleReadyz(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 with migrateScript set, got %v", w.Code)
+		t.Fatalf("expected 200 with orchestrator wired, got %v", w.Code)
 	}
 	if body := w.Body.String(); body != "ok\n" {
 		t.Fatalf("expected body %q, got %q", "ok\n", body)
@@ -1223,7 +1223,7 @@ func TestHandleReadyz_WithScript(t *testing.T) {
 
 func TestHandleReadyz_NoScript(t *testing.T) {
 	t.Parallel()
-	// Neither orchestrator nor migrateScript set — readyz must report 503.
+	// No orchestrator wired — readyz must report 503.
 	app := &App{}
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
