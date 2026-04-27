@@ -31,11 +31,17 @@ import (
 // What it does NOT cover yet (Script orchestrator is still the canonical
 // path for these):
 //
-//   - Cmdline-replay shipment between source and dest pods (the cmdline
-//     stager pod + kubectl-cp dance from migrate.sh). When ReplayCmdline
-//     is true, Native returns ErrReplayCmdlineNotSupported.
 //   - Granular RAM-transfer progress (no log scraping yet).
 //   - Per-pod log streaming for the dashboard log pane.
+//
+// ReplayCmdline support: when the request has ReplayCmdline=true, Native
+// submits the source Job, tails the source pod's logs for the
+// `KATAMARAN_CMDLINE_AT=` marker, SPDY-streams the cmdline file off the
+// source pod, creates a one-shot stager pod on the destination node to
+// land the file via hostPath, and only then creates the dest Job. This
+// requires a rest.Config (SPDY upgrade), so NewNativeFromClient (test
+// constructor without a rest.Config) still returns
+// ErrReplayCmdlineNotSupported.
 //
 // Use NewNative for the in-cluster path and NewNativeFromClient for tests.
 type Native struct {
