@@ -263,9 +263,20 @@ func (n *Native) Stop(ctx context.Context, id MigrationID) error {
 	return nil
 }
 
-// poll watches the source Job's status until it terminates, emitting
-// StatusUpdate events. The dest Job's lifecycle is incidental — we only
-// care about source completion since that signals migration success.
+// poll watches BOTH the source and destination Job statuses and emits
+// StatusUpdate events. The migration is reported successful when the dest
+// Job reaches Complete — the dest Job receives RAM, fires QEMU's RESUME
+// event, and exits 0 only on a complete handover. The source Job's exit
+// code is incidental: kata-shim frequently kills the source QEMU after
+// migration completes (so the source binary's QMP polling errors out and
+// the container exits non-zero) even though the migration itself succeeded.
+//
+// Outcome matrix:
+//
+//	dest=Complete          → PhaseSucceeded (regardless of source)
+//	dest=Failed            → PhaseFailed
+//	source=Failed && dest pending → keep waiting (dest may still complete)
+//	source=Failed && dest never starts → PhaseFailed
 func (n *Native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer func() {
 		close(run.updates)
@@ -275,33 +286,51 @@ func (n *Native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 		n.mu.Unlock()
 	}()
 	const interval = 2 * time.Second
+	const sourceFailGrace = 90 * time.Second // how long to wait for dest after source dies
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	announcedTransferring := false
+	var sourceFailedAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: ctx.Err()}
 			return
 		case <-ticker.C:
-			job, err := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.srcJob, metav1.GetOptions{})
-			if err != nil {
-				if apierrors.IsNotFound(err) {
+			srcJob, srcErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.srcJob, metav1.GetOptions{})
+			destJob, destErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.destJob, metav1.GetOptions{})
+
+			// Dest=Complete → success, even if source failed.
+			if destErr == nil {
+				if cond := jobCondition(destJob); cond == batchv1.JobComplete {
+					run.updates <- StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
+					return
+				} else if cond == batchv1.JobFailed {
+					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("dest job failed")}
+					return
+				}
+			}
+
+			// Source job state.
+			if srcErr != nil {
+				if apierrors.IsNotFound(srcErr) {
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job disappeared")}
 					return
 				}
-				continue // transient — retry on next tick
+				continue
 			}
-			cond := jobCondition(job)
-			switch cond {
-			case batchv1.JobComplete:
-				run.updates <- StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
-				return
-			case batchv1.JobFailed:
-				run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job failed")}
-				return
+			srcCond := jobCondition(srcJob)
+			if srcCond == batchv1.JobFailed {
+				if sourceFailedAt.IsZero() {
+					sourceFailedAt = time.Now()
+				}
+				if time.Since(sourceFailedAt) > sourceFailGrace {
+					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job failed and dest did not complete within grace window")}
+					return
+				}
+				continue // give dest time to land RESUME and exit 0
 			}
-			if !announcedTransferring && (job.Status.Active > 0 || job.Status.Ready != nil && *job.Status.Ready > 0) {
+			if !announcedTransferring && (srcJob.Status.Active > 0 || srcJob.Status.Ready != nil && *srcJob.Status.Ready > 0) {
 				run.updates <- StatusUpdate{ID: id, Phase: PhaseTransferring, When: time.Now()}
 				announcedTransferring = true
 			}

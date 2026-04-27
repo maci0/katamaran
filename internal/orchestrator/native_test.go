@@ -61,16 +61,22 @@ func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	// React to Get on katamaran-source by returning a Job whose conditions
-	// include JobComplete=True. fake.Clientset doesn't auto-update Job status
-	// from controller activity — we have to fabricate it.
+	// React to Get on either katamaran-{source,dest} by returning a Job
+	// whose conditions include JobComplete=True. fake.Clientset doesn't
+	// auto-update Job status from controller activity — we have to
+	// fabricate it. The Native.poll loop reports PhaseSucceeded as soon as
+	// the DEST Job is Complete (regardless of source's exit status).
 	cs.PrependReactor("get", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		ga, ok := action.(clienttesting.GetAction)
-		if !ok || ga.GetName() != "katamaran-source" {
+		if !ok {
+			return false, nil, nil
+		}
+		name := ga.GetName()
+		if name != "katamaran-source" && name != "katamaran-dest" {
 			return false, nil, nil
 		}
 		return true, &batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: "katamaran-source", Namespace: "kube-system"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system"},
 			Status: batchv1.JobStatus{
 				Conditions: []batchv1.JobCondition{
 					{Type: batchv1.JobComplete, Status: "True"},
