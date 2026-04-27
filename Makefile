@@ -1,10 +1,10 @@
-.PHONY: all build build-dashboard test smoke fuzz fuzz-long image dashboard clean vet help
+.PHONY: all build build-dashboard build-orchestrator test smoke fuzz fuzz-long image dashboard clean vet help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
 
 # Default target
-all: build build-dashboard
+all: build build-dashboard build-orchestrator
 
 # Build the katamaran binary
 build:
@@ -13,6 +13,11 @@ build:
 # Build the dashboard binary
 build-dashboard:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/dashboard/
+
+# Build the orchestrator CLI (JSON-in / NDJSON-out wrapper around the
+# orchestrator package). Used by scripts and a future Migration controller.
+build-orchestrator:
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
 
 # Run go vet and gofmt checks
 vet:
