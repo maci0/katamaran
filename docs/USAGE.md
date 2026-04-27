@@ -188,6 +188,34 @@ Show orchestrator help:
 deploy/migrate.sh --help
 ```
 
+## Structured CLI: `katamaran-orchestrator`
+
+`bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin and emits newline-delimited JSON `StatusUpdate` events on stdout. Exit code: 0 on success, 1 on migration failure, 2 on input error.
+
+Useful for CI pipelines and a future Migration CRD reconciler — no shell parsing of `migrate.sh` output.
+
+```bash
+echo '{
+  "SourceNode":"worker-a",
+  "DestNode":"worker-b",
+  "DestIP":"10.0.0.20",
+  "Image":"localhost/katamaran:dev",
+  "SourcePod":{"Namespace":"default","Name":"kata-demo"},
+  "DestPod":{"Namespace":"default","Name":"kata-dest-shell"},
+  "SharedStorage":true,
+  "ReplayCmdline":true
+}' | bin/katamaran-orchestrator
+```
+
+Sample stdout:
+
+```jsonl
+{"id":"a1b2c3...","phase":"submitted","time":"2026-04-27T05:25:32.243Z"}
+{"id":"a1b2c3...","phase":"succeeded","time":"2026-04-27T05:25:58.314Z"}
+```
+
+The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/migrate` handler — anything callable from the dashboard is callable from the CLI and vice versa.
+
 ## Environment Variables
 
 | Variable | Description |
