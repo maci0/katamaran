@@ -17,15 +17,13 @@ FROM alpine:3.23
 
 ARG TARGETARCH=amd64
 
-RUN apk add --no-cache bash gettext iputils
-# Install kubectl (multi-arch) — pinned version for reproducible builds.
-ARG KUBECTL_VERSION=v1.32.3
-RUN wget -qO kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
-    wget -qO kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
-    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c && \
-    chmod +x kubectl && \
-    mv kubectl /usr/local/bin/ && \
-    rm kubectl.sha256
+# iputils is required for the loadgen ICMP ping path. kubectl, bash, and
+# envsubst (gettext) are no longer shipped: the dashboard now uses the
+# in-process Native orchestrator (client-go) and discovery, so it has no
+# need to shell out. To run the legacy migrate.sh path during local
+# development, set KATAMARAN_LEGACY_SCRIPT=1 and install kubectl + bash +
+# envsubst yourself.
+RUN apk add --no-cache iputils
 
 RUN addgroup -g 1000 dashboard && \
     adduser -D -u 1000 -G dashboard dashboard
@@ -33,7 +31,6 @@ RUN addgroup -g 1000 dashboard && \
 WORKDIR /app
 COPY --chown=dashboard:dashboard --from=builder /dashboard .
 COPY --chown=dashboard:dashboard cmd/dashboard/index.html .
-COPY --chown=dashboard:dashboard deploy /app/deploy
 
 USER dashboard
 EXPOSE 8080

@@ -212,8 +212,10 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationCancel = cancel
 	a.migrationMutex.Unlock()
 
+	// migrate.sh is only needed for the legacy Script path. Skip the lookup
+	// when an orchestrator is wired (Native + a future operator path).
 	scriptPath := a.migrateScript
-	if scriptPath == "" {
+	if scriptPath == "" && a.orch == nil {
 		var err error
 		scriptPath, err = migrateScriptPath()
 		if err != nil {

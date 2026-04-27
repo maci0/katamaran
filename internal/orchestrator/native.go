@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Native is the in-cluster client-go implementation of Orchestrator. It
@@ -76,6 +77,30 @@ func NewNative() (*Native, error) {
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
 	}
+	return newNativeFromRestConfig(cfg)
+}
+
+// NewNativeFromKubeconfig builds a Native orchestrator from a kubeconfig
+// file. Intended for out-of-cluster usage (dashboard run on a developer
+// laptop, integration tests, etc). Pass an empty path to use the default
+// loading rules (KUBECONFIG env / ~/.kube/config).
+func NewNativeFromKubeconfig(path, contextName string) (*Native, error) {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if path != "" {
+		rules.ExplicitPath = path
+	}
+	overrides := &clientcmd.ConfigOverrides{}
+	if contextName != "" {
+		overrides.CurrentContext = contextName
+	}
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("kubeconfig: %w", err)
+	}
+	return newNativeFromRestConfig(cfg)
+}
+
+func newNativeFromRestConfig(cfg *rest.Config) (*Native, error) {
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
