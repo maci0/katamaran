@@ -1255,16 +1255,16 @@ func TestHandleReadyz_WithScript(t *testing.T) {
 
 func TestHandleReadyz_NoScript(t *testing.T) {
 	t.Parallel()
-	// No migrateScript set and migrate.sh not in expected locations.
+	// Neither orchestrator nor migrateScript set — readyz must report 503.
 	app := &App{}
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 	app.handleReadyz(w, req)
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when migrate.sh not found, got %v", w.Code)
+		t.Fatalf("expected 503 when no orchestrator wired, got %v", w.Code)
 	}
-	if body := w.Body.String(); !strings.Contains(body, "not found") {
-		t.Fatalf("expected 'not found' in body, got %q", body)
+	if body := w.Body.String(); !strings.Contains(body, "not wired") {
+		t.Fatalf("expected 'not wired' in body, got %q", body)
 	}
 }
 

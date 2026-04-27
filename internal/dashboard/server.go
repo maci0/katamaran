@@ -133,21 +133,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	app := &App{startTime: time.Now(), allowedImage: allowedImage}
 
-	// Use the in-process Native orchestrator (client-go) by default. Fall
-	// back to a kubeconfig-loaded client when not running in-cluster
-	// (developer laptop). Only fall back to the legacy migrate.sh shell-out
-	// path if both fail AND KATAMARAN_LEGACY_SCRIPT=1 is set, so the
-	// kubectl-free default image path stays clean.
+	// The dashboard requires a working Kubernetes connection: in-cluster
+	// service-account creds first, then a kubeconfig-loaded client (handy
+	// when running on a developer laptop). The legacy migrate.sh shell-out
+	// path is no longer reachable from the production binary; Script
+	// orchestration remains available via the bin/katamaran-orchestrator
+	// CLI for users who still want to drive migrate.sh from a script.
 	if nat, err := orchestrator.NewNative(); err == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (in-cluster client-go)")
 	} else if nat, err2 := orchestrator.NewNativeFromKubeconfig(os.Getenv("KUBECONFIG"), ""); err2 == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (kubeconfig)", "in_cluster_err", err)
-	} else if os.Getenv("KATAMARAN_LEGACY_SCRIPT") == "1" {
-		slog.Warn("Migration: no Kubernetes config available; falling back to legacy migrate.sh path", "in_cluster_err", err, "kubeconfig_err", err2)
 	} else {
-		fmt.Fprintf(stderr, "Error: cannot reach Kubernetes API: %v / %v\nSet KATAMARAN_LEGACY_SCRIPT=1 to fall back to migrate.sh\n", err, err2)
+		fmt.Fprintf(stderr, "Error: cannot reach Kubernetes API: %v / %v\n", err, err2)
 		return 1
 	}
 
@@ -246,28 +245,20 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // handleReadyz is a readiness probe for Kubernetes. Unlike the lightweight
 // /healthz liveness check, it verifies the dashboard can actually serve
-// migration requests:
-//   - Native orchestrator path: a non-nil app.orch is sufficient (the
-//     client-go connection is live).
-//   - Legacy script path: migrate.sh must be findable on disk.
+// migration requests by confirming the orchestrator is wired (Native or
+// a test override on a.migrateScript).
 func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-store")
 	if a.migrateScript != "" || a.orch != nil {
-		// Test override OR Native orchestrator wired — always ready.
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 		return
 	}
-	if _, err := migrateScriptPath(); err != nil {
-		dashboardReadinessFailuresTotal.Add(1)
-		slog.Warn("Readiness check failed: migrate.sh not found", "error", err)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("migrate.sh not found\n"))
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
+	dashboardReadinessFailuresTotal.Add(1)
+	slog.Warn("Readiness check failed: orchestrator not wired")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte("orchestrator not wired\n"))
 }
 
 // getCounter returns the current value of the specified migration counter.
