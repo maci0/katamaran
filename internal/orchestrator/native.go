@@ -40,6 +40,7 @@ import (
 // Use NewNative for the in-cluster path and NewNativeFromClient for tests.
 type Native struct {
 	client    kubernetes.Interface
+	config    *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
 	namespace string
 
 	mu       sync.Mutex
@@ -55,13 +56,15 @@ type nativeRun struct {
 }
 
 // ErrReplayCmdlineNotSupported is returned by Native.Apply when the request
-// has ReplayCmdline=true. Use the Script orchestrator until Native gains
-// the cmdline-stager flow.
-var ErrReplayCmdlineNotSupported = errors.New("Native orchestrator does not yet support ReplayCmdline; use Script")
+// has ReplayCmdline=true but the Native orchestrator was constructed without
+// a rest.Config (e.g. via NewNativeFromClient in tests). Use NewNative for
+// in-cluster ReplayCmdline support.
+var ErrReplayCmdlineNotSupported = errors.New("Native ReplayCmdline requires a rest.Config (use NewNative, not NewNativeFromClient)")
 
 // NewNative builds a Native orchestrator using the in-cluster service
 // account. Job manifests are submitted into kube-system (matching the
-// existing migrate.sh layout).
+// existing migrate.sh layout). The returned Native supports ReplayCmdline
+// because it has a rest.Config for SPDY remote-command calls.
 func NewNative() (*Native, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -71,10 +74,14 @@ func NewNative() (*Native, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
 	}
-	return NewNativeFromClient(cs), nil
+	n := NewNativeFromClient(cs)
+	n.config = cfg
+	return n, nil
 }
 
-// NewNativeFromClient is the test-friendly constructor.
+// NewNativeFromClient is the test-friendly constructor. The returned Native
+// does NOT support ReplayCmdline (no rest.Config for SPDY) — set .config
+// manually if needed.
 func NewNativeFromClient(c kubernetes.Interface) *Native {
 	return &Native{
 		client:    c,
@@ -85,32 +92,50 @@ func NewNativeFromClient(c kubernetes.Interface) *Native {
 
 // Apply renders both Job manifests, submits them, and returns a fresh ID.
 // Status polling starts immediately in a goroutine.
+//
+// In ReplayCmdline mode the dest Job is held back until the source has
+// emitted the QEMU cmdline marker, so the cmdline file is staged on the
+// destination node before katamaran-dest starts.
 func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if err := Validate(req); err != nil {
 		return "", err
 	}
-	if req.ReplayCmdline {
+	if req.ReplayCmdline && n.config == nil {
 		return "", ErrReplayCmdlineNotSupported
 	}
 
 	id := newID()
-	extra := buildExtraArgs(req)
-	srcJob, err := renderSourceJob(req, id, extra)
+	cmdlinePath := fmt.Sprintf("/tmp/katamaran-cmdlines/cmdline-%s.txt", id)
+	srcExtra := buildExtraArgs(req)
+	destExtra := srcExtra
+	if req.ReplayCmdline {
+		srcExtra = strings.TrimSpace(srcExtra + " --emit-cmdline-to " + cmdlinePath)
+		destExtra = strings.TrimSpace(destExtra + " --replay-cmdline " + cmdlinePath)
+	}
+	srcJob, err := renderSourceJob(req, id, srcExtra)
 	if err != nil {
 		return "", fmt.Errorf("render source job: %w", err)
 	}
-	destJob, err := renderDestJob(req, id, extra)
+	destJob, err := renderDestJob(req, id, destExtra)
 	if err != nil {
 		return "", fmt.Errorf("render dest job: %w", err)
 	}
-	// Dest first so the migrate-incoming listener is up before source connects.
-	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
-		return "", fmt.Errorf("create dest job: %w", err)
-	}
-	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-		// Best-effort cleanup of the dest job we just submitted.
-		_ = n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{})
-		return "", fmt.Errorf("create source job: %w", err)
+
+	if req.ReplayCmdline {
+		// Source first: it has to capture and emit the cmdline before the
+		// dest job can spawn QEMU with --replay-cmdline.
+		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
+			return "", fmt.Errorf("create source job: %w", err)
+		}
+	} else {
+		// Dest first so the migrate-incoming listener is up before source connects.
+		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+			return "", fmt.Errorf("create dest job: %w", err)
+		}
+		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
+			_ = n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{})
+			return "", fmt.Errorf("create source job: %w", err)
+		}
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -126,8 +151,56 @@ func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	n.mu.Unlock()
 
 	run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
+
+	if req.ReplayCmdline {
+		// Stage cmdline + create dest job in a goroutine so Apply returns
+		// promptly. Status updates flow through the same channel.
+		go n.stageThenStartDest(runCtx, id, run, req, destJob)
+	}
 	go n.poll(runCtx, id, run)
 	return id, nil
+}
+
+// stageThenStartDest runs the cmdline-staging flow for ReplayCmdline mode:
+// finds the source pod, copies the cmdline off it, stages on the dest node,
+// then submits the dest Job. Failures abort the run with PhaseFailed.
+func (n *Native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
+	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
+	if err != nil {
+		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)}
+		run.cancel()
+		return
+	}
+	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode); err != nil {
+		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)}
+		run.cancel()
+		return
+	}
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)}
+		run.cancel()
+		return
+	}
+}
+
+// firstSourcePod waits up to 60s for the source Job's pod to be created
+// and returns its name. We need the pod (not the Job) to read logs from.
+func (n *Native) firstSourcePod(ctx context.Context, jobName string) (string, error) {
+	deadline, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	for {
+		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
+			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
+		})
+		if err == nil && len(pods.Items) > 0 {
+			return pods.Items[0].Name, nil
+		}
+		select {
+		case <-deadline.Done():
+			return "", deadline.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // Watch returns the channel of status updates for id. ErrUnknownID if the
