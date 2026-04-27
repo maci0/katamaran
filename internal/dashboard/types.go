@@ -30,16 +30,15 @@ type StatusResponse struct {
 }
 
 type App struct {
-	// migrateScript overrides automatic migrate.sh discovery when set.
-	// Used in tests to inject a dummy script.
+	// migrateScript is a no-op test hook kept so tests can directly mark
+	// /readyz as healthy without wiring an orchestrator. It is no longer
+	// consulted at migration submit time — handleMigrate requires a.orch.
 	migrateScript string
 	allowedImage  string
 
-	// orch is the orchestrator handleMigrate submits to. nil = use the
-	// legacy migrate.sh shell-out path (Script semantics, runCommand). When
-	// set (e.g. KATAMARAN_NATIVE=1 picks orchestrator.NewNative()), the
-	// handler calls orch.Apply + Watch and writes status updates to the
-	// log buffer instead of streaming the script's stdout.
+	// orch is the orchestrator handleMigrate submits to. Set by the
+	// production main() to NewNative() (or kubeconfig fallback). Tests
+	// inject a fakeOrchestrator. handleMigrate fails 503 if nil.
 	orch any // typed as orchestrator.Orchestrator at use site to avoid import cycle in this file
 
 	startTime time.Time

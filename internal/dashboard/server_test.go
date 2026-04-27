@@ -17,40 +17,8 @@ import (
 	"github.com/maci0/katamaran/internal/buildinfo"
 )
 
-// dummyMigrateScript creates a no-op migrate.sh in a temp directory and
-// returns its path. The script exits immediately with code 0.
-func dummyMigrateScript(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "migrate.sh")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// slowMigrateScript creates a migrate.sh that stays alive long enough for
-// tests that need to observe an in-progress migration.
-func slowMigrateScript(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "migrate.sh")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\nsleep 30\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// failingMigrateScript creates a migrate.sh that prints an error and exits 1.
-func failingMigrateScript(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "migrate.sh")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\necho 'QEMU connection refused'\necho 'migration failed: host unreachable'\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
+// (Stub migrate.sh helpers removed: tests now use fakeOrchestrator from
+// orch_fakes_test.go to drive migration submissions in-process.)
 
 // waitMigrationDone polls until the migration goroutine finishes.
 func waitMigrationDone(t *testing.T, app *App, timeout time.Duration) {
@@ -589,7 +557,7 @@ func TestHandleHTTPStart_ValidTarget(t *testing.T) {
 
 func TestHandleMigrate_AcceptsValidRequest(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{orch: dummyOrchestrator(t)}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -659,7 +627,7 @@ func TestHandleMigrate_MissingRequiredField(t *testing.T) {
 
 func TestHandleMigrate_DuplicatePrevented(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: slowMigrateScript(t)}
+	app := &App{orch: slowOrchestrator(t)}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -1042,7 +1010,7 @@ func TestPingRegex(t *testing.T) {
 
 func TestHandleMigrate_SharedStorageFlag(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{orch: dummyOrchestrator(t)}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -1235,7 +1203,7 @@ func TestSetMigrationResult(t *testing.T) {
 
 func TestHandleReadyz_WithScript(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: "/some/path"}
+	app := &App{orch: dummyOrchestrator(t)}
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 	app.handleReadyz(w, req)
@@ -1270,7 +1238,7 @@ func TestHandleReadyz_NoScript(t *testing.T) {
 
 func TestHandleMigrateStop_WithRunningMigration(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: slowMigrateScript(t)}
+	app := &App{orch: slowOrchestrator(t)}
 	// Start a migration so there's something to stop.
 	form := validMigrateForm()
 	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
@@ -1347,7 +1315,7 @@ func TestHandleMigrate_BodyTooLarge(t *testing.T) {
 
 func TestRunCommand_ScriptFailure(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: failingMigrateScript(t)}
+	app := &App{orch: failingOrchestrator(t)}
 	form := validMigrateForm()
 	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1371,8 +1339,8 @@ func TestRunCommand_ScriptFailure(t *testing.T) {
 	if errMsg == "" {
 		t.Fatal("expected non-empty lastMigrationError")
 	}
-	if !strings.Contains(errMsg, "host unreachable") {
-		t.Fatalf("expected error to contain script output, got %q", errMsg)
+	if !strings.Contains(errMsg, "synthetic failure") {
+		t.Fatalf("expected error to contain orchestrator failure, got %q", errMsg)
 	}
 	if failed != 1 {
 		t.Fatalf("expected migrationsFailed=1, got %d", failed)
@@ -1439,7 +1407,7 @@ esac
 
 func TestRunCommand_ScriptSuccess(t *testing.T) {
 	t.Parallel()
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{orch: dummyOrchestrator(t)}
 	form := validMigrateForm()
 	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1491,16 +1459,10 @@ esac
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
-	// Migrate script writes its argv (one per line) to a file we can inspect.
-	scriptDir := t.TempDir()
-	argFile := filepath.Join(scriptDir, "args.txt")
-	scriptPath := filepath.Join(scriptDir, "migrate.sh")
-	scriptBody := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argFile + "\nexit 0\n"
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	app := &App{migrateScript: scriptPath}
+	// Use a fake orchestrator that records the Request — no migrate.sh
+	// stub needed; the dashboard goes straight through orch.Apply.
+	fake := dummyOrchestrator(t)
+	app := &App{orch: fake}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -1525,34 +1487,21 @@ esac
 
 	waitMigrationDone(t, app, 5*time.Second)
 
-	raw, err := os.ReadFile(argFile)
-	if err != nil {
-		t.Fatalf("read recorded argv: %v", err)
+	got := fake.LastRequest()
+	if got.SourcePod == nil || got.SourcePod.Namespace != "default" || got.SourcePod.Name != "vm-a" {
+		t.Errorf("Request.SourcePod = %+v, want default/vm-a", got.SourcePod)
 	}
-	argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-
-	// Helper: assert flag is present with the given value.
-	hasFlag := func(flag, val string) bool {
-		for i := 0; i < len(argv)-1; i++ {
-			if argv[i] == flag && argv[i+1] == val {
-				return true
-			}
-		}
-		return false
+	if got.SourceNode != "src-node" {
+		t.Errorf("Request.SourceNode = %q, want src-node (resolved via kubectl)", got.SourceNode)
 	}
-
-	expects := []struct{ flag, val string }{
-		{"--pod-name", "vm-a"},
-		{"--pod-namespace", "default"},
-		{"--source-node", "src-node"},
-		{"--dest-node", "dst-node"},
-		{"--dest-ip", "192.168.1.20"},
-		{"--image", "katamaran:dev"},
+	if got.DestNode != "dst-node" {
+		t.Errorf("Request.DestNode = %q, want dst-node", got.DestNode)
 	}
-	for _, e := range expects {
-		if !hasFlag(e.flag, e.val) {
-			t.Errorf("argv missing %s %s; argv=%v", e.flag, e.val, argv)
-		}
+	if got.DestIP != "192.168.1.20" {
+		t.Errorf("Request.DestIP = %q, want 192.168.1.20 (resolved via kubectl)", got.DestIP)
+	}
+	if got.Image != "katamaran:dev" {
+		t.Errorf("Request.Image = %q, want katamaran:dev", got.Image)
 	}
 }
 
@@ -1576,7 +1525,7 @@ esac
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
-	app := &App{migrateScript: dummyMigrateScript(t)}
+	app := &App{orch: dummyOrchestrator(t)}
 	form := url.Values{}
 	form.Set("source_pod_namespace", "default")
 	form.Set("source_pod_name", "vm-a")

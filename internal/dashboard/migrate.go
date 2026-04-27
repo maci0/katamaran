@@ -1,15 +1,12 @@
 package dashboard
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"time"
@@ -61,19 +58,6 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 	return req
 }
 
-// migrateScriptPath finds the absolute path to the migrate.sh script.
-func migrateScriptPath() (string, error) {
-	paths := []string{
-		"deploy/migrate.sh",
-		"/usr/local/bin/migrate.sh",
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("migrate.sh not found in expected locations: %v", paths)
-}
 
 // handleMigrate processes a form POST to start a new migration.
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
@@ -212,37 +196,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationCancel = cancel
 	a.migrationMutex.Unlock()
 
-	// migrate.sh is only needed for the legacy Script path. Skip the lookup
-	// when an orchestrator is wired (Native + a future operator path).
-	scriptPath := a.migrateScript
-	if scriptPath == "" && a.orch == nil {
-		var err error
-		scriptPath, err = migrateScriptPath()
-		if err != nil {
-			a.migrationMutex.Lock()
-			a.isMigrating = false
-			a.migrationID = ""
-			a.migrationCancel = nil
-			a.migrationsFailed++
-			a.lastMigrationResult = "error"
-			a.lastMigrationError = err.Error()
-			a.migrationMutex.Unlock()
-			dashboardMigrationsActive.Add(-1)
-			dashboardMigrationResultsByOutcome.Add("error", 1)
-			cancel()
-			slog.Error("Migration script not found", "error", err, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Migration script not found", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// Translate the form into an orchestrator.Request, then let the Script
-	// orchestrator render the migrate.sh CLI. The request shape is the same
-	// type a future operator (or shell-free Native orchestrator) consumes —
-	// keeping the dashboard's form parsing as the only HTTP-coupled layer.
+	// Translate the form into an orchestrator.Request and validate.
 	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
-	args, err := orchestrator.NewScript(scriptPath).BuildArgs(req)
-	if err != nil {
+	if err := orchestrator.Validate(req); err != nil {
 		a.migrationMutex.Lock()
 		a.isMigrating = false
 		a.migrationID = ""
@@ -261,15 +217,23 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	logSourceNode, logDestIP, logVMIP := req.SourceNode, req.DestIP, req.VMIP
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 
-	if orch, ok := a.orch.(orchestrator.Orchestrator); ok {
-		// Native path: submit via the orchestrator, stream Phase transitions
-		// into the log buffer. Loses the migrate.sh `>>>` line granularity
-		// but does not require kubectl/migrate.sh in the image.
-		go a.runOrchestrator(ctx, orch, req, migrationID)
-	} else {
-		// Legacy script path: shell out to migrate.sh and tail its stdout.
-		go a.runCommand(ctx, args, migrationID)
+	orch, ok := a.orch.(orchestrator.Orchestrator)
+	if !ok {
+		a.migrationMutex.Lock()
+		a.isMigrating = false
+		a.migrationID = ""
+		a.migrationCancel = nil
+		a.migrationsFailed++
+		a.lastMigrationResult = "error"
+		a.lastMigrationError = "no orchestrator wired"
+		a.migrationMutex.Unlock()
+		dashboardMigrationsActive.Add(-1)
+		dashboardMigrationResultsByOutcome.Add("error", 1)
+		cancel()
+		jsonError(w, "no orchestrator wired", http.StatusServiceUnavailable)
+		return
 	}
+	go a.runOrchestrator(ctx, orch, req, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
@@ -350,89 +314,6 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
 
-// runCommand executes the migration script and streams its output to the dashboard.
-func (a *App) runCommand(ctx context.Context, args []string, migrationID string) {
-	start := time.Now()
-	defer func() {
-		a.migrationMutex.Lock()
-		a.isMigrating = false
-		// Keep migrationID so GET /api/status can correlate the result
-		// with the migration_id returned in the 202 response. It gets
-		// overwritten when a new migration starts.
-		a.migrationCancel = nil
-		outcome := a.lastMigrationResult
-		a.migrationMutex.Unlock()
-		dashboardMigrationsActive.Add(-1)
-		recordMigrationDuration(time.Since(start), outcome)
-	}()
-
-	slog.Info("Starting migration command", "migration_id", migrationID, "command", args[0], "args", args[1:])
-
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Env = append(os.Environ(), "KATAMARAN_MIGRATION_ID="+migrationID)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		slog.Error("Failed to create stdout pipe", "migration_id", migrationID, "error", err)
-		a.appendLog("Error: " + err.Error())
-		a.setMigrationResult("error", err.Error())
-		return
-	}
-	cmd.Stderr = cmd.Stdout
-
-	if err := cmd.Start(); err != nil {
-		slog.Error("Failed to start migration command", "migration_id", migrationID, "error", err)
-		a.appendLog("Error starting: " + err.Error())
-		a.setMigrationResult("error", err.Error())
-		return
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	buf := make([]byte, 0, scannerInitBuf)
-	scanner.Buffer(buf, scannerMaxSize)
-	for scanner.Scan() {
-		line := scanner.Text()
-		slog.Debug("Migration output", "migration_id", migrationID, "line", line)
-		a.appendLog(line)
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		slog.Warn("Migration output scanner error", "migration_id", migrationID, "error", scanErr)
-	}
-
-	elapsed := time.Since(start).Round(time.Millisecond)
-	if err := cmd.Wait(); err != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		if ctx.Err() != nil {
-			// User-initiated stop (via /api/migrate/stop) — classified as error for metrics.
-			slog.Info("Migration command stopped by user", "migration_id", migrationID, "exit_code", exitCode, "elapsed", elapsed)
-			a.appendLog("Migration stopped by user.")
-			a.setMigrationResult("error", "stopped by user")
-		} else {
-			slog.Error("Migration command finished with error", "migration_id", migrationID, "error", err, "exit_code", exitCode, "elapsed", elapsed)
-			a.appendLog("Finished with error: " + err.Error())
-			// Include the last 1-2 output lines in the error for API consumers,
-			// since err.Error() is just "exit status 1" which is not actionable.
-			errDetail := err.Error()
-			a.migrationMutex.Lock()
-			if n := len(a.migrationOutput); n > 0 {
-				tail := a.migrationOutput[n-1]
-				if n > 1 {
-					tail = a.migrationOutput[n-2] + "; " + tail
-				}
-				errDetail = tail
-			}
-			a.migrationMutex.Unlock()
-			a.setMigrationResult("error", errDetail)
-		}
-	} else {
-		slog.Info("Migration command finished successfully", "migration_id", migrationID, "elapsed", elapsed)
-		a.appendLog("Finished successfully.")
-		a.setMigrationResult("success", "")
-	}
-}
 
 // setMigrationResult updates the final status and error message of the completed migration.
 func (a *App) setMigrationResult(result, errMsg string) {
