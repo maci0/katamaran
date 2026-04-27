@@ -2,15 +2,26 @@
 
 A web UI for orchestrating katamaran live migrations, visualizing ping latency (zero-drop proof), and running load generators during cutover.
 
+![Dashboard initial view](../../docs/screenshots/01-dashboard-initial.png)
+
 ## Features
 
-- **Migration orchestration** — fill in source/destination node details and trigger `deploy/migrate.sh` with one click
-- **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes
-- **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data
-- **Live stats** — packets transmitted, dropped, average latency, max latency (computed from ping data)
-- **Color-coded log viewer** — red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries
-- **Status badges** — idle (gray), migration running (blue pulse), loadgen active (green pulse)
-- **Dark theme** — navy/slate backgrounds with SVG katamaran boat + animated wave header
+- **Pod-picker UX** — pick a kata-qemu source pod and destination node from dropdowns; backend resolves sandbox UUID, QEMU PID, pod IP, and node IP automatically. Optional dest-pod picker for symmetric resolution.
+- **Cmdline replay (zero-config dest)** — when `replay_cmdline=true` is set, the dashboard captures the source QEMU command line and replays it on the destination node with `-incoming defer`. The dest sandbox is spawned by katamaran itself.
+- **Advanced override pane** — every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
+- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and trigger `deploy/migrate.sh` with one click.
+- **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
+- **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data.
+- **Live stats** — packets transmitted, dropped, average latency, max latency (computed from ping data).
+- **Color-coded log viewer** — red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries.
+- **Status badges** — idle (gray), migration running (blue pulse), loadgen active (green pulse).
+- **Dark theme** — navy/slate backgrounds with SVG katamaran boat + animated wave header.
+
+## Screenshots
+
+| Initial view | Pod picker filled | Migration completed | Advanced overrides |
+|--------------|-------------------|---------------------|---------------------|
+| ![](../../docs/screenshots/01-dashboard-initial.png) | ![](../../docs/screenshots/02-dashboard-form-filled.png) | ![](../../docs/screenshots/03-dashboard-completed.png) | ![](../../docs/screenshots/04-dashboard-advanced.png) |
 
 ## API Endpoints
 
@@ -19,7 +30,9 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/healthz` | GET | Kubernetes liveness probe (lightweight, always returns 200 OK) |
 | `/readyz` | GET | Kubernetes readiness probe (returns 200 if `migrate.sh` is found, 503 otherwise) |
 | `/` | GET | Dashboard frontend |
-| `/api/migrate` | POST | Start migration (form fields: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`) |
+| `/api/pods` | GET | List of `kata-qemu` pods cluster-wide: `[{namespace, name, node, pod_ip}]`. Backs the Source Pod and Dest Pod dropdowns. |
+| `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
+| `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `shared_storage`, `replay_cmdline`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`. |
 | `/api/migrate/stop` | POST | Cancel running migration |
 | `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}` |
 | `/api/ping?target=<host-or-ip>` | POST | Start continuous ping (5/sec) to target |
@@ -28,6 +41,31 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/api/httpgen/stop` | POST | Stop active ping/loadgen |
 | `/debug/pprof/` | GET | Runtime profiling (requires `--enable-debug`) |
 | `/debug/vars` | GET | Runtime metrics via expvar (requires `--enable-debug`) |
+
+## Pod-picker workflow (recommended)
+
+1. Open the dashboard. The two `<select>` dropdowns auto-populate from `GET /api/pods` (filtered to `runtimeClassName=kata-qemu`) and `GET /api/nodes` (filtered to label `katacontainers.io/kata-runtime=true`).
+2. Pick **Source Pod**: `<namespace>/<name> @ <node> (<pod-ip>)`. The hidden `vm_ip` field auto-fills with the pod IP.
+3. Pick **Dest Node**: `<name> (<internal-ip>)`. The hidden `dest_ip` field auto-fills. The source's own node is hidden from the dest list.
+4. Optional: pick **Dest Pod**. Required only when running with `replay_cmdline=false` (to give the dest job a kata sandbox to connect into).
+5. Set **Image** (e.g., `localhost/katamaran:dev`) and click **Start Migration**.
+
+The source job's resolver finds the QEMU PID and sandbox UUID at runtime (via the in-cluster apiserver) and assembles the rest of the migration arguments. Logs stream live into the Migration Log panel.
+
+## Scripted invocation (curl)
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/migrate \
+  -d "source_pod_namespace=default" \
+  -d "source_pod_name=kata-demo" \
+  -d "dest_node=worker-b" \
+  -d "dest_pod_namespace=default" \
+  -d "dest_pod_name=kata-dest-shell-b" \
+  -d "image=localhost/katamaran:dev" \
+  -d "downtime=25" \
+  -d "shared_storage=true" \
+  -d "replay_cmdline=true"
+```
 
 ## Building the Container
 

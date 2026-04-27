@@ -577,7 +577,9 @@ flowchart TD
 
 ## Dashboard
 
-A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. See [cmd/dashboard/README.md](cmd/dashboard/README.md) for details.
+A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. Includes a **pod-picker** that auto-discovers kata-qemu pods + nodes and a **cmdline-replay** mode that spawns the destination QEMU itself (no kata pod required on the dest node). See [cmd/dashboard/README.md](cmd/dashboard/README.md) for the full UI flow + screenshots.
+
+![Dashboard pod picker](docs/screenshots/02-dashboard-form-filled.png)
 
 ### Deploying the Dashboard
 
@@ -597,10 +599,12 @@ kubectl apply -f deploy/dashboard.yaml
 Once deployed, the dashboard is exposed via a ClusterIP service on port `8080`.
 
 1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080` and open `http://localhost:8080`.
-2. **Configure Migration**: Enter your source/destination node names, QMP socket paths, and the VM pod IP into the form.
-3. **Start Load Generation**: Enter the VM pod IP in the migration form, then click **ICMP Ping** or **HTTP Load**. A live Chart.js graph will begin plotting latency.
-4. **Migrate**: Click **Start Migration**. The real-time log viewer will stream the orchestrator's progress.
-5. **Observe Zero-Drop**: As the migration crosses the configured downtime window (25 ms by default), you will see a latency spike on the chart (representing the buffered packets) but zero dropped packets!
+2. **Pick a Source Pod** and **Dest Node** from the dropdowns (auto-populated from `/api/pods` and `/api/nodes`). The hidden `vm_ip` and `dest_ip` form fields auto-fill from the selection. For full zero-config dest spawning, also enable `replay_cmdline=true` (recommended — see scripted example in the dashboard README).
+3. **Start Load Generation**: Click **ICMP Ping** or **HTTP Load**. A live Chart.js graph plots latency.
+4. **Migrate**: Click **Start Migration**. The real-time log viewer streams the orchestrator's progress.
+5. **Observe Zero-Drop**: As the migration crosses the configured downtime window (25 ms by default), you will see a latency spike on the chart (representing the buffered packets) but zero dropped packets.
+
+For manual override of any auto-derived value, expand the **Advanced (override auto-discovery)** disclosure in the form.
 
 ---
 

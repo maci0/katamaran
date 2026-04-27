@@ -41,7 +41,10 @@ katamaran --mode <source|dest> [flags]
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--dest-ip` | yes | `""` | Destination node IP |
-| `--vm-ip` | yes | `""` | VM pod IP used for route/tunnel cutover |
+| `--vm-ip` | when not in pod mode | `""` | VM pod IP used for route/tunnel cutover |
+| `--pod-name` | alt to --vm-ip+--qmp | `""` | Source pod name; resolver finds sandbox + VM IP at runtime |
+| `--pod-namespace` | with --pod-name | `""` | Source pod namespace |
+| `--emit-cmdline-to` | no | `""` | Capture source QEMU `/proc/<pid>/cmdline` to this path before migration; used by replay-cmdline orchestration |
 | `--tunnel-mode` | no | `ipip` | `ipip`, `gre`, or `none` |
 | `--downtime` | no | `25` | Maximum allowed downtime during VM pause, 1-60000 (ms) |
 | `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |
@@ -52,6 +55,9 @@ katamaran --mode <source|dest> [flags]
 |------|----------|---------|-------------|
 | `--tap` | recommended | `""` | Destination tap interface for `tc sch_plug` buffering |
 | `--tap-netns` | no | `""` | Network namespace path for tap interface (e.g. `/proc/PID/ns/net`) |
+| `--dest-pod-name` | alt to --qmp | `""` | Destination pod name; resolver finds sandbox QMP socket at runtime |
+| `--dest-pod-namespace` | with --dest-pod-name | `""` | Destination pod namespace |
+| `--replay-cmdline` | no | `""` | Path to a captured source QEMU cmdline file. When set, dest spawns its own QEMU with the replayed cmdline + `-incoming defer` (no kata sandbox needed on dest). |
 
 ## Direct CLI Usage
 
@@ -127,7 +133,7 @@ The repository includes:
 - VM pod IP
 - image reference
 
-### Example
+### Example (legacy explicit-fields mode)
 
 ```bash
 deploy/migrate.sh \
@@ -144,6 +150,37 @@ deploy/migrate.sh \
   --downtime 25 \
   --context <kube-context>
 ```
+
+### Pod-picker mode (recommended)
+
+Skip the manual sandbox/UUID/PID lookup. Pass a source pod name + namespace; the source job's resolver finds the QEMU PID, sandbox UUID, pod IP, and tap netns at runtime. Add `--replay-cmdline` so the destination job spawns its own QEMU (no kata pod needed on dest).
+
+```bash
+deploy/migrate.sh \
+  --source-node <source-node-name> \
+  --dest-node <dest-node-name> \
+  --pod-name kata-demo \
+  --pod-namespace default \
+  --dest-ip <destination-node-ip> \
+  --image localhost/katamaran:dev \
+  --shared-storage \
+  --replay-cmdline
+```
+
+Same flow from the Dashboard:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/migrate \
+  -d source_pod_namespace=default \
+  -d source_pod_name=kata-demo \
+  -d dest_node=<dest-node-name> \
+  -d image=localhost/katamaran:dev \
+  -d downtime=25 \
+  -d shared_storage=true \
+  -d replay_cmdline=true
+```
+
+See [`cmd/dashboard/README.md`](../cmd/dashboard/README.md) for the full UI flow + screenshots.
 
 Show orchestrator help:
 
