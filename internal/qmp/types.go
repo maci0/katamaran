@@ -58,6 +58,7 @@ type BlockJobInfo struct {
 type MigrateStatus string
 
 const (
+	MigrateStatusActive    MigrateStatus = "active"
 	MigrateStatusCompleted MigrateStatus = "completed"
 	MigrateStatusFailed    MigrateStatus = "failed"
 	MigrateStatusCancelled MigrateStatus = "cancelled"

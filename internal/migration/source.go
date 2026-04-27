@@ -538,8 +538,29 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) e
 	}
 }
 
+// queryMigrateTimeout caps each individual query-migrate call. Far below
+// the global executeTimeout so a stalled QMP socket (typical post-handover
+// behavior on the source side as kata-shim cleans up the source QEMU)
+// fails fast and the polling loop's retry/grace logic takes over.
+const queryMigrateTimeout = 5 * time.Second
+
+// postActiveStallGrace is how long waitForMigrationComplete tolerates
+// consecutive query-migrate failures AFTER the migration was last seen in
+// the "active" state before declaring success. The dest side has the
+// authoritative completion signal (RESUME event); on the source side the
+// QMP socket frequently goes silent once kata-shim notices the source
+// QEMU has handed over and starts tearing it down. Treating that stall as
+// success matches the orchestrator's dual-poll outcome matrix.
+const postActiveStallGrace = 30 * time.Second
+
 // waitForMigrationComplete polls query-migrate until migration reaches a terminal
 // state (completed, failed, or cancelled). Times out after migrationTimeout.
+//
+// Each poll uses a per-call queryMigrateTimeout — a stalled QMP socket
+// fails this short call rather than hanging the whole polling loop on the
+// global executeTimeout (2 min). After the migration has been "active"
+// once, sustained QMP failures are interpreted as a successful handover
+// (kata-shim tearing down source QEMU post-completion).
 func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)
 	defer cancel()
@@ -549,6 +570,8 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 
 	var prevStatus qmp.MigrateStatus
 	var lastLoggedRemaining int64
+	sawActive := false
+	var firstStallAt time.Time
 
 	for {
 		if ctx.Err() != nil {
@@ -556,27 +579,48 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 			return fmt.Errorf("migration: %w", ctx.Err())
 		}
 
-		raw, err := client.Execute(ctx, "query-migrate", nil)
+		queryCtx, queryCancel := context.WithTimeout(ctx, queryMigrateTimeout)
+		raw, err := client.Execute(queryCtx, "query-migrate", nil)
+		queryCancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
 				return fmt.Errorf("migration: %w", ctx.Err())
 			}
-			return fmt.Errorf("querying migration status: %w", err)
-		}
-		var info qmp.MigrateInfo
-		if err = json.Unmarshal(raw, &info); err != nil {
-			return fmt.Errorf("unmarshaling migration status: %w", err)
-		}
-		statusChanged := info.Status != prevStatus
-		remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
-		if statusChanged || remainingChanged {
-			slog.Info("Migration status", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
-			prevStatus = info.Status
-			lastLoggedRemaining = info.RAM.Remaining
-		}
-		if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
-			return termErr
+			// Per-call timeout or transient QMP error.
+			if sawActive {
+				if firstStallAt.IsZero() {
+					firstStallAt = time.Now()
+				}
+				if time.Since(firstStallAt) > postActiveStallGrace {
+					slog.Info("Source QMP stalled after migration was active; assuming completed (kata-shim teardown)",
+						"last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
+					return nil
+				}
+				slog.Warn("query-migrate stalled (will retry; assume completed if grace exceeded)",
+					"error", err, "last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
+			} else {
+				return fmt.Errorf("querying migration status: %w", err)
+			}
+		} else {
+			firstStallAt = time.Time{} // reset on any successful query
+			var info qmp.MigrateInfo
+			if err := json.Unmarshal(raw, &info); err != nil {
+				return fmt.Errorf("unmarshaling migration status: %w", err)
+			}
+			if info.Status == qmp.MigrateStatusActive {
+				sawActive = true
+			}
+			statusChanged := info.Status != prevStatus
+			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
+			if statusChanged || remainingChanged {
+				slog.Info("Migration status", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+				prevStatus = info.Status
+				lastLoggedRemaining = info.RAM.Remaining
+			}
+			if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
+				return termErr
+			}
 		}
 		select {
 		case <-ctx.Done():
