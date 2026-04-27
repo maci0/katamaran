@@ -38,12 +38,15 @@ import (
 
 func main() {
 	scriptPath := flag.String("script", "", "Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh)")
+	native := flag.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
+	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("katamaran-orchestrator", buildinfo.Version)
 		return
 	}
+	_ = kubeconfig // reserved for a future Native-out-of-cluster constructor
 
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -64,7 +67,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	o := orchestrator.NewScript(*scriptPath)
+	var o orchestrator.Orchestrator
+	if *native {
+		nat, err := orchestrator.NewNative()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "native orchestrator init: %v\n", err)
+			os.Exit(2)
+		}
+		o = nat
+	} else {
+		o = orchestrator.NewScript(*scriptPath)
+	}
 	id, err := o.Apply(ctx, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "apply: %v\n", err)
