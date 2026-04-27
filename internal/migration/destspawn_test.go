@@ -394,6 +394,11 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	}
 	t.Cleanup(func() { spawnDetachedProcess = prevSpawn })
 
+	// Stub setupTapIface so the test does not need CAP_NET_ADMIN.
+	prevTap := setupTapIface
+	setupTapIface = func(_ context.Context, _ string) error { return nil }
+	t.Cleanup(func() { setupTapIface = prevTap })
+
 	// Speed up waitForSocket.
 	prevWait := waitForSocket
 	waitForSocket = func(ctx context.Context, path string, _ time.Duration) error {

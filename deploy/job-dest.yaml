@@ -61,14 +61,16 @@ spec:
             cpu: 50m
             memory: 64Mi
           limits:
-            cpu: "1"
-            memory: 256Mi
+            cpu: "4"
+            memory: 4Gi
         command: ["/bin/sh", "-c", "mkdir -p \"$(dirname \"${QMP_SOCKET}\")\" && /usr/local/bin/katamaran --mode dest --qmp ${QMP_SOCKET} ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc
         - name: sys
           mountPath: /sys
+        - name: dev-shm
+          mountPath: /dev/shm
         - name: cmdline-dir
           mountPath: /tmp/katamaran-cmdlines
         - name: kata-shared
@@ -97,6 +99,15 @@ spec:
         hostPath:
           path: /tmp/katamaran-cmdlines
           type: DirectoryOrCreate
+      - name: dev-shm
+        # The replayed source cmdline contains
+        # `mem-path=/dev/shm,share=on` for the main RAM dimm. Default
+        # container /dev/shm is 64 MiB which causes SIGBUS when source
+        # transfers >64 MiB of RAM. Backed by tmpfs sized to the typical
+        # kata-default 2 GiB plus headroom.
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
       - name: kata-shared
         # virtiofsd needs a writable shared dir that survives the dest job
         # pod for the lifetime of the spawned QEMU.

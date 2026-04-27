@@ -52,8 +52,10 @@ var (
 
 	// destReplaySleep is the fixed wait the source uses (in replay mode) for
 	// the dest QEMU to be up, instead of TCP-probing. See source.go for why
-	// the probe is incompatible with QEMU's migration peek.
-	destReplaySleep = 8 * time.Second
+	// the probe is incompatible with QEMU's migration peek. Sized to cover:
+	// dest pod scheduling + image pull + virtiofsd start + QEMU spawn +
+	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s.
+	destReplaySleep = 25 * time.Second
 
 	// destReadyTimeout caps how long the source waits for the destination's
 	// RAM-migration listener to come up. The orchestrator must (1) ship the
@@ -153,16 +155,22 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 			out = append(out, a)
 			continue
 		case "-netdev":
-			// -netdev tap,...,vhostfds=N,fds=M references inherited file
-			// descriptors. Strip those keys so QEMU opens the tap itself.
-			// Also append script=no,downscript=no so QEMU doesn't try to run
-			// /opt/kata/etc/qemu-ifup which doesn't exist in our pod context.
+			// Strip fd= keys from the tap netdev (kata-shim passed those
+			// via SCM_RIGHTS; we cannot replay them). Add script=no/downscript=no
+			// so QEMU doesn't try to run /opt/kata/etc/qemu-ifup. The tap
+			// interface itself must exist beforehand — destspawn creates it.
 			if i+1 < len(args) {
 				next := stripFDKeys(args[i+1])
-				if strings.HasPrefix(next, "tap,") || next == "tap" || strings.HasPrefix(next, "tap:") {
+				if strings.HasPrefix(next, "tap,") || next == "tap" {
+					if !strings.Contains(next, "ifname=") {
+						next += ",ifname=tap0_kata"
+					}
 					if !strings.Contains(next, "script=") {
 						next += ",script=no,downscript=no"
 					}
+					// vhost=on without a vhostfd is fine — QEMU opens
+					// /dev/vhost-net itself when vhost is requested without
+					// an inherited fd.
 				}
 				out = append(out, a, next)
 			}
@@ -384,6 +392,13 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 		return fmt.Errorf("create virtiofs shared dir %s: %w", sharedDir, err)
 	}
 
+	// Pre-create the tap interface QEMU expects. Without this, QEMU's
+	// `-netdev tap,ifname=tap0_kata,script=no` falls back to running an
+	// ifup script and fails. Idempotent: ignore "exists" errors.
+	if err := setupTapIface(ctx, "tap0_kata"); err != nil {
+		return fmt.Errorf("setup tap iface: %w", err)
+	}
+
 	// Start virtiofsd. e2e.sh:518 nohups the daemon; we use exec.Cmd with
 	// detached stdio + Setpgid so the process survives our exit if needed.
 	vhostSock := filepath.Join(dstSandboxDir, "vhost-fs.sock")
@@ -445,6 +460,18 @@ func copyNvdimmImage(src string) (string, error) {
 		return "", fmt.Errorf("copy %s -> %s: %w", src, out.Name(), err)
 	}
 	return out.Name(), nil
+}
+
+// setupTapIface creates and brings up a tap device by name. Package-level
+// var so tests can stub it without needing CAP_NET_ADMIN.
+var setupTapIface = func(ctx context.Context, name string) error {
+	if err := runCmd(ctx, "ip", "tuntap", "add", "dev", name, "mode", "tap"); err != nil {
+		slog.Warn("ip tuntap add failed (probably already exists)", "error", err, "iface", name)
+	}
+	if err := runCmd(ctx, "ip", "link", "set", name, "up"); err != nil {
+		return fmt.Errorf("ip link set %s up: %w", name, err)
+	}
+	return nil
 }
 
 // startVirtiofsd spawns virtiofsd in the background. Mirrors the flag set
