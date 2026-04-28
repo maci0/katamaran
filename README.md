@@ -608,6 +608,33 @@ For manual override of any auto-derived value, expand the **Advanced (override a
 
 ---
 
+## Migration CRD (Operator Path)
+
+For GitOps / Argo / declarative workflows that prefer `kubectl apply` over a UI, katamaran ships a `Migration` Custom Resource and a small in-cluster controller (`katamaran-mgr`) that reconciles it through the same Native orchestrator the dashboard uses. Behaviour is identical — the only difference is the entry point.
+
+```bash
+# Build + load the controller image
+make mgr
+minikube image load mgr.tar
+
+# Install the CRD + controller (one-time)
+kubectl apply -f config/crd/migration.yaml
+kubectl apply -f config/crd/manager.yaml
+
+# Submit a migration
+kubectl apply -f deploy/migration-example.yaml
+
+# Watch the phase column
+kubectl get migration -w
+# NAME     SOURCE      DEST           PHASE        AGE
+# demo-1   kata-demo   kata-worker-b  transferring 12s
+# demo-1   kata-demo   kata-worker-b  succeeded    38s
+```
+
+The CR's `.status` carries the same `migrationID`, `phase`, `startedAt`, `completedAt`, and `error` fields that the dashboard surfaces — so external systems can wait on a Migration the same way they wait on a Job.
+
+---
+
 ## Testing
 
 katamaran includes a comprehensive test suite ranging from native Go fuzzing to multi-node live migration tests proving zero packet drops across various CNIs (OVN-Kubernetes, Cilium, Calico, Flannel) and storage backends.

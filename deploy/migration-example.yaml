@@ -1,0 +1,33 @@
+# Example Migration CR. Apply with:
+#
+#   kubectl apply -f config/crd/migration.yaml      # one-time CRD install
+#   kubectl apply -f config/crd/manager.yaml        # one-time controller install
+#   kubectl apply -f deploy/migration-example.yaml  # this file
+#   kubectl get migration -w                        # watch the phase column
+#
+# The katamaran-mgr controller picks the CR up, resolves source pod
+# node + dest node IP, submits source/dest Jobs through the same Native
+# orchestrator the dashboard uses, and patches .status.phase as the
+# migration progresses.
+apiVersion: katamaran.io/v1alpha1
+kind: Migration
+metadata:
+  name: demo-1
+  namespace: default
+spec:
+  # Pod whose VM should move. Must be runtimeClassName=kata-qemu.
+  sourcePod:
+    namespace: default
+    name: kata-demo
+  # Where to land it. Must be a different node than the source pod runs on.
+  destNode: kata-worker-b
+  # katamaran image with the source/dest binaries.
+  image: localhost/katamaran:dev
+  # Skip storage migration when the underlying volumes are network-attached.
+  sharedStorage: true
+  # Spawn the destination QEMU via cmdline replay (zero-config dest, no
+  # placeholder kata pod required on the dest node).
+  replayCmdline: true
+  # Tunnel mode for in-flight packet redirection. Use 'none' on shared-storage
+  # demos where you do not need the IPIP/GRE tunnel.
+  tunnelMode: ipip
