@@ -76,3 +76,21 @@ spec:
         resources:
           requests: { cpu: 50m, memory: 64Mi }
           limits:   { cpu: 500m, memory: 256Mi }
+        # The controller has no HTTP server — use process liveness as
+        # the probe. exec runs in the container; failure restarts it.
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "kill -0 1"]
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          failureThreshold: 3
+        # Match the Dockerfile's `USER mgr` (uid 1000) numerically — Kubelet's
+        # runAsNonRoot check rejects images that declare USER by name.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop: ["ALL"]

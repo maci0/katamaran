@@ -120,6 +120,33 @@ ls -l /usr/local/bin/katamaran
 /usr/local/bin/katamaran --help
 ```
 
+## Migration CRD + Controller (Optional)
+
+For declarative `kubectl apply` workflows, install the Migration CRD and the
+`katamaran-mgr` controller. The controller reconciles Migration CRs through the
+same Native orchestrator the dashboard uses.
+
+```bash
+make mgr
+minikube image load mgr.tar     # or kind load docker-image, etc.
+kubectl apply -f config/crd/migration.yaml
+kubectl apply -f config/crd/manager.yaml
+```
+
+Submit a Migration:
+
+```bash
+kubectl apply -f deploy/migration-example.yaml
+kubectl get migration -w
+```
+
+Inspect a migration's full state, including the assigned `migrationID`,
+`startedAt`, `completedAt`, and any error:
+
+```bash
+kubectl get migration <name> -n <namespace> -o yaml | yq .status
+```
+
 ## Job-Based Migration Install (Optional)
 
 If you plan to run migrations through Kubernetes Jobs, these assets are included:
