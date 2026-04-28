@@ -122,3 +122,34 @@ func (f *fakeOrchestrator) Stop(_ context.Context, id orchestrator.MigrationID) 
 	}
 	return nil
 }
+
+// stubDiscoverer is a no-cluster fake used by the /api/pods, /api/nodes,
+// and pod-mode handlers so the dashboard's HTTP layer can be exercised
+// without an apiserver.
+type stubDiscoverer struct {
+	pods  []orchestrator.PodInfo
+	nodes []orchestrator.NodeInfo
+}
+
+func (s *stubDiscoverer) ListKataPods(_ context.Context) ([]orchestrator.PodInfo, error) {
+	return s.pods, nil
+}
+func (s *stubDiscoverer) ListKataNodes(_ context.Context) ([]orchestrator.NodeInfo, error) {
+	return s.nodes, nil
+}
+func (s *stubDiscoverer) LookupPodNode(_ context.Context, _, name string) (string, error) {
+	for _, p := range s.pods {
+		if p.Name == name {
+			return p.Node, nil
+		}
+	}
+	return "", nil
+}
+func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (string, error) {
+	for _, n := range s.nodes {
+		if n.Name == name {
+			return n.InternalIP, nil
+		}
+	}
+	return "", nil
+}

@@ -20,17 +20,14 @@ type NodeInfo struct {
 }
 
 // Discoverer enumerates kata-qemu pods and kata-runtime nodes from a
-// Kubernetes cluster. It backs the dashboard's pod-picker dropdowns and a
-// future operator's resource-watching reconciler.
+// Kubernetes cluster. It backs the dashboard's pod-picker dropdowns and
+// the Migration CRD controller's source-pod / dest-node resolution.
 //
-// Two implementations exist:
-//
-//   - Native (NativeDiscoverer, discovery_native.go): client-go calls
-//     against the apiserver. Default everywhere — the dashboard image
-//     no longer ships kubectl.
-//
-//   - Kubectl (KubectlDiscoverer): shells out to `kubectl`. Kept as a
-//     fallback for environments where client-go config isn't available.
+// The only implementation is NativeDiscoverer (discovery_native.go),
+// which uses client-go directly against the apiserver — a previous
+// kubectl-shell-out variant has been removed now that all production
+// images run with in-cluster service-account credentials (or a
+// kubeconfig fallback for local development).
 type Discoverer interface {
 	// ListKataPods returns all pods in the cluster whose runtimeClassName is
 	// kata-qemu (across all namespaces).

@@ -17,11 +17,10 @@ type (
 	NodeInfo = orchestrator.NodeInfo
 )
 
-// defaultDiscoverer prefers the Native (client-go) discoverer when running
-// in-cluster (no kubectl exec, no JSON-of-stdout parsing), and falls back
-// to the kubectl shell-out for out-of-cluster development. The choice is
-// made lazily on first use so unit tests that stub kubectl on PATH still
-// work without an in-cluster Kubernetes API.
+// defaultDiscoverer is the lazily-initialised process-wide
+// NativeDiscoverer. In-cluster service-account creds are tried first;
+// a kubeconfig fallback covers developer laptops. There is no kubectl
+// shell-out fallback — the dashboard image no longer ships kubectl.
 var (
 	defaultDiscoverer     orchestrator.Discoverer
 	defaultDiscovererOnce sync.Once
@@ -29,20 +28,19 @@ var (
 
 func discoverer() orchestrator.Discoverer {
 	defaultDiscovererOnce.Do(func() {
-		if d, err := orchestrator.NewNativeDiscoverer(); err == nil {
+		if d, err := orchestrator.NewDiscoverer(); err == nil {
 			slog.Info("Discovery: using NativeDiscoverer (client-go)")
 			defaultDiscoverer = d
 			return
 		}
 		if os.Getenv("KUBECONFIG") != "" {
-			if d, err := orchestrator.NewNativeDiscovererFromKubeconfig("", ""); err == nil {
+			if d, err := orchestrator.NewDiscovererFromKubeconfig("", ""); err == nil {
 				slog.Info("Discovery: using NativeDiscoverer (kubeconfig)")
 				defaultDiscoverer = d
 				return
 			}
 		}
-		slog.Info("Discovery: using KubectlDiscoverer (kubectl shell-out)")
-		defaultDiscoverer = orchestrator.NewKubectlDiscoverer()
+		slog.Warn("Discovery: no Kubernetes API reachable; pod/node lookups will fail until in-cluster config or KUBECONFIG is available")
 	})
 	return defaultDiscoverer
 }

@@ -27,7 +27,7 @@ func validRequest() Request {
 func TestNative_Apply_RejectsReplayCmdline(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewNativeFromClient(cs)
+	n := NewFromClient(cs)
 	req := validRequest()
 	req.ReplayCmdline = true
 	if _, err := n.Apply(context.Background(), req); !errors.Is(err, ErrReplayCmdlineNotSupported) {
@@ -38,7 +38,7 @@ func TestNative_Apply_RejectsReplayCmdline(t *testing.T) {
 func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewNativeFromClient(cs)
+	n := NewFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -95,7 +95,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 		}, nil
 	})
 
-	n := NewNativeFromClient(cs)
+	n := NewFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 func TestNative_Stop_DeletesJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewNativeFromClient(cs)
+	n := NewFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)

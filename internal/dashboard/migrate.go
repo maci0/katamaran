@@ -150,16 +150,21 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// migration lock — keeps state-rollback off the failure paths.
 	var resolvedSrcNode, resolvedDestIP string
 	if podMode {
+		disc := a.discovery()
+		if disc == nil {
+			jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+			return
+		}
 		pod := r.PostFormValue("source_pod_name")
 		ns := r.PostFormValue("source_pod_namespace")
 		dest := r.PostFormValue("dest_node")
 		var err error
-		resolvedSrcNode, err = a.discovery().LookupPodNode(r.Context(), ns, pod)
+		resolvedSrcNode, err = disc.LookupPodNode(r.Context(), ns, pod)
 		if err != nil {
 			jsonError(w, "lookup source pod: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		resolvedDestIP, err = a.discovery().LookupNodeInternalIP(r.Context(), dest)
+		resolvedDestIP, err = disc.LookupNodeInternalIP(r.Context(), dest)
 		if err != nil {
 			jsonError(w, "lookup dest node: "+err.Error(), http.StatusBadRequest)
 			return

@@ -12,21 +12,15 @@ import (
 )
 
 // NativeDiscoverer implements Discoverer via the in-cluster client-go API.
-// Use NewNativeDiscoverer when running inside a Kubernetes pod (the operator
-// path), or NewNativeDiscovererFromKubeconfig for out-of-cluster development.
-//
-// Compared to KubectlDiscoverer:
-//
-//   - No `kubectl` binary required in the image — saves ~50 MB.
-//   - Direct apiserver TLS, structured types (no JSON parsing of stdout).
-//   - Per-call timeouts via context only (no separate exec deadline).
+// Use NewDiscoverer when running inside a Kubernetes pod (the operator
+// path), or NewDiscovererFromKubeconfig for out-of-cluster development.
 type NativeDiscoverer struct {
 	client kubernetes.Interface
 }
 
-// NewNativeDiscoverer constructs a NativeDiscoverer using the in-cluster
+// NewDiscoverer constructs a NativeDiscoverer using the in-cluster
 // service account credentials (works inside any pod with the right RBAC).
-func NewNativeDiscoverer() (*NativeDiscoverer, error) {
+func NewDiscoverer() (*NativeDiscoverer, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
@@ -38,10 +32,10 @@ func NewNativeDiscoverer() (*NativeDiscoverer, error) {
 	return &NativeDiscoverer{client: cs}, nil
 }
 
-// NewNativeDiscovererFromKubeconfig builds a NativeDiscoverer from a
+// NewDiscovererFromKubeconfig builds a NativeDiscoverer from a
 // kubeconfig file. Intended for local development and tests; production
-// pods should use NewNativeDiscoverer.
-func NewNativeDiscovererFromKubeconfig(path, contextName string) (*NativeDiscoverer, error) {
+// pods should use NewDiscoverer.
+func NewDiscovererFromKubeconfig(path, contextName string) (*NativeDiscoverer, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if path != "" {
 		rules.ExplicitPath = path
@@ -61,9 +55,9 @@ func NewNativeDiscovererFromKubeconfig(path, contextName string) (*NativeDiscove
 	return &NativeDiscoverer{client: cs}, nil
 }
 
-// NewNativeDiscovererFromClient is the test-friendly constructor: pass any
+// NewDiscovererFromClient is the test-friendly constructor: pass any
 // kubernetes.Interface (e.g. fake.NewSimpleClientset).
-func NewNativeDiscovererFromClient(c kubernetes.Interface) *NativeDiscoverer {
+func NewDiscovererFromClient(c kubernetes.Interface) *NativeDiscoverer {
 	return &NativeDiscoverer{client: c}
 }
 

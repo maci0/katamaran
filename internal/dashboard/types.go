@@ -43,7 +43,7 @@ type App struct {
 	allowedImage string
 
 	// orch is the orchestrator handleMigrate submits to. Set by the
-	// production main() to NewNative() (or kubeconfig fallback). Tests
+	// production main() to New() (or kubeconfig fallback). Tests
 	// inject a fakeOrchestrator. handleMigrate fails 503 if nil.
 	// readyz also returns 503 until orch is set.
 	orch orchestrator.Orchestrator

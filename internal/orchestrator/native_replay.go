@@ -208,7 +208,7 @@ func (n *Native) waitPodReady(ctx context.Context, namespace, name string) error
 }
 
 // nativeReplayConfig holds the rest.Config the Native orchestrator needs
-// for SPDY remote-command calls. NewNative sets it; tests using fake
+// for SPDY remote-command calls. New sets it; tests using fake
 // clientsets leave it nil and ReplayCmdline mode returns
 // ErrReplayCmdlineNotSupported.
 type nativeReplayConfig struct{ cfg *rest.Config }

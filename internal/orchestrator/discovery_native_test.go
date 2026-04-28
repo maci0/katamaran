@@ -30,7 +30,7 @@ func TestNativeDiscoverer_ListKataPods(t *testing.T) {
 			Status:     corev1.PodStatus{PodIP: "10.0.0.7"},
 		},
 	)
-	got, err := NewNativeDiscovererFromClient(cs).ListKataPods(context.Background())
+	got, err := NewDiscovererFromClient(cs).ListKataPods(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestNativeDiscoverer_ListKataNodes(t *testing.T) {
 			Status:     corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.99"}}},
 		},
 	)
-	got, err := NewNativeDiscovererFromClient(cs).ListKataNodes(context.Background())
+	got, err := NewDiscovererFromClient(cs).ListKataNodes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestNativeDiscoverer_LookupErrors(t *testing.T) {
 		Spec:       corev1.PodSpec{}, // NodeName empty
 	}
 	cs := fake.NewSimpleClientset(pending)
-	d := NewNativeDiscovererFromClient(cs)
+	d := NewDiscovererFromClient(cs)
 	if _, err := d.LookupPodNode(context.Background(), "default", "pending"); err == nil {
 		t.Fatal("expected error for pending pod with no nodeName")
 	}

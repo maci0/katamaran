@@ -139,10 +139,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// path is no longer reachable from the production binary; Script
 	// orchestration remains available via the bin/katamaran-orchestrator
 	// CLI for users who still want to drive migrate.sh from a script.
-	if nat, err := orchestrator.NewNative(); err == nil {
+	if nat, err := orchestrator.New(); err == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (in-cluster client-go)")
-	} else if nat, err2 := orchestrator.NewNativeFromKubeconfig("", ""); err2 == nil {
+	} else if nat, err2 := orchestrator.NewFromKubeconfig("", ""); err2 == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (kubeconfig)", "in_cluster_err", err)
 	} else {
@@ -282,7 +282,12 @@ func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 
 // handleListPods returns kata-runtime pods discovered from Kubernetes.
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
-	pods, err := a.discovery().ListKataPods(r.Context())
+	disc := a.discovery()
+	if disc == nil {
+		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+		return
+	}
+	pods, err := disc.ListKataPods(r.Context())
 	if err != nil {
 		slog.Warn("list kata pods failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list pods", http.StatusBadGateway)
@@ -294,7 +299,12 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 
 // handleListNodes returns nodes labeled for the kata runtime.
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
-	nodes, err := a.discovery().ListKataNodes(r.Context())
+	disc := a.discovery()
+	if disc == nil {
+		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+		return
+	}
+	nodes, err := disc.ListKataNodes(r.Context())
 	if err != nil {
 		slog.Warn("list kata nodes failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list nodes", http.StatusBadGateway)

@@ -109,9 +109,9 @@ func main() {
 	}
 
 	var orch orchestrator.Orchestrator
-	nat, err := orchestrator.NewNative()
+	nat, err := orchestrator.New()
 	if err != nil {
-		nat, err = orchestrator.NewNativeFromKubeconfig(*kubeconfig, "")
+		nat, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
 	}
 	if err != nil {
 		// Fall back to NewScript if not running in-cluster — mostly useful
@@ -122,9 +122,9 @@ func main() {
 		orch = nat
 	}
 
-	disc, derr := orchestrator.NewNativeDiscoverer()
+	disc, derr := orchestrator.NewDiscoverer()
 	if derr != nil {
-		disc, derr = orchestrator.NewNativeDiscovererFromKubeconfig(*kubeconfig, "")
+		disc, derr = orchestrator.NewDiscovererFromKubeconfig(*kubeconfig, "")
 	}
 	if derr != nil {
 		slog.Warn("NativeDiscoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)

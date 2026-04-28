@@ -42,11 +42,11 @@ import (
 // `KATAMARAN_CMDLINE_AT=` marker, SPDY-streams the cmdline file off the
 // source pod, creates a one-shot stager pod on the destination node to
 // land the file via hostPath, and only then creates the dest Job. This
-// requires a rest.Config (SPDY upgrade), so NewNativeFromClient (test
+// requires a rest.Config (SPDY upgrade), so NewFromClient (test
 // constructor without a rest.Config) still returns
 // ErrReplayCmdlineNotSupported.
 //
-// Use NewNative for the in-cluster path and NewNativeFromClient for tests.
+// Use New for the in-cluster path and NewFromClient for tests.
 type Native struct {
 	client    kubernetes.Interface
 	config    *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
@@ -77,15 +77,15 @@ type nativeRun struct {
 
 // ErrReplayCmdlineNotSupported is returned by Native.Apply when the request
 // has ReplayCmdline=true but the Native orchestrator was constructed without
-// a rest.Config (e.g. via NewNativeFromClient in tests). Use NewNative for
+// a rest.Config (e.g. via NewFromClient in tests). Use New for
 // in-cluster ReplayCmdline support.
-var ErrReplayCmdlineNotSupported = errors.New("Native ReplayCmdline requires a rest.Config (use NewNative, not NewNativeFromClient)")
+var ErrReplayCmdlineNotSupported = errors.New("Native ReplayCmdline requires a rest.Config (use New, not NewFromClient)")
 
-// NewNative builds a Native orchestrator using the in-cluster service
+// New builds a Native orchestrator using the in-cluster service
 // account. Job manifests are submitted into kube-system (matching the
 // existing migrate.sh layout). The returned Native supports ReplayCmdline
 // because it has a rest.Config for SPDY remote-command calls.
-func NewNative() (*Native, error) {
+func New() (*Native, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
@@ -93,11 +93,11 @@ func NewNative() (*Native, error) {
 	return newNativeFromRestConfig(cfg)
 }
 
-// NewNativeFromKubeconfig builds a Native orchestrator from a kubeconfig
+// NewFromKubeconfig builds a Native orchestrator from a kubeconfig
 // file. Intended for out-of-cluster usage (dashboard run on a developer
 // laptop, integration tests, etc). Pass an empty path to use the default
 // loading rules (KUBECONFIG env / ~/.kube/config).
-func NewNativeFromKubeconfig(path, contextName string) (*Native, error) {
+func NewFromKubeconfig(path, contextName string) (*Native, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if path != "" {
 		rules.ExplicitPath = path
@@ -118,15 +118,15 @@ func newNativeFromRestConfig(cfg *rest.Config) (*Native, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
 	}
-	n := NewNativeFromClient(cs)
+	n := NewFromClient(cs)
 	n.config = cfg
 	return n, nil
 }
 
-// NewNativeFromClient is the test-friendly constructor. The returned Native
+// NewFromClient is the test-friendly constructor. The returned Native
 // does NOT support ReplayCmdline (no rest.Config for SPDY) — set .config
 // manually if needed.
-func NewNativeFromClient(c kubernetes.Interface) *Native {
+func NewFromClient(c kubernetes.Interface) *Native {
 	return &Native{
 		client:    c,
 		namespace: "kube-system",

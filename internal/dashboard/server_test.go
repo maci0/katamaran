@@ -8,13 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
 // (Stub migrate.sh helpers removed: tests now use fakeOrchestrator from
@@ -1348,32 +1347,10 @@ func TestRunCommand_ScriptFailure(t *testing.T) {
 }
 
 func TestPodsAndNodesEndpoints(t *testing.T) {
-	// Stub kubectl: branches on $1 (pods/nodes) to return appropriate JSON.
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(stub, []byte(`#!/bin/sh
-case "$1" in
-  get)
-    case "$2" in
-      pods)
-        cat <<'EOF'
-{"items":[{"metadata":{"namespace":"default","name":"vm-a"},"spec":{"runtimeClassName":"kata-qemu","nodeName":"n1"},"status":{"podIP":"10.0.0.5"}}]}
-EOF
-        ;;
-      nodes)
-        cat <<'EOF'
-{"items":[{"metadata":{"name":"n1"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.1.10"}]}}]}
-EOF
-        ;;
-    esac
-    ;;
-esac
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-
-	app := &App{}
+	app := &App{discoverer: &stubDiscoverer{
+		pods:  []orchestrator.PodInfo{{Namespace: "default", Name: "vm-a", Node: "n1", PodIP: "10.0.0.5"}},
+		nodes: []orchestrator.NodeInfo{{Name: "n1", InternalIP: "192.168.1.10"}},
+	}}
 	mux := app.newMux(false)
 
 	tests := []struct {
@@ -1437,32 +1414,15 @@ func TestRunCommand_ScriptSuccess(t *testing.T) {
 }
 
 func TestMigrateHandler_PodPickerMode(t *testing.T) {
-	// Stub kubectl: dispatches on `get pod` vs `get node` to return the
-	// nodeName (for pod lookup) or InternalIP (for node lookup).
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(stub, []byte(`#!/bin/sh
-# Args may be: -n <ns> get pod <name> -o jsonpath=...
-#         or:  get node <name> -o jsonpath=...
-for a in "$@"; do
-  case "$a" in
-    pod) kind=pod ;;
-    node) kind=node ;;
-  esac
-done
-case "$kind" in
-  pod) printf 'src-node' ;;
-  node) printf '192.168.1.20' ;;
-esac
-`), 0o755); err != nil {
-		t.Fatal(err)
+	// Inject a fake Discoverer instead of stubbing kubectl on PATH —
+	// the dashboard no longer shells out, so the resolver path runs
+	// through orchestrator.Discoverer directly.
+	disc := &stubDiscoverer{
+		pods:  []orchestrator.PodInfo{{Namespace: "default", Name: "vm-a", Node: "src-node", PodIP: "10.0.0.5"}},
+		nodes: []orchestrator.NodeInfo{{Name: "dst-node", InternalIP: "192.168.1.20"}},
 	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-
-	// Use a fake orchestrator that records the Request — no migrate.sh
-	// stub needed; the dashboard goes straight through orch.Apply.
 	fake := dummyOrchestrator(t)
-	app := &App{orch: fake}
+	app := &App{orch: fake, discoverer: disc}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -1506,26 +1466,12 @@ esac
 }
 
 func TestMigrateHandler_PodPickerSameNodeRejected(t *testing.T) {
-	// Stub kubectl so the source pod resolves to the same node as dest.
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(stub, []byte(`#!/bin/sh
-for a in "$@"; do
-  case "$a" in
-    pod) kind=pod ;;
-    node) kind=node ;;
-  esac
-done
-case "$kind" in
-  pod) printf 'same-node' ;;
-  node) printf '10.0.0.1' ;;
-esac
-`), 0o755); err != nil {
-		t.Fatal(err)
+	// Source pod resolves to the same node as dest — should 400.
+	disc := &stubDiscoverer{
+		pods:  []orchestrator.PodInfo{{Namespace: "default", Name: "vm-a", Node: "same-node", PodIP: "10.0.0.5"}},
+		nodes: []orchestrator.NodeInfo{{Name: "same-node", InternalIP: "10.0.0.1"}},
 	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-
-	app := &App{orch: dummyOrchestrator(t)}
+	app := &App{orch: dummyOrchestrator(t), discoverer: disc}
 	form := url.Values{}
 	form.Set("source_pod_namespace", "default")
 	form.Set("source_pod_name", "vm-a")

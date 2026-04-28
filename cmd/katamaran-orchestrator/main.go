@@ -111,9 +111,9 @@ func main() {
 
 	var o orchestrator.Orchestrator
 	if *native {
-		nat, err := orchestrator.NewNative()
+		nat, err := orchestrator.New()
 		if err != nil {
-			nat, err = orchestrator.NewNativeFromKubeconfig(*kubeconfig, "")
+			nat, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: native orchestrator init: %v\n", err)
