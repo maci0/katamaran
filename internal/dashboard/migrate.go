@@ -272,10 +272,16 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	var terminalErr error
 	for u := range updates {
 		line := ">>> " + string(u.Phase)
-		if u.RAMTotal > 0 {
+		switch {
+		case u.Phase == orchestrator.PhaseSucceeded && u.RAMTotal > 0:
+			line += fmt.Sprintf(": %s transferred", humanBytes(u.RAMTotal))
+			if u.DowntimeMS > 0 {
+				line += fmt.Sprintf(", %dms downtime", u.DowntimeMS)
+			}
+		case u.RAMTotal > 0:
 			pct := int((u.RAMTransferred * 100) / u.RAMTotal)
 			line += fmt.Sprintf(": %d%% (%s / %s)", pct, humanBytes(u.RAMTransferred), humanBytes(u.RAMTotal))
-		} else if u.Message != "" {
+		case u.Message != "":
 			line += ": " + u.Message
 		}
 		if u.Error != nil {

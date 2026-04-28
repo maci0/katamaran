@@ -62,6 +62,16 @@ type nativeRun struct {
 	updates  chan StatusUpdate
 	cancel   context.CancelFunc
 	finished chan struct{}
+
+	// resultMu guards the fields below. tailProgress writes them when it
+	// scrapes a KATAMARAN_RESULT marker; poll reads them when emitting
+	// PhaseSucceeded so the final StatusUpdate carries actual downtime
+	// and final RAM totals.
+	resultMu       sync.Mutex
+	resultCaptured bool
+	resultDowntime int64
+	resultRAMXfer  int64
+	resultRAMTotal int64
 }
 
 // ErrReplayCmdlineNotSupported is returned by Native.Apply when the request
@@ -195,23 +205,43 @@ func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	return id, nil
 }
 
-// tailProgress watches the source pod's logs for KATAMARAN_PROGRESS markers
-// emitted by the source binary's RAM-migration polling loop, and re-emits
-// them as PhaseTransferring StatusUpdates with RAMTransferred / RAMTotal
-// populated. Best-effort: if the pod isn't reachable yet we retry; once we
-// see a terminal-status marker we exit.
+// tailProgress watches the source pod's logs for KATAMARAN_PROGRESS and
+// KATAMARAN_RESULT markers emitted by the source binary. PROGRESS markers
+// are re-emitted as PhaseTransferring StatusUpdates with RAMTransferred /
+// RAMTotal populated. The RESULT marker (one-shot, post-completion) is
+// stashed on run for the reconciler to attach to PhaseSucceeded.
+//
+// Exit condition: a RESULT marker, a failed/cancelled progress status,
+// or ctx cancel. Plain `status=completed` is NOT terminal here — the
+// RESULT line lands a few ms after — so we keep polling until RESULT
+// arrives or the run is torn down.
 func (n *Native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
 		return // source pod never appeared; poll will surface the failure
 	}
-	const marker = "KATAMARAN_PROGRESS "
+	const (
+		progressMarker = "KATAMARAN_PROGRESS "
+		resultMarker   = "KATAMARAN_RESULT "
+	)
 	seen := map[string]bool{} // dedupe identical marker lines
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	send := func(u StatusUpdate) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-run.finished:
+			return false
+		case run.updates <- u:
+			return true
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-run.finished:
 			return
 		case <-ticker.C:
 		}
@@ -223,22 +253,37 @@ func (n *Native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		data, _ := io.ReadAll(stream)
 		_ = stream.Close()
 		for _, line := range strings.Split(string(data), "\n") {
-			i := strings.Index(line, marker)
-			if i < 0 || seen[line] {
+			if seen[line] {
+				continue
+			}
+			if i := strings.Index(line, resultMarker); i >= 0 {
+				seen[line] = true
+				fields := parseProgressFields(line[i+len(resultMarker):])
+				run.resultMu.Lock()
+				run.resultDowntime = parseInt64(fields["downtime_ms"])
+				run.resultRAMXfer = parseInt64(fields["ram_transferred"])
+				run.resultRAMTotal = parseInt64(fields["ram_total"])
+				run.resultCaptured = true
+				run.resultMu.Unlock()
+				return
+			}
+			i := strings.Index(line, progressMarker)
+			if i < 0 {
 				continue
 			}
 			seen[line] = true
-			payload := line[i+len(marker):]
-			fields := parseProgressFields(payload)
-			run.updates <- StatusUpdate{
+			fields := parseProgressFields(line[i+len(progressMarker):])
+			if !send(StatusUpdate{
 				ID:             id,
 				Phase:          PhaseTransferring,
 				When:           time.Now(),
 				Message:        "status=" + fields["status"],
 				RAMTransferred: parseInt64(fields["ram_transferred"]),
 				RAMTotal:       parseInt64(fields["ram_total"]),
+			}) {
+				return
 			}
-			if fields["status"] == "completed" || fields["status"] == "failed" || fields["status"] == "cancelled" {
+			if fields["status"] == "failed" || fields["status"] == "cancelled" {
 				return
 			}
 		}
@@ -256,6 +301,20 @@ func parseProgressFields(s string) map[string]string {
 		out[kv[:eq]] = kv[eq+1:]
 	}
 	return out
+}
+
+// succeededUpdate builds the final PhaseSucceeded StatusUpdate, attaching
+// captured downtime / RAM totals from tailProgress when available.
+func (n *Native) succeededUpdate(id MigrationID, run *nativeRun) StatusUpdate {
+	u := StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
+	run.resultMu.Lock()
+	if run.resultCaptured {
+		u.DowntimeMS = run.resultDowntime
+		u.RAMTransferred = run.resultRAMXfer
+		u.RAMTotal = run.resultRAMTotal
+	}
+	run.resultMu.Unlock()
+	return u
 }
 
 func parseInt64(s string) int64 {
@@ -380,7 +439,7 @@ func (n *Native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			// Dest=Complete → success, even if source failed.
 			if destErr == nil {
 				if cond := jobCondition(destJob); cond == batchv1.JobComplete {
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
+					run.updates <- n.succeededUpdate(id, run)
 					return
 				} else if cond == batchv1.JobFailed {
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("dest job failed")}

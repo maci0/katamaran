@@ -354,6 +354,11 @@ stopLoop:
 				slog.Warn("Failed to parse migration metrics", "error", err)
 			} else {
 				slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
+				// Stable, parser-friendly final-result marker the orchestrator
+				// scrapes from pod logs to populate StatusUpdate.DowntimeMS in
+				// the PhaseSucceeded event.
+				fmt.Printf("KATAMARAN_RESULT downtime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+					info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
 			}
 		}
 	}
