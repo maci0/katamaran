@@ -788,11 +788,15 @@
             pingBtn.removeAttribute('aria-busy');
             httpBtn.removeAttribute('aria-busy');
 
-            // Notify when migration completes
+            // Notify when migration completes. Trust the structured
+            // last_migration_result so the toast doesn't depend on log
+            // formatting; downtime gets surfaced for successful runs so the
+            // toast is informative without forcing the user to read the log.
             if (wasMigrating && !data.migrating) {
-                var lastLog = data.logs && data.logs.length > 0 ? data.logs[data.logs.length - 1] : '';
-                if (lastLog.indexOf('Finished successfully') !== -1) {
-                    showToast('Migration completed successfully', 'success');
+                if (data.last_migration_result === 'success') {
+                    var dt = data.migration_progress && data.migration_progress.downtime_ms;
+                    var msg = 'Migration completed' + (dt ? ' (' + dt + 'ms downtime)' : '');
+                    showToast(msg, 'success');
                 } else {
                     var errDetail = data.last_migration_error ? ': ' + data.last_migration_error : '';
                     showToast('Migration finished with errors' + errDetail, 'error');
