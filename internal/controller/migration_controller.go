@@ -6,15 +6,22 @@
 // Lifecycle:
 //
 //  1. Reconciler periodically lists Migration resources cluster-wide.
-//  2. For each Migration in PhasePending (no .status.phase), translate
-//     .spec into orchestrator.Request, call orchestrator.Apply, update
-//     .status with the assigned migrationID.
-//  3. Spawn a goroutine that consumes orchestrator.Watch events for the
-//     migration and patches .status.phase on each update.
+//  2. For each new Migration (no .status.phase), translate .spec into
+//     orchestrator.Request, call orchestrator.Apply, update .status with
+//     the assigned migrationID. A goroutine consumes Watch events and
+//     patches .status.phase on each update.
+//  3. For each Migration in a non-terminal phase that the controller is
+//     not currently tracking (e.g. after a controller restart), poll the
+//     underlying source/dest Jobs directly to determine the outcome and
+//     patch .status.phase accordingly.
+//  4. For each Migration with a DeletionTimestamp set, call
+//     orchestrator.Stop on its tracked migrationID, then remove the
+//     finalizer so kube-apiserver can finish deleting the CR.
 //
-// This is the operator-grade equivalent of the dashboard's POST /api/migrate
-// flow. Both consume the same orchestrator.Request type so behavioural drift
-// between UI submissions and CRD-driven submissions is impossible.
+// This is the operator-grade equivalent of the dashboard's POST
+// /api/migrate flow. Both consume the same orchestrator.Request type so
+// behavioural drift between UI submissions and CRD-driven submissions is
+// impossible.
 package controller
 
 import (
@@ -24,11 +31,14 @@ import (
 	"sync"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
@@ -40,29 +50,48 @@ var MigrationGVR = schema.GroupVersionResource{
 	Resource: "migrations",
 }
 
+// finalizerName guards against deletion of a Migration CR while the
+// underlying Jobs are still running. Reconcile removes it after
+// orchestrator.Stop has been called on the tracked migrationID.
+const finalizerName = "katamaran.io/finalizer"
+
+// jobNamespace is where the Native orchestrator submits source/dest Jobs.
+// Kept in sync with the Native default so recovery can find them on restart.
+const jobNamespace = "kube-system"
+
 // Reconciler watches Migration resources and submits each pending one to
 // the embedded orchestrator. Status is patched back to the CR as the
 // orchestrator emits StatusUpdate events.
 type Reconciler struct {
 	Dynamic       dynamic.Interface
+	Kube          kubernetes.Interface    // optional; enables restart recovery via direct Job inspection
 	Orchestrator  orchestrator.Orchestrator
 	Discoverer    orchestrator.Discoverer // resolves source node + dest IP from the spec
 	PollInterval  time.Duration
 	StatusTimeout time.Duration
 
 	mu       sync.Mutex
-	tracking map[types.NamespacedName]bool // migrations currently being watched
+	tracking map[types.NamespacedName]*track // migrations currently being watched
+}
+
+// track holds the per-migration state the controller needs to handle
+// CR deletion: the assigned migrationID (so we can call Stop) and a
+// cancel func for the Watch goroutine.
+type track struct {
+	id     orchestrator.MigrationID
+	cancel context.CancelFunc
 }
 
 // NewReconciler builds a reconciler with sensible defaults.
-func NewReconciler(dyn dynamic.Interface, orch orchestrator.Orchestrator, disc orchestrator.Discoverer) *Reconciler {
+func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orchestrator.Orchestrator, disc orchestrator.Discoverer) *Reconciler {
 	return &Reconciler{
 		Dynamic:       dyn,
+		Kube:          kube,
 		Orchestrator:  orch,
 		Discoverer:    disc,
 		PollInterval:  5 * time.Second,
 		StatusTimeout: 30 * time.Minute,
-		tracking:      map[types.NamespacedName]bool{},
+		tracking:      map[types.NamespacedName]*track{},
 	}
 }
 
@@ -92,35 +121,85 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 		obj := &list.Items[i]
 		key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
 
-		// Skip if status.phase already set (already submitted) or we are
-		// already watching this migration.
+		// Deletion path first — runs even when phase is set.
+		if obj.GetDeletionTimestamp() != nil {
+			r.handleDeletion(ctx, key, obj)
+			continue
+		}
+
+		// Ensure the finalizer is present before we touch any state, so
+		// a race between submit and delete cannot orphan jobs.
+		if !hasFinalizer(obj) {
+			if err := r.addFinalizer(ctx, obj); err != nil {
+				slog.Warn("add finalizer", "migration", key, "error", err)
+				continue
+			}
+		}
+
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-		if phase != "" {
-			continue
+		switch {
+		case phase == "":
+			// Brand-new migration, dispatch.
+			if !r.markTracking(key) {
+				continue
+			}
+			go r.dispatch(ctx, key, obj)
+		case phase == string(orchestrator.PhaseSubmitted) || phase == string(orchestrator.PhaseTransferring):
+			// In-flight from a previous controller incarnation. Recover
+			// by inspecting Job state directly.
+			if r.isTracked(key) {
+				continue
+			}
+			if !r.markTracking(key) {
+				continue
+			}
+			go r.recover(ctx, key, obj)
 		}
-		r.mu.Lock()
-		already := r.tracking[key]
-		if !already {
-			r.tracking[key] = true
-		}
-		r.mu.Unlock()
-		if already {
-			continue
-		}
-		go r.dispatch(ctx, key, obj)
 	}
 	return nil
 }
 
-func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
-	defer func() {
-		r.mu.Lock()
-		delete(r.tracking, key)
-		r.mu.Unlock()
-	}()
+// markTracking returns true if the caller is the first to claim key.
+// Subsequent calls return false until the goroutine clears tracking.
+func (r *Reconciler) markTracking(key types.NamespacedName) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tracking[key]; ok {
+		return false
+	}
+	r.tracking[key] = &track{}
+	return true
+}
 
+func (r *Reconciler) isTracked(key types.NamespacedName) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.tracking[key]
+	return ok
+}
+
+func (r *Reconciler) untrack(key types.NamespacedName) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tracking, key)
+}
+
+func (r *Reconciler) updateTrack(key types.NamespacedName, id orchestrator.MigrationID, cancel context.CancelFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tracking[key]; ok {
+		t.id = id
+		t.cancel = cancel
+	}
+}
+
+func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	defer r.untrack(key)
+
+	slog.Info("Dispatching new Migration", "migration", key)
 	req, err := specToRequest(obj.Object)
 	if err != nil {
+		slog.Warn("Migration spec invalid", "migration", key, "error", err)
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", err.Error())
 		return
 	}
@@ -146,23 +225,170 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	defer cancel()
 	id, err := r.Orchestrator.Apply(jobCtx, req)
 	if err != nil {
+		slog.Warn("Apply failed", "migration", key, "error", err)
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "Apply failed", err.Error())
 		return
 	}
+	r.updateTrack(key, id, cancel)
+	slog.Info("Migration submitted", "migration", key, "migrationID", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
 	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
 
 	updates, err := r.Orchestrator.Watch(jobCtx, id)
 	if err != nil {
+		slog.Warn("Watch failed", "migration", key, "migrationID", id, "error", err)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), "Watch failed", err.Error())
 		return
 	}
+	var lastPhase string
 	for u := range updates {
 		errStr := ""
 		if u.Error != nil {
 			errStr = u.Error.Error()
 		}
 		_ = r.patchStatus(ctx, key, string(u.ID), string(u.Phase), u.Message, errStr)
+		lastPhase = string(u.Phase)
 	}
+	slog.Info("Migration finished", "migration", key, "migrationID", id, "final_phase", lastPhase)
+}
+
+// recover reattaches to a Migration left in a non-terminal phase by a
+// previous controller incarnation. It polls the source/dest Jobs in
+// kube-system and patches .status.phase based on their conditions.
+//
+// Native uses singleton Job names (katamaran-source / katamaran-dest), so
+// only one in-flight migration can ever exist at a time. After a controller
+// restart we know the Jobs we're inspecting belong to whatever is in the
+// only non-terminal Migration. If two non-terminal Migrations exist after
+// a restart (which would be a pre-existing data corruption), we mark the
+// extras as failed so the queue can drain.
+func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	defer r.untrack(key)
+
+	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
+	slog.Info("Recovering in-flight Migration after controller restart", "migration", key, "migrationID", id)
+
+	if r.Kube == nil {
+		slog.Warn("Recovery skipped: no Kube clientset wired", "migration", key)
+		_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
+		return
+	}
+
+	deadline := time.Now().Add(r.StatusTimeout)
+	ticker := time.NewTicker(r.PollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if time.Now().After(deadline) {
+			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+			return
+		}
+		dest, derr := r.Kube.BatchV1().Jobs(jobNamespace).Get(ctx, "katamaran-dest", metav1.GetOptions{})
+		if derr == nil {
+			if cond := jobCondition(dest); cond == batchv1.JobComplete {
+				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
+				return
+			} else if cond == batchv1.JobFailed {
+				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", "")
+				return
+			}
+		} else if !apierrors.IsNotFound(derr) {
+			slog.Warn("recover: get dest job", "migration", key, "error", derr)
+			continue
+		}
+		// dest missing or still running — check source for an early failure.
+		src, serr := r.Kube.BatchV1().Jobs(jobNamespace).Get(ctx, "katamaran-source", metav1.GetOptions{})
+		if serr == nil && jobCondition(src) == batchv1.JobFailed && (derr != nil && apierrors.IsNotFound(derr)) {
+			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", "")
+			return
+		}
+		if apierrors.IsNotFound(derr) && apierrors.IsNotFound(serr) {
+			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
+			return
+		}
+	}
+}
+
+// handleDeletion runs when the user has issued `kubectl delete migration`.
+// We call orchestrator.Stop to clean up any in-flight Jobs, then patch
+// the CR to remove the finalizer so kube-apiserver can finish deleting.
+func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	if !hasFinalizer(obj) {
+		return // nothing to do; kube-apiserver already finished deleting
+	}
+	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
+	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migrationID", id)
+	if id != "" {
+		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id)); err != nil {
+			slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migrationID", id, "error", err)
+		}
+		cancel()
+	}
+	r.mu.Lock()
+	if t, ok := r.tracking[key]; ok && t.cancel != nil {
+		t.cancel()
+	}
+	delete(r.tracking, key)
+	r.mu.Unlock()
+	if err := r.removeFinalizer(ctx, obj); err != nil {
+		slog.Warn("remove finalizer", "migration", key, "error", err)
+	}
+}
+
+// jobCondition returns the most recent terminal condition (Complete or Failed)
+// on a Job, or "" if neither is set yet.
+func jobCondition(job *batchv1.Job) batchv1.JobConditionType {
+	for _, c := range job.Status.Conditions {
+		if c.Status == "True" && (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) {
+			return c.Type
+		}
+	}
+	return ""
+}
+
+// hasFinalizer returns true if the Migration carries our finalizer.
+func hasFinalizer(obj *unstructured.Unstructured) bool {
+	for _, f := range obj.GetFinalizers() {
+		if f == finalizerName {
+			return true
+		}
+	}
+	return false
+}
+
+// addFinalizer patches the Migration to carry our finalizer.
+func (r *Reconciler) addFinalizer(ctx context.Context, obj *unstructured.Unstructured) error {
+	finalizers := append([]string{}, obj.GetFinalizers()...)
+	finalizers = append(finalizers, finalizerName)
+	patch := map[string]any{"metadata": map[string]any{"finalizers": finalizers}}
+	patchBytes, err := jsonMarshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	return err
+}
+
+// removeFinalizer patches the Migration to drop our finalizer. Other
+// finalizers (if any) are preserved.
+func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unstructured) error {
+	out := []string{}
+	for _, f := range obj.GetFinalizers() {
+		if f != finalizerName {
+			out = append(out, f)
+		}
+	}
+	patch := map[string]any{"metadata": map[string]any{"finalizers": out}}
+	patchBytes, err := jsonMarshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	return err
 }
 
 // specToRequest extracts the .spec fields into an orchestrator.Request.

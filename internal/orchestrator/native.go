@@ -57,11 +57,12 @@ type Native struct {
 }
 
 type nativeRun struct {
-	srcJob   string
-	destJob  string
-	updates  chan StatusUpdate
-	cancel   context.CancelFunc
-	finished chan struct{}
+	srcJob    string
+	destJob   string
+	updates   chan StatusUpdate
+	cancel    context.CancelFunc
+	finished  chan struct{}
+	closeOnce sync.Once // guards close(updates) so Stop + poll exit can race safely
 
 	// resultMu guards the fields below. tailProgress writes them when it
 	// scrapes a KATAMARAN_RESULT marker; poll reads them when emitting
@@ -233,9 +234,10 @@ func (n *Native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			return false
 		case <-run.finished:
 			return false
-		case run.updates <- u:
-			return true
+		default:
 		}
+		run.send(u)
+		return true
 	}
 	for {
 		select {
@@ -334,19 +336,36 @@ func parseInt64(s string) int64 {
 func (n *Native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
-		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)}
+		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)})
 		run.cancel()
 		return
 	}
 	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode); err != nil {
-		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)}
+		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)})
 		run.cancel()
 		return
 	}
 	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
-		run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)}
+		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)})
 		run.cancel()
 		return
+	}
+}
+
+// send pushes u onto run.updates if the run is still live. If poll has
+// already closed updates (e.g. after Stop) the send is dropped silently.
+// Callers that need to know whether the send succeeded should select on
+// run.finished themselves; this helper exists to make late sends safe.
+func (run *nativeRun) send(u StatusUpdate) {
+	select {
+	case <-run.finished:
+		// Channel is being / has been closed by poll. Drop.
+	default:
+	}
+	defer func() { recover() }() // closeOnce + finished signal can race with another send
+	select {
+	case <-run.finished:
+	case run.updates <- u:
 	}
 }
 
@@ -415,8 +434,12 @@ func (n *Native) Stop(ctx context.Context, id MigrationID) error {
 //	source=Failed && dest never starts → PhaseFailed
 func (n *Native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer func() {
-		close(run.updates)
+		// Signal finished BEFORE closing updates so concurrent senders
+		// (tailProgress, stageThenStartDest) can break out via the
+		// select-on-finished pattern instead of panicking on a closed
+		// channel send.
 		close(run.finished)
+		run.closeOnce.Do(func() { close(run.updates) })
 		n.mu.Lock()
 		delete(n.inflight, id)
 		n.mu.Unlock()

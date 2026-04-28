@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -43,6 +44,10 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("dynamic client: %w", err))
 	}
+	kube, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		fail(fmt.Errorf("kubernetes client: %w", err))
+	}
 
 	var orch orchestrator.Orchestrator
 	nat, err := orchestrator.NewNative()
@@ -60,7 +65,7 @@ func main() {
 		slog.Warn("NativeDiscoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
 	}
 
-	rec := controller.NewReconciler(dyn, orch, disc)
+	rec := controller.NewReconciler(dyn, kube, orch, disc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
