@@ -30,7 +30,6 @@ RUN addgroup -g 1000 dashboard && \
 
 WORKDIR /app
 COPY --chown=dashboard:dashboard --from=builder /dashboard .
-COPY --chown=dashboard:dashboard cmd/dashboard/index.html .
 
 USER dashboard
 EXPOSE 8080

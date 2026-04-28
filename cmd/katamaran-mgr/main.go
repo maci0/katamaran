@@ -75,20 +75,35 @@ Examples:
 }
 
 func main() {
-	kubeconfig := flag.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
-	addr := flag.String("addr", ":8081", "HTTP listen address for /healthz, /readyz, /debug/vars")
-	leaderNamespace := flag.String("leader-namespace", "kube-system", "Namespace holding the leader-election Lease")
-	leaderName := flag.String("leader-name", "katamaran-mgr", "Lease object name for leader election")
-	skipLeaderElect := flag.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
-	showVersion := flag.Bool("version", false, "Show version and exit")
-	showVersionShort := flag.Bool("v", false, "")
-	logFormat := flag.String("log-format", "json", "Log output format: 'text' or 'json'")
-	logLevel := flag.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
-	flag.Usage = func() { printUsage(os.Stderr) }
-	flag.Parse()
+	fs := flag.NewFlagSet("katamaran-mgr", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
+	addr := fs.String("addr", ":8081", "HTTP listen address for /healthz, /readyz, /debug/vars")
+	leaderNamespace := fs.String("leader-namespace", "kube-system", "Namespace holding the leader-election Lease")
+	leaderName := fs.String("leader-name", "katamaran-mgr", "Lease object name for leader election")
+	skipLeaderElect := fs.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
+	showVersion := fs.Bool("version", false, "Show version and exit")
+	showVersionShort := fs.Bool("v", false, "")
+	logFormat := fs.String("log-format", "json", "Log output format: 'text' or 'json'")
+	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
+	helpFlag := fs.Bool("help", false, "")
+	helpFlagShort := fs.Bool("h", false, "")
+	fs.Usage = func() { printUsage(os.Stderr) }
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
+	if *helpFlag || *helpFlagShort {
+		printUsage(os.Stdout)
+		return
+	}
 	if *showVersion || *showVersionShort {
 		fmt.Println("katamaran-mgr", buildinfo.Version)
 		return
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n", fs.Arg(0))
+		printUsage(os.Stderr)
+		os.Exit(2)
 	}
 
 	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-mgr"); err != nil {

@@ -26,14 +26,16 @@ var (
 
 func TestErrMigrationFailed_Exists(t *testing.T) {
 	t.Parallel()
-	if errMigrationFailed == nil || !errors.Is(errMigrationFailed, errMigrationFailed) {
-		t.Fatal("errMigrationFailed should be valid and matchable")
+	// errors.Is(x, x) is reflexively true for any non-nil error, so it can't
+	// detect a regression. Assert non-nil + non-empty message + distinctness.
+	if errMigrationFailed == nil || errMigrationFailed.Error() == "" {
+		t.Fatal("errMigrationFailed should be a non-nil sentinel with a message")
 	}
-	if errMigrationCancelled == nil || !errors.Is(errMigrationCancelled, errMigrationCancelled) {
-		t.Fatal("errMigrationCancelled should be valid and matchable")
+	if errMigrationCancelled == nil || errMigrationCancelled.Error() == "" {
+		t.Fatal("errMigrationCancelled should be a non-nil sentinel with a message")
 	}
 	if errors.Is(errMigrationFailed, errMigrationCancelled) {
-		t.Fatal("errMigrationFailed and errMigrationCancelled should be distinct")
+		t.Fatal("errMigrationFailed and errMigrationCancelled should be distinct sentinels")
 	}
 }
 

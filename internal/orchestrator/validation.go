@@ -10,10 +10,6 @@ import (
 // so callers (e.g. the dashboard's HTTP handler) can pre-validate before
 // calling Apply or BuildArgs.
 func Validate(req Request) error {
-	return validate(req)
-}
-
-func validate(req Request) error {
 	if req.SourceNode == "" || req.DestNode == "" {
 		return errors.New("SourceNode and DestNode are required")
 	}

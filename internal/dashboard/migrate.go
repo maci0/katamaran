@@ -16,8 +16,8 @@ import (
 
 // formToOrchestratorRequest reads the (already-validated) form fields and
 // builds an orchestrator.Request. resolvedSrcNode and resolvedDestIP are the
-// values handleMigrate looked up via kubectl when the form is in pod mode;
-// pass empty strings in legacy mode.
+// values handleMigrate looked up via the Discoverer when the form is in pod
+// mode; pass empty strings in legacy mode.
 func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, resolvedDestIP, downtimeArg string) orchestrator.Request {
 	req := orchestrator.Request{
 		DestNode:      r.PostFormValue("dest_node"),
@@ -118,8 +118,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// Aligned with orchestrator validation and the legacy migrate.sh flags.
 	//
 	// Pod-picker mode: when source_pod_name is set, the user picked a pod
-	// from the dropdown and we resolve source_node + dest_ip via kubectl;
-	// the legacy explicit-fields path stays unchanged for backward compat.
+	// from the dropdown and we resolve source_node + dest_ip via the
+	// Discoverer; the legacy explicit-fields path stays unchanged for
+	// backward compat.
 	podMode := r.PostFormValue("source_pod_name") != ""
 	required := []string{"image"}
 	if podMode {
@@ -146,8 +147,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		downtimeArg = strconv.Itoa(d)
 	}
 
-	// Resolve pod-picker fields via kubectl up front, before acquiring the
-	// migration lock — keeps state-rollback off the failure paths.
+	// Resolve pod-picker fields via the Discoverer up front, before
+	// acquiring the migration lock — keeps state-rollback off the failure
+	// paths.
 	var resolvedSrcNode, resolvedDestIP string
 	if podMode {
 		disc := a.discovery()
@@ -327,7 +329,6 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	default:
 		a.setMigrationResult("error", "watch closed without terminal status")
 	}
-	_ = migrationID
 }
 
 // phaseBreakdown formats the wall-clock split between phases for the

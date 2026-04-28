@@ -5,14 +5,14 @@
 //
 // Two implementations exist:
 //
-//   - Native (orchestrator/native.go): renders the Jobs in-process via
-//     client-go and reconciles status by polling Job conditions. Default
-//     in production paths (dashboard, katamaran-orchestrator CLI, the
-//     Migration CRD controller).
+//   - Native (native.go): renders the Jobs in-process via client-go and
+//     reconciles status by polling Job conditions. Constructed via New /
+//     NewFromKubeconfig / NewFromClient. Default in production paths
+//     (dashboard, katamaran-orchestrator CLI, the Migration CRD controller).
 //
-//   - Script (orchestrator/script.go): wraps deploy/migrate.sh for ad-hoc
-//     CLI runs and CI smoke. Kept for backward-compat — production paths
-//     no longer go through it.
+//   - Script (script.go): wraps deploy/migrate.sh for ad-hoc CLI runs and
+//     CI smoke. Constructed via NewScript. Kept for backward-compat —
+//     production paths no longer go through it.
 //
 // The Request type is mode-agnostic: callers can specify either an explicit
 // QMP socket path (legacy) or a pod identity (modern, lets the source job

@@ -129,6 +129,13 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 
 	out := make([]string, 0, len(args)-1)
 	skipNext := false
+	// Pre-compose the sandbox-id replacement keys once; transformCmdline runs
+	// against potentially hundreds of argv entries.
+	var srcSandboxKey, dstSandboxKey string
+	if srcSandboxID != "" && dstSandboxID != "" {
+		srcSandboxKey = "sandbox-" + srcSandboxID
+		dstSandboxKey = "sandbox-" + dstSandboxID
+	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if skipNext {
@@ -190,8 +197,8 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 		if srcSandboxDir != "" && dstSandboxDir != "" {
 			a = strings.ReplaceAll(a, srcSandboxDir, dstSandboxDir)
 		}
-		if srcSandboxID != "" && dstSandboxID != "" {
-			a = strings.ReplaceAll(a, "sandbox-"+srcSandboxID, "sandbox-"+dstSandboxID)
+		if srcSandboxKey != "" {
+			a = strings.ReplaceAll(a, srcSandboxKey, dstSandboxKey)
 		}
 		if srcNvdimmPath != "" && dstNvdimmPath != "" {
 			a = strings.ReplaceAll(a, srcNvdimmPath, dstNvdimmPath)

@@ -1347,6 +1347,7 @@ func TestRunCommand_ScriptFailure(t *testing.T) {
 }
 
 func TestPodsAndNodesEndpoints(t *testing.T) {
+	t.Parallel()
 	app := &App{discoverer: &stubDiscoverer{
 		pods:  []orchestrator.PodInfo{{Namespace: "default", Name: "vm-a", Node: "n1", PodIP: "10.0.0.5"}},
 		nodes: []orchestrator.NodeInfo{{Name: "n1", InternalIP: "192.168.1.10"}},
@@ -1362,6 +1363,7 @@ func TestPodsAndNodesEndpoints(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)

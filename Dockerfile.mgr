@@ -1,12 +1,14 @@
 # Stage 1 — builder
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/katamaran-mgr/ cmd/katamaran-mgr/
 COPY internal/ internal/
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /katamaran-mgr ./cmd/katamaran-mgr/
 

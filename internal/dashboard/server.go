@@ -1,7 +1,9 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"expvar"
 	"flag"
 	"fmt"
@@ -17,6 +19,9 @@ import (
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
+
+//go:embed index.html
+var indexHTML []byte
 
 const (
 	maxLogLines  = 1000
@@ -275,9 +280,10 @@ func (a *App) getCounter(name string) int64 {
 	return 0
 }
 
-// serveHome serves the dashboard's index.html file.
+// serveHome serves the dashboard's embedded index.html. Embedding removes
+// the CWD dependency that http.ServeFile would otherwise impose.
 func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "index.html")
+	http.ServeContent(w, r, "index.html", a.startTime, bytes.NewReader(indexHTML))
 }
 
 // handleListPods returns kata-runtime pods discovered from Kubernetes.

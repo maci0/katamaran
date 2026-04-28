@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 )
 
@@ -51,9 +51,11 @@ func (n *native) stageCmdline(ctx context.Context, id MigrationID, srcPodName, s
 		return "", fmt.Errorf("create stager pod: %w", err)
 	}
 	defer func() {
-		_ = n.client.CoreV1().Pods(n.namespace).Delete(context.Background(), stagerName, metav1.DeleteOptions{
+		if err := n.client.CoreV1().Pods(n.namespace).Delete(context.Background(), stagerName, metav1.DeleteOptions{
 			GracePeriodSeconds: int64ptr(0),
-		})
+		}); err != nil && !apierrors.IsNotFound(err) {
+			slog.Warn("stageCmdline: stager pod cleanup failed; pod may leak", "pod", stagerName, "namespace", n.namespace, "migration_id", id, "error", err)
+		}
 	}()
 	if err := n.waitPodReady(ctx, n.namespace, stagerName); err != nil {
 		return "", fmt.Errorf("stager pod not Ready: %w", err)
@@ -74,9 +76,16 @@ func (n *native) waitForCmdlineMarker(ctx context.Context, namespace, name strin
 	for {
 		req := n.client.CoreV1().Pods(namespace).GetLogs(name, &corev1.PodLogOptions{Container: "katamaran"})
 		stream, err := req.Stream(deadline)
-		if err == nil {
-			data, _ := io.ReadAll(stream)
+		if err != nil {
+			if deadline.Err() == nil {
+				slog.Debug("waitForCmdlineMarker: opening pod log stream failed, will retry", "pod", name, "namespace", namespace, "error", err)
+			}
+		} else {
+			data, readErr := io.ReadAll(stream)
 			_ = stream.Close()
+			if readErr != nil && deadline.Err() == nil {
+				slog.Debug("waitForCmdlineMarker: reading pod log stream failed, will retry", "pod", name, "namespace", namespace, "error", readErr)
+			}
 			for _, line := range strings.Split(string(data), "\n") {
 				if i := strings.Index(line, marker); i >= 0 {
 					return strings.TrimSpace(line[i+len(marker):]), nil
@@ -206,12 +215,6 @@ func (n *native) waitPodReady(ctx context.Context, namespace, name string) error
 		}
 	}
 }
-
-// nativeReplayConfig holds the rest.Config the Native orchestrator needs
-// for SPDY remote-command calls. New sets it; tests using fake
-// clientsets leave it nil and ReplayCmdline mode returns
-// ErrReplayCmdlineNotSupported.
-type nativeReplayConfig struct{ cfg *rest.Config }
 
 func dirOf(path string) string {
 	if i := strings.LastIndexByte(path, '/'); i > 0 {

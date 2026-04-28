@@ -46,7 +46,7 @@ func NewScript(scriptPath string) *Script {
 // fresh MigrationID. The script runs to completion in the background; Watch
 // to observe.
 func (s *Script) Apply(ctx context.Context, req Request) (MigrationID, error) {
-	if err := validate(req); err != nil {
+	if err := Validate(req); err != nil {
 		return "", err
 	}
 	args, err := s.buildArgs(req)

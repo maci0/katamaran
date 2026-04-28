@@ -71,16 +71,31 @@ Example:
 }
 
 func main() {
-	scriptPath := flag.String("script", "", "Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh)")
-	native := flag.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
-	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
-	showVersion := flag.Bool("version", false, "Show version and exit")
-	showVersionShort := flag.Bool("v", false, "")
-	flag.Usage = func() { printUsage(os.Stderr) }
-	flag.Parse()
+	fs := flag.NewFlagSet("katamaran-orchestrator", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	scriptPath := fs.String("script", "", "Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh)")
+	native := fs.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
+	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
+	showVersion := fs.Bool("version", false, "Show version and exit")
+	showVersionShort := fs.Bool("v", false, "")
+	helpFlag := fs.Bool("help", false, "")
+	helpFlagShort := fs.Bool("h", false, "")
+	fs.Usage = func() { printUsage(os.Stderr) }
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
+	if *helpFlag || *helpFlagShort {
+		printUsage(os.Stdout)
+		return
+	}
 	if *showVersion || *showVersionShort {
 		fmt.Println("katamaran-orchestrator", buildinfo.Version)
 		return
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n", fs.Arg(0))
+		printUsage(os.Stderr)
+		os.Exit(2)
 	}
 
 	// Detect mutually exclusive flags so users do not silently get one mode

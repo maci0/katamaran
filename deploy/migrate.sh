@@ -444,14 +444,16 @@ metadata:
 spec:
   nodeName: ${DEST_NODE}
   restartPolicy: Never
-  hostPID: true
+  automountServiceAccountToken: false
   containers:
   - name: stager
     image: ${IMAGE_REF}
     imagePullPolicy: IfNotPresent
-    command: ["/bin/sh", "-c", "mkdir -p ${CMDLINE_HOST_DIR} && sleep 60"]
+    command: ["/bin/sh", "-c", "sleep 60"]
     securityContext:
-      privileged: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
     volumeMounts:
     - name: cmdline-dir
       mountPath: ${CMDLINE_HOST_DIR}

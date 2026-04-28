@@ -17,10 +17,10 @@ type (
 	NodeInfo = orchestrator.NodeInfo
 )
 
-// defaultDiscoverer is the lazily-initialised process-wide
-// NativeDiscoverer. In-cluster service-account creds are tried first;
-// a kubeconfig fallback covers developer laptops. There is no kubectl
-// shell-out fallback — the dashboard image no longer ships kubectl.
+// defaultDiscoverer is the lazily-initialised process-wide Discoverer.
+// In-cluster service-account creds are tried first; a kubeconfig fallback
+// covers developer laptops. There is no kubectl shell-out fallback — the
+// dashboard image no longer ships kubectl.
 var (
 	defaultDiscoverer     orchestrator.Discoverer
 	defaultDiscovererOnce sync.Once

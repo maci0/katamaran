@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Native is the in-cluster client-go implementation of Orchestrator. It
+// native is the in-cluster client-go implementation of Orchestrator. It
 // renders the source/dest Job manifests in process from embedded templates,
 // submits them via clientset, and reports status by polling Job conditions.
 //
@@ -37,8 +38,8 @@ import (
 //   - Granular RAM-transfer progress (no log scraping yet).
 //   - Per-pod log streaming for the dashboard log pane.
 //
-// ReplayCmdline support: when the request has ReplayCmdline=true, Native
-// submits the source Job, tails the source pod's logs for the
+// ReplayCmdline support: when the request has ReplayCmdline=true, the
+// orchestrator submits the source Job, tails the source pod's logs for the
 // `KATAMARAN_CMDLINE_AT=` marker, SPDY-streams the cmdline file off the
 // source pod, creates a one-shot stager pod on the destination node to
 // land the file via hostPath, and only then creates the dest Job. This
@@ -75,10 +76,10 @@ type nativeRun struct {
 	resultRAMTotal int64
 }
 
-// ErrReplayCmdlineNotSupported is returned by Native.Apply when the request
-// has ReplayCmdline=true but the Native orchestrator was constructed without
-// a rest.Config (e.g. via NewFromClient in tests). Use New for
-// in-cluster ReplayCmdline support.
+// ErrReplayCmdlineNotSupported is returned by Apply when the request has
+// ReplayCmdline=true but the orchestrator was constructed without a
+// rest.Config (e.g. via NewFromClient in tests). Use New or
+// NewFromKubeconfig for ReplayCmdline support.
 var ErrReplayCmdlineNotSupported = errors.New("ReplayCmdline requires a rest.Config (use orchestrator.New, not NewFromClient)")
 
 // New builds an Orchestrator using the in-cluster service account.
@@ -182,7 +183,9 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			return "", fmt.Errorf("create dest job: %w", err)
 		}
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-			_ = n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{})
+			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
+				slog.Warn("failed to clean up dest job after source create failed; manual cleanup may be required", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
+			}
 			return "", fmt.Errorf("create source job: %w", err)
 		}
 	}
@@ -229,8 +232,14 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 	const (
 		progressMarker = "KATAMARAN_PROGRESS "
 		resultMarker   = "KATAMARAN_RESULT "
+		// logFetchOverlapSec bounds how much of the source pod's log we
+		// re-fetch per tick. The ticker fires every 2s; a 30s window gives
+		// generous slack for transient apiserver hiccups while keeping the
+		// per-tick payload small even on long-running migrations (without
+		// SinceSeconds the entire log is re-streamed every poll).
+		logFetchOverlapSec int64 = 30
 	)
-	seen := map[string]bool{} // dedupe identical marker lines
+	seen := map[string]bool{} // dedupe identical marker lines within the SinceSeconds window
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	send := func(u StatusUpdate) bool {
@@ -244,6 +253,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		run.send(u)
 		return true
 	}
+	overlap := logFetchOverlapSec
 	for {
 		select {
 		case <-ctx.Done():
@@ -252,13 +262,25 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			return
 		case <-ticker.C:
 		}
-		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, &corev1.PodLogOptions{Container: "katamaran"})
+		// Cap the dedup map: only markers from within the fetch window can
+		// recur, so anything beyond it is dead weight. Resetting periodically
+		// keeps memory bounded on multi-hour migrations.
+		if len(seen) > 1024 {
+			seen = map[string]bool{}
+		}
+		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, &corev1.PodLogOptions{Container: "katamaran", SinceSeconds: &overlap})
 		stream, err := req.Stream(ctx)
 		if err != nil {
+			if ctx.Err() == nil {
+				slog.Debug("tailProgress: opening source pod log stream failed", "migration_id", id, "pod", srcPod, "error", err)
+			}
 			continue
 		}
-		data, _ := io.ReadAll(stream)
+		data, readErr := io.ReadAll(stream)
 		_ = stream.Close()
+		if readErr != nil && ctx.Err() == nil {
+			slog.Debug("tailProgress: reading source pod log stream failed", "migration_id", id, "pod", srcPod, "error", readErr)
+		}
 		for _, line := range strings.Split(string(data), "\n") {
 			if seen[line] {
 				continue
@@ -299,7 +321,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 
 // parseProgressFields parses key=value pairs separated by spaces.
 func parseProgressFields(s string) map[string]string {
-	out := map[string]string{}
+	out := make(map[string]string, 8)
 	for _, kv := range strings.Fields(s) {
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
@@ -379,6 +401,7 @@ func (run *nativeRun) send(u StatusUpdate) {
 func (n *native) firstSourcePod(ctx context.Context, jobName string) (string, error) {
 	deadline, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	var lastListErr error
 	for {
 		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
 			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
@@ -386,9 +409,16 @@ func (n *native) firstSourcePod(ctx context.Context, jobName string) (string, er
 		if err == nil && len(pods.Items) > 0 {
 			return pods.Items[0].Name, nil
 		}
+		if err != nil && deadline.Err() == nil {
+			lastListErr = err
+			slog.Debug("firstSourcePod: list pods failed, will retry", "job", jobName, "namespace", n.namespace, "error", err)
+		}
 		select {
 		case <-deadline.Done():
-			return "", deadline.Err()
+			if lastListErr != nil {
+				return "", fmt.Errorf("waiting for source pod of job %s: %w (last list error: %v)", jobName, deadline.Err(), lastListErr)
+			}
+			return "", fmt.Errorf("waiting for source pod of job %s: %w", jobName, deadline.Err())
 		case <-time.After(2 * time.Second):
 		}
 	}
@@ -417,8 +447,12 @@ func (n *native) Stop(ctx context.Context, id MigrationID) error {
 	}
 	prop := metav1.DeletePropagationBackground
 	delOpts := metav1.DeleteOptions{PropagationPolicy: &prop}
-	_ = n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.srcJob, delOpts)
-	_ = n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.destJob, delOpts)
+	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.srcJob, delOpts); err != nil && !apierrors.IsNotFound(err) {
+		slog.Warn("Stop: source job delete failed; job may leak", "migration_id", id, "job", run.srcJob, "namespace", n.namespace, "error", err)
+	}
+	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.destJob, delOpts); err != nil && !apierrors.IsNotFound(err) {
+		slog.Warn("Stop: dest job delete failed; job may leak", "migration_id", id, "job", run.destJob, "namespace", n.namespace, "error", err)
+	}
 	run.cancel()
 	return nil
 }

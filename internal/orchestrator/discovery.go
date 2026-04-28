@@ -23,11 +23,12 @@ type NodeInfo struct {
 // Kubernetes cluster. It backs the dashboard's pod-picker dropdowns and
 // the Migration CRD controller's source-pod / dest-node resolution.
 //
-// The only implementation is NativeDiscoverer (discovery_native.go),
-// which uses client-go directly against the apiserver — a previous
-// kubectl-shell-out variant has been removed now that all production
-// images run with in-cluster service-account credentials (or a
-// kubeconfig fallback for local development).
+// The only implementation lives in discovery_native.go and uses client-go
+// directly against the apiserver — a previous kubectl-shell-out variant
+// has been removed now that all production images run with in-cluster
+// service-account credentials (or a kubeconfig fallback for local
+// development). Construct via NewDiscoverer / NewDiscovererFromKubeconfig
+// / NewDiscovererFromClient.
 type Discoverer interface {
 	// ListKataPods returns all pods in the cluster whose runtimeClassName is
 	// kata-qemu (across all namespaces).
