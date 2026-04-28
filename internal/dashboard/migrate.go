@@ -25,6 +25,7 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 		SharedStorage: r.PostFormValue("shared_storage") == "true",
 		ReplayCmdline: r.PostFormValue("replay_cmdline") == "true",
 		TapNetns:      r.PostFormValue("tap_netns"),
+		TunnelMode:    r.PostFormValue("tunnel_mode"),
 	}
 	if podMode {
 		req.SourceNode = resolvedSrcNode
@@ -86,7 +87,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline"}
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline", "tunnel_mode"}
 	for _, key := range formKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
