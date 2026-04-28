@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -13,10 +14,6 @@ import (
 // fakeOrchestrator is a deterministic in-memory orchestrator.Orchestrator
 // for the dashboard tests. Each instance is configured with a behaviour
 // (success / fail / hang-until-stop) and records the most-recent Request.
-//
-// Replaces the previous migrate.sh shell-stubs: the dashboard calls Apply
-// + Watch the same way it would a real orchestrator, so we exercise the
-// real handler code path without spawning any child processes.
 type fakeOrchestrator struct {
 	mu          sync.Mutex
 	lastRequest orchestrator.Request
@@ -66,6 +63,9 @@ func (f *fakeOrchestrator) LastRequest() orchestrator.Request {
 }
 
 func (f *fakeOrchestrator) Apply(ctx context.Context, req orchestrator.Request) (orchestrator.MigrationID, error) {
+	if err := orchestrator.Validate(req); err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	f.lastRequest = req
 	id := orchestrator.MigrationID(req.SourceNode + "-" + req.DestNode)
@@ -137,13 +137,13 @@ func (s *stubDiscoverer) ListKataPods(_ context.Context) ([]orchestrator.PodInfo
 func (s *stubDiscoverer) ListKataNodes(_ context.Context) ([]orchestrator.NodeInfo, error) {
 	return s.nodes, nil
 }
-func (s *stubDiscoverer) LookupPodNode(_ context.Context, _, name string) (string, error) {
+func (s *stubDiscoverer) LookupPodNode(_ context.Context, namespace, name string) (string, error) {
 	for _, p := range s.pods {
-		if p.Name == name {
+		if p.Namespace == namespace && p.Name == name {
 			return p.Node, nil
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("pod %s/%s not found", namespace, name)
 }
 func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (string, error) {
 	for _, n := range s.nodes {
@@ -151,5 +151,5 @@ func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (s
 			return n.InternalIP, nil
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("node %s not found", name)
 }

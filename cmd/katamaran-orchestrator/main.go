@@ -4,12 +4,10 @@
 // newline-delimited JSON on stdout. Exit code: 0 on PhaseSucceeded, 1 on
 // PhaseFailed, 2 on argument/decoding errors.
 //
-// Intended for two consumers:
-//
-//   - Scripts and CI pipelines that want a structured (not bash-tail)
-//     migration runner.
-//   - The Migration CRD reconciler (internal/controller), which invokes the
-//     same orchestration code path the dashboard uses.
+// Intended for scripts and CI pipelines that want a structured (not
+// bash-tail) migration runner. The dashboard and the Migration CRD
+// reconciler call into the orchestrator package directly rather than
+// shelling out to this binary.
 //
 // Example:
 //
@@ -23,6 +21,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -30,6 +29,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
@@ -46,7 +46,7 @@ Usage:
 
 Flags:
   --native               Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh
-  --script string        Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh).
+  --script string        Path to deploy/migrate.sh (default "deploy/migrate.sh").
                          Mutually exclusive with --native.
   --kubeconfig string    Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)
 
@@ -73,7 +73,7 @@ Example:
 func main() {
 	fs := flag.NewFlagSet("katamaran-orchestrator", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	scriptPath := fs.String("script", "", "Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh)")
+	scriptPath := fs.String("script", "", `Path to deploy/migrate.sh (default "deploy/migrate.sh")`)
 	native := fs.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
 	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
 	showVersion := fs.Bool("version", false, "Show version and exit")
@@ -89,11 +89,11 @@ func main() {
 		return
 	}
 	if *showVersion || *showVersionShort {
-		fmt.Println("katamaran-orchestrator", buildinfo.Version)
+		fmt.Fprintf(os.Stdout, "katamaran-orchestrator %s\n", buildinfo.Version)
 		return
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
 		printUsage(os.Stderr)
 		os.Exit(2)
 	}
@@ -105,14 +105,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	body, err := io.ReadAll(os.Stdin)
+	req, err := readRequest(os.Stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: read stdin: %v\n", err)
-		os.Exit(2)
-	}
-	var req orchestrator.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: decode request JSON: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
 	if err := orchestrator.Validate(req); err != nil {
@@ -169,10 +164,29 @@ func main() {
 		if u.Error != nil {
 			out.Err = u.Error.Error()
 		}
-		_ = enc.Encode(out)
+		if err := enc.Encode(out); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: write status update: %v\n", err)
+			os.Exit(1)
+		}
 		if u.Phase == orchestrator.PhaseFailed {
 			exit = 1
 		}
 	}
 	os.Exit(exit)
+}
+
+func readRequest(r io.Reader) (orchestrator.Request, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return orchestrator.Request{}, fmt.Errorf("read stdin: %w", err)
+	}
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return orchestrator.Request{}, fmt.Errorf("request JSON is required on stdin")
+	}
+	var req orchestrator.Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return orchestrator.Request{}, fmt.Errorf("decode request JSON: %w", err)
+	}
+	return req, nil
 }

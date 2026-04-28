@@ -4,13 +4,20 @@ import (
 	"context"
 	"errors"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
 // maxTargetLen caps target length to the maximum DNS hostname length (253).
 const maxTargetLen = 253
+
+// targetDNSTimeout bounds the DNS resolution performed during target
+// validation. Without an explicit timeout, a slow or unreachable resolver
+// can stall the HTTP handler beyond the server's request timeouts.
+const targetDNSTimeout = 5 * time.Second
 
 var errUnsafeTargetIP = errors.New("target resolves to a blocked IP address")
 
@@ -92,7 +99,9 @@ func lookupSafeTargetIPs(ctx context.Context, host string) ([]net.IP, error) {
 }
 
 func resolvedTargetIP(target string) (string, bool) {
-	ips, err := lookupSafeTargetIPs(context.Background(), targetHost(target))
+	ctx, cancel := context.WithTimeout(context.Background(), targetDNSTimeout)
+	defer cancel()
+	ips, err := lookupSafeTargetIPs(ctx, targetHost(target))
 	if err != nil || len(ips) == 0 {
 		return "", false
 	}
@@ -138,7 +147,9 @@ func validTarget(target string) bool {
 	if strings.Contains(host, "..") {
 		return false
 	}
-	if _, err := lookupSafeTargetIPs(context.Background(), host); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), targetDNSTimeout)
+	defer cancel()
+	if _, err := lookupSafeTargetIPs(ctx, host); err != nil {
 		// Fail closed: reject unresolvable hostnames to prevent SSRF bypass
 		// via names that the Go resolver cannot resolve but the target process
 		// (ping, HTTP client) might resolve differently.
@@ -147,31 +158,8 @@ func validTarget(target string) bool {
 	return true
 }
 
-// maxFormValueLen caps migration form values before they are rendered into
-// Job command arguments.
-const maxFormValueLen = 512
-
-// formValueRe is the allowlist for values that may be rendered into Job
-// command arguments. Keep it aligned with deploy/migrate.sh's shell_safe_re
-// so direct script and dashboard submissions accept the same character set.
-var formValueRe = regexp.MustCompile(`^[a-zA-Z0-9_./:@=\-]+$`)
-
-// validFormValue checks that a form value contains only shell-safe characters
-// and does not exceed maxFormValueLen. The Job templates still run the
-// katamaran command through /bin/sh -c, so reject characters with shell
-// meaning before values reach the orchestrator.
-//
-// Also rejects ".." path-traversal sequences. The allowlist regex includes
-// "." for legitimate path/IP/version components, but ".." enables path
-// traversal in fields passed as filesystem paths (qmp_source, qmp_dest,
-// tap_netns), escaping intended directories to access
-// arbitrary unix sockets or namespaces.
+// validFormValue wraps orchestrator.ValidateSafeArgValue to check that a form
+// value contains only shell-safe characters and does not exceed max len.
 func validFormValue(v string) bool {
-	if len(v) > maxFormValueLen || !formValueRe.MatchString(v) {
-		return false
-	}
-	if strings.Contains(v, "..") {
-		return false
-	}
-	return true
+	return orchestrator.ValidateSafeArgValue("form field", v) == nil
 }

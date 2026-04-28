@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"expvar"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +77,14 @@ Other:
   -v, --version          Show version and exit
   -h, --help             Show this help and exit
 
+Exit codes:
+  0   Clean shutdown (signal received)
+  1   Runtime error (port already in use, Kubernetes unreachable)
+  2   Argument or configuration error
+
+Environment variables:
+  KATAMARAN_MIGRATION_IMAGE   Allowlist image for /api/migrate; unset means any image is accepted
+
 Examples:
   # Start on default port
   katamaran-dashboard
@@ -81,6 +92,15 @@ Examples:
   # Custom address and text logging
   katamaran-dashboard --addr 0.0.0.0:9090 --log-format text
 `)
+}
+
+func validListenAddr(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return false
+	}
+	_, err = net.LookupPort("tcp", port)
+	return err == nil
 }
 
 // Run contains all CLI logic: flag parsing, validation, and server startup.
@@ -119,6 +139,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+	if !validListenAddr(*addr) {
+		fmt.Fprintf(stderr, "Error: invalid --addr %q (expected host:port, for example :8080 or 0.0.0.0:8080)\n\n", *addr)
+		printUsage(stderr)
+		return 2
+	}
 
 	// Normalize enum flags for case-insensitive matching.
 	*logFormat = strings.ToLower(*logFormat)
@@ -148,15 +173,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	// The dashboard requires a working Kubernetes connection: in-cluster
 	// service-account creds first, then a kubeconfig-loaded client (handy
-	// when running on a developer laptop). The legacy migrate.sh shell-out
-	// path is no longer reachable from the production binary; Script
-	// orchestration remains available via the bin/katamaran-orchestrator
-	// CLI for users who still want to drive migrate.sh from a script.
+	// when running on a developer laptop). The Script (migrate.sh)
+	// orchestrator is not used here; it is available standalone via the
+	// bin/katamaran-orchestrator CLI.
 	if nat, err := orchestrator.New(); err == nil {
 		app.orch = nat
+		if disc, err := orchestrator.NewDiscoverer(); err == nil {
+			app.discoverer = disc
+		}
 		slog.Info("Migration: orchestrator using in-cluster client-go")
 	} else if nat, err2 := orchestrator.NewFromKubeconfig("", ""); err2 == nil {
 		app.orch = nat
+		if disc, err := orchestrator.NewDiscovererFromKubeconfig("", ""); err == nil {
+			app.discoverer = disc
+		}
 		slog.Info("Migration: orchestrator using kubeconfig", "in_cluster_err", err)
 	} else {
 		fmt.Fprintf(stderr, "Error: cannot reach Kubernetes API: %v / %v\n", err, err2)
@@ -192,7 +222,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}()
 
 	slog.Info("Katamaran Dashboard listening", "version", buildinfo.Version, "addr", *addr, "pid", os.Getpid())
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("HTTP server error", "error", err)
 		return 1
 	}
@@ -268,7 +298,7 @@ func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dashboardReadinessFailuresTotal.Add(1)
-	slog.Warn("Readiness check failed: orchestrator not wired")
+	slog.Debug("Readiness check failed: orchestrator not wired")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_, _ = w.Write([]byte("orchestrator not wired\n"))
 }
@@ -296,8 +326,9 @@ func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 
 // handleListPods returns kata-runtime pods discovered from Kubernetes.
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
-	disc := a.discovery()
+	disc := a.discoverer
 	if disc == nil {
+		slog.Warn("List pods failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 		return
 	}
@@ -307,14 +338,14 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to list pods", http.StatusBadGateway)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, pods)
 }
 
 // handleListNodes returns nodes labeled for the kata runtime.
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
-	disc := a.discovery()
+	disc := a.discoverer
 	if disc == nil {
+		slog.Warn("List nodes failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 		return
 	}
@@ -324,15 +355,29 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to list nodes", http.StatusBadGateway)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, nodes)
 }
 
 // handleStatus returns the current state of the dashboard, including active migrations and loadgen logs.
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	logsAfter, logsDelta := parseStatusCursor(r.URL.Query().Get("logs_after"))
+	pingsAfter, pingsDelta := parseStatusCursor(r.URL.Query().Get("pings_after"))
+
 	a.migrationMutex.Lock()
-	logs := make([]string, len(a.migrationOutput))
-	copy(logs, a.migrationOutput)
+	logStart := a.migrationLogSeq - int64(len(a.migrationOutput))
+	logSrc := a.migrationOutput
+	logsReset := false
+	if logsDelta {
+		switch {
+		case logsAfter < logStart || logsAfter > a.migrationLogSeq:
+			logsReset = true
+		case logsAfter > logStart:
+			logSrc = logSrc[logsAfter-logStart:]
+		}
+	}
+	logs := make([]string, len(logSrc))
+	copy(logs, logSrc)
+	logsNext := a.migrationLogSeq
 	status := a.isMigrating
 	migrationID := a.migrationID
 	migrationStart := a.migrationStart
@@ -354,13 +399,24 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.loadgenMutex.Lock()
-	pings := make([]PingData, len(a.pingLog))
-	copy(pings, a.pingLog)
+	pingStart := a.pingSeq - int64(len(a.pingLog))
+	pingSrc := a.pingLog
+	pingsReset := false
+	if pingsDelta {
+		switch {
+		case pingsAfter < pingStart || pingsAfter > a.pingSeq:
+			pingsReset = true
+		case pingsAfter > pingStart:
+			pingSrc = pingSrc[pingsAfter-pingStart:]
+		}
+	}
+	pings := make([]PingData, len(pingSrc))
+	copy(pings, pingSrc)
+	pingsNext := a.pingSeq
 	loadgenRunning := a.loadgenRunning
 	loadgenType := a.loadgenType
 	a.loadgenMutex.Unlock()
 
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, StatusResponse{
 		Version:                 buildinfo.Version,
 		UptimeSeconds:           int64(time.Since(a.startTime).Seconds()),
@@ -376,6 +432,21 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LoadgenRunning:          loadgenRunning,
 		LoadgenType:             loadgenType,
 		Logs:                    logs,
+		LogsNext:                logsNext,
+		LogsReset:               logsReset,
 		Pings:                   pings,
+		PingsNext:               pingsNext,
+		PingsReset:              pingsReset,
 	})
+}
+
+func parseStatusCursor(raw string) (int64, bool) {
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }

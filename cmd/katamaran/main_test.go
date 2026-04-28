@@ -313,6 +313,8 @@ func TestRun_DestIgnoredSourceFlags(t *testing.T) {
 	code := katamaran.Run(context.Background(), []string{
 		"--mode", "dest",
 		"--dest-ip", "10.0.0.1",
+		"--pod-name", "source-pod",
+		"--pod-namespace", "default",
 		"--qmp", "/nonexistent/qmp.sock",
 	}, &stdout, &stderr)
 	if code == 0 {
@@ -329,6 +331,8 @@ func TestRun_SourceIgnoredDestFlags(t *testing.T) {
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--tap", "tap0",
+		"--dest-pod-name", "dest-pod",
+		"--dest-pod-namespace", "default",
 		"--qmp", "/nonexistent/qmp.sock",
 		"--tunnel-mode", "none",
 	}, &stdout, &stderr)

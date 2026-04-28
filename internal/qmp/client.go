@@ -267,7 +267,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	}()
 
 	cmdStart := time.Now()
-	slog.Debug("QMP execute", "cmd", cmd)
+	slog.Debug("QMP execute", "cmd", cmd, "socket", c.socket)
 	if _, err = conn.Write(append(b, '\n')); err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("QMP command %q interrupted: %w", cmd, ctx.Err())
@@ -310,9 +310,9 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 
 		elapsed := time.Since(cmdStart)
 		if elapsed >= 1*time.Second {
-			slog.Warn("Slow QMP command", "cmd", cmd, "elapsed", elapsed.Round(time.Millisecond))
+			slog.Warn("Slow QMP command", "cmd", cmd, "socket", c.socket, "elapsed", elapsed.Round(time.Millisecond))
 		} else {
-			slog.Debug("QMP command completed", "cmd", cmd, "elapsed", elapsed.Round(time.Millisecond))
+			slog.Debug("QMP command completed", "cmd", cmd, "socket", c.socket, "elapsed", elapsed.Round(time.Millisecond))
 		}
 		return resp.Return, nil
 	}
@@ -401,7 +401,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// events arriving between WaitForEvent calls would be silently
 		// dropped, causing subsequent WaitForEvent calls to hang.
 		if resp.Event != "" {
-			slog.Debug("Buffered non-matching QMP event", "received", resp.Event, "waiting_for", eventName)
+			slog.Debug("Buffered non-matching QMP event", "received", resp.Event, "waiting_for", eventName, "socket", c.socket)
 			c.bufferEvent(resp)
 		}
 	}

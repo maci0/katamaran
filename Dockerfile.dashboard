@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
@@ -13,16 +13,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /dashboard ./cmd/dashboard/
 
-FROM alpine:3.23
+FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 
 ARG TARGETARCH=amd64
 
 # iputils is required for the loadgen ICMP ping path. kubectl, bash, and
-# envsubst (gettext) are no longer shipped: the dashboard now uses the
-# in-process Native orchestrator (client-go) and discovery, so it has no
-# need to shell out. To run the legacy migrate.sh path during local
-# development, set KATAMARAN_LEGACY_SCRIPT=1 and install kubectl + bash +
-# envsubst yourself.
+# envsubst (gettext) are no longer shipped because the dashboard uses the
+# in-process Native orchestrator (client-go). Use katamaran-orchestrator
+# with --script when you need the legacy migrate.sh path locally.
 RUN apk add --no-cache iputils
 
 RUN addgroup -g 1000 dashboard && \
@@ -40,4 +38,4 @@ LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
       org.opencontainers.image.description="Katamaran migration dashboard" \
       org.opencontainers.image.version="${VERSION}"
 
-CMD ["./dashboard"]
+ENTRYPOINT ["./dashboard"]

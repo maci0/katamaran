@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -373,8 +374,6 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 			// After "migrate" command, send response then inject STOP event.
 			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				// Give the client a moment then send STOP event.
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
 				continue
 			}
@@ -417,7 +416,6 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 
 			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
 				continue
 			}
@@ -466,7 +464,6 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 			}
 			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
 				continue
 			}
@@ -695,7 +692,6 @@ func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 
 			if qmptest.IsMigrateCommand(line) {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
 				continue
 			}
@@ -961,8 +957,10 @@ func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 }
 
 func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
+	var rttCalls atomic.Int32
 	origMeasureRTT := measureRTTFunc
 	measureRTTFunc = func(netip.Addr) (time.Duration, error) {
+		rttCalls.Add(1)
 		return 0, errors.New("forced RTT failure")
 	}
 	t.Cleanup(func() {
@@ -986,6 +984,13 @@ func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RunSource with auto-downtime fallback: %v", err)
+	}
+
+	// Prove the AutoDowntime branch actually ran — without this, the test
+	// would silently pass if the branch were skipped (since DowntimeLimitMS=25
+	// matches both the fallback value and the non-AutoDowntime default).
+	if got := rttCalls.Load(); got != 1 {
+		t.Fatalf("measureRTTFunc was called %d times, want 1 (AutoDowntime branch must execute)", got)
 	}
 
 	// Verify the fallback path used the explicit DowntimeLimitMS rather than

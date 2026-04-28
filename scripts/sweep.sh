@@ -40,7 +40,7 @@ fi
 
 if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
     error "--provider must be 'minikube' or 'kind' (got '${PROVIDER}')"
-    exit 1
+    exit 2
 fi
 
 DOWNTIMES=("$@")

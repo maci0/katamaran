@@ -451,6 +451,9 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	if len(q) < 2 || q[len(q)-2] != "-incoming" || q[len(q)-1] != "defer" {
 		t.Fatalf("qemu args missing trailing -incoming defer: %v", q)
 	}
+	if slices.Contains(q, "-daemonize") {
+		t.Fatalf("-daemonize must be stripped (we run QEMU foreground): %v", q)
+	}
 	// Original source -incoming positional must be gone.
 	if slices.Contains(q[:len(q)-2], "tcp:[::]:4444") {
 		t.Fatalf("source -incoming URI leaked into qemu args: %v", q)

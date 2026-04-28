@@ -36,7 +36,11 @@ type StatusResponse struct {
 	LoadgenRunning          bool               `json:"loadgen_running"`
 	LoadgenType             string             `json:"loadgen_type,omitempty"`
 	Logs                    []string           `json:"logs"`
+	LogsNext                int64              `json:"logs_next,omitempty"`
+	LogsReset               bool               `json:"logs_reset,omitempty"`
 	Pings                   []PingData         `json:"pings"`
+	PingsNext               int64              `json:"pings_next,omitempty"`
+	PingsReset              bool               `json:"pings_reset,omitempty"`
 }
 
 type App struct {
@@ -49,12 +53,13 @@ type App struct {
 	orch orchestrator.Orchestrator
 
 	// discoverer backs pod/node dropdowns and pod-mode request resolution.
-	// Nil means use the process default selected by discovery.go.
+	// Nil means pod-picker endpoints and pod-mode request resolution are unavailable.
 	discoverer orchestrator.Discoverer
 
 	startTime time.Time
 
 	migrationOutput  []string
+	migrationLogSeq  int64
 	migrationMutex   sync.Mutex
 	isMigrating      bool
 	logBufferWrapped bool // true once buffer wrapping has been logged for this migration
@@ -77,12 +82,9 @@ type App struct {
 	migrationsFailed    int64
 
 	pingLog        []PingData
+	pingSeq        int64
 	loadgenMutex   sync.Mutex
 	loadgenRunning bool
 	loadgenType    string // "ping" or "http"; empty when not running
 	loadgenCancel  context.CancelFunc
 }
-
-// PodInfo and NodeInfo are defined in the orchestrator package and re-exported
-// from discovery.go via type aliases. Kept out of this file so the wire format
-// has a single source of truth.

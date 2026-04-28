@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +22,7 @@ func TestNewClient_FullHandshake(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(100 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -43,7 +44,7 @@ func TestNewClient_NoGreeting(t *testing.T) {
 		buf := make([]byte, 4096)
 		conn.Read(buf)
 		conn.Write([]byte(`{"return":{}}` + "\n"))
-		time.Sleep(100 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -233,10 +234,17 @@ func TestExecute_BuffersEvents(t *testing.T) {
 
 	c.mu.Lock()
 	eventCount := len(c.events)
+	var firstEvent string
+	if eventCount > 0 {
+		firstEvent = c.events[0].Event
+	}
 	c.mu.Unlock()
 
 	if eventCount != 1 {
 		t.Fatalf("expected 1 buffered event, got %d", eventCount)
+	}
+	if firstEvent != "STOP" {
+		t.Fatalf("expected buffered event STOP, got %q", firstEvent)
 	}
 }
 
@@ -244,7 +252,7 @@ func TestExecute_ClosedConnection(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(100 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -297,7 +305,7 @@ func TestWaitForEvent_FromBuffer(t *testing.T) {
 		conn.Read(buf)
 		conn.Write([]byte(`{"event":"STOP"}` + "\n"))
 		conn.Write([]byte(`{"return":{}}` + "\n"))
-		time.Sleep(time.Second)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -332,8 +340,8 @@ func TestWaitForEvent_FromWire(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(100 * time.Millisecond)
 		conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -353,9 +361,9 @@ func TestWaitForEvent_BuffersNonMatchingFromWire(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(50 * time.Millisecond)
 		conn.Write([]byte(`{"event":"BLOCK_JOB_READY"}` + "\n"))
 		conn.Write([]byte(`{"event":"STOP"}` + "\n"))
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -387,7 +395,7 @@ func TestWaitForEvent_Timeout(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(500 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -435,7 +443,7 @@ func TestWaitForEvent_ClosedConnection(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(100 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -458,7 +466,7 @@ func TestClose_Idempotent(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(100 * time.Millisecond)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -479,7 +487,7 @@ func TestClose_ThreadSafe(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(time.Second)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -624,10 +632,8 @@ func TestArgs_JSONSerialization(t *testing.T) {
 				t.Fatalf("Unmarshal: %v", err)
 			}
 
-			wantJSON, _ := json.Marshal(tc.want)
-			gotJSON, _ := json.Marshal(got)
-			if string(gotJSON) != string(wantJSON) {
-				t.Fatalf("JSON mismatch:\n  got:  %s\n  want: %s", gotJSON, wantJSON)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("JSON mismatch:\n  got:  %#v\n  want: %#v", got, tc.want)
 			}
 		})
 	}
@@ -642,12 +648,22 @@ func TestRequest_Serialization(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	got := string(b)
-	if !strings.Contains(got, `"execute":"migrate"`) {
-		t.Fatalf("expected execute field, got: %s", got)
+	var got struct {
+		Execute   string          `json:"execute"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
-	if !strings.Contains(got, `"uri":"tcp:10.0.0.1:4444"`) {
-		t.Fatalf("expected arguments.uri, got: %s", got)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal request: %v; raw=%s", err, string(b))
+	}
+	if got.Execute != "migrate" {
+		t.Fatalf("execute = %q, want %q", got.Execute, "migrate")
+	}
+	var args MigrateArgs
+	if err := json.Unmarshal(got.Arguments, &args); err != nil {
+		t.Fatalf("Unmarshal arguments: %v; raw=%s", err, string(got.Arguments))
+	}
+	if args.URI != "tcp:10.0.0.1:4444" {
+		t.Fatalf("uri = %q, want %q", args.URI, "tcp:10.0.0.1:4444")
 	}
 }
 
@@ -660,9 +676,15 @@ func TestRequest_NoArgs(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	got := string(b)
-	if strings.Contains(got, "arguments") {
-		t.Fatalf("expected no arguments field with omitempty, got: %s", got)
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal request: %v; raw=%s", err, string(b))
+	}
+	if string(got["execute"]) != `"query-migrate"` {
+		t.Fatalf("execute = %s, want %q", got["execute"], "query-migrate")
+	}
+	if _, ok := got["arguments"]; ok {
+		t.Fatalf("expected no arguments field with omitempty, got: %s", string(b))
 	}
 }
 
@@ -891,7 +913,7 @@ func TestWaitForEvent_BufferEventRemoval(t *testing.T) {
 	// Manually seed the event buffer and verify correct removal.
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(time.Second)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -969,7 +991,7 @@ func TestMaxBufferedEvents(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		time.Sleep(time.Second)
+		holdConnUntilClosed(conn)
 	})
 
 	ctx := context.Background()
@@ -1004,6 +1026,10 @@ func TestMaxBufferedEvents(t *testing.T) {
 	if first != "EVENT_10" {
 		t.Fatalf("expected oldest event to be EVENT_10 (first 10 dropped), got %s", first)
 	}
+}
+
+func holdConnUntilClosed(conn net.Conn) {
+	_, _ = io.Copy(io.Discard, conn)
 }
 
 func TestReadLine_SlowPath(t *testing.T) {

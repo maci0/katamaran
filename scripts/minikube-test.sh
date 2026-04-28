@@ -13,7 +13,7 @@
 #   - ~20 GB free disk space, ~16 GB free RAM (nested Kata VMs need headroom)
 #
 # Usage:
-#   ./scripts/minikube-test.sh [--keep] [--env-only]
+#   ./scripts/minikube-test.sh [--keep] [--env-only] [--help]
 #
 #   --keep      Don't delete the minikube cluster on exit (for debugging)
 #   --env-only  Stop after environment setup (don't run tests)
@@ -38,13 +38,13 @@ for arg in "$@"; do
     case "${arg}" in
         --keep) KEEP=true ;;
         --env-only) ENV_ONLY=true ;;
-        --help)
+        --help|-h)
             echo "Usage: ./scripts/minikube-test.sh [--keep] [--env-only] [--help]"
             echo ""
             echo "Options:"
             echo "  --keep      Don't delete the minikube cluster on exit (for debugging)"
             echo "  --env-only  Stop after environment setup (don't run tests)"
-            echo "  --help      Show this help message"
+            echo "  --help, -h  Show this help message"
             exit 0
             ;;
         *) echo "Error: unknown option: ${arg}" >&2; exit 2 ;;

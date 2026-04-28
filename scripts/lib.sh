@@ -21,10 +21,30 @@ need_arg() {
 
 # --- Output helpers ---
 
-log()     { echo -e "\n\033[1;34m>>> $1\033[0m"; }
-success() { echo -e "\033[1;32m  PASS: $1\033[0m"; }
-warn()    { echo -e "\033[1;33m  WARN: $1\033[0m"; }
-error()   { echo -e "\033[1;31m  ERROR: $1\033[0m" >&2; }
+if [[ -z "${NO_COLOR:-}" && -t 1 ]]; then
+    stdout_blue=$'\033[1;34m'
+    stdout_green=$'\033[1;32m'
+    stdout_yellow=$'\033[1;33m'
+    stdout_reset=$'\033[0m'
+else
+    stdout_blue=""
+    stdout_green=""
+    stdout_yellow=""
+    stdout_reset=""
+fi
+
+if [[ -z "${NO_COLOR:-}" && -t 2 ]]; then
+    stderr_red=$'\033[1;31m'
+    stderr_reset=$'\033[0m'
+else
+    stderr_red=""
+    stderr_reset=""
+fi
+
+log()     { printf "\n%s>>> %s%s\n" "$stdout_blue" "$1" "$stdout_reset"; }
+success() { printf "%s  PASS: %s%s\n" "$stdout_green" "$1" "$stdout_reset"; }
+warn()    { printf "%s  WARN: %s%s\n" "$stdout_yellow" "$1" "$stdout_reset"; }
+error()   { printf "%s  ERROR: %s%s\n" "$stderr_red" "$1" "$stderr_reset" >&2; }
 
 # --- Provider-aware remote execution ---
 

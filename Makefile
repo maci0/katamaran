@@ -15,7 +15,7 @@ build-dashboard:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/dashboard/
 
 # Build the orchestrator CLI (JSON-in / NDJSON-out wrapper around the
-# orchestrator package). Used by scripts and a future Migration controller.
+# orchestrator package). Used by scripts and local orchestration workflows.
 build-orchestrator:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
 
@@ -56,25 +56,22 @@ CE ?= $(shell command -v podman 2>/dev/null || echo docker)
 # Build the katamaran container image
 image:
 	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran:dev .
-	rm -f katamaran.tar
-	$(CE) save localhost/katamaran:dev -o katamaran.tar
+	$(CE) save localhost/katamaran:dev -o katamaran.tar.tmp && mv katamaran.tar.tmp katamaran.tar
 
 # Build the dashboard container image
 dashboard:
 	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-dashboard:dev -f Dockerfile.dashboard .
-	rm -f dashboard.tar
-	$(CE) save localhost/katamaran-dashboard:dev -o dashboard.tar
+	$(CE) save localhost/katamaran-dashboard:dev -o dashboard.tar.tmp && mv dashboard.tar.tmp dashboard.tar
 
 # Build the Migration controller container image
 mgr:
 	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-mgr:dev -f Dockerfile.mgr .
-	rm -f mgr.tar
-	$(CE) save localhost/katamaran-mgr:dev -o mgr.tar
+	$(CE) save localhost/katamaran-mgr:dev -o mgr.tar.tmp && mv mgr.tar.tmp mgr.tar
 
 # Remove build artifacts
 clean:
 	rm -rf bin/
-	rm -f katamaran.tar dashboard.tar mgr.tar coverage.out *_cover.out
+	rm -f katamaran.tar dashboard.tar mgr.tar *.tar.tmp coverage.out *_cover.out
 
 # Show available targets
 help:

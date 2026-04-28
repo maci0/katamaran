@@ -21,7 +21,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "missing nodes",
 			req:     Request{DestIP: "1.2.3.4", Image: "x"},
-			wantErr: "SourceNode and DestNode",
+			wantErr: "sourceNode and DestNode",
 		},
 		{
 			name:    "same node",
@@ -63,12 +63,12 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "invalid tunnel mode",
 			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, TunnelMode: "vxlan"},
-			wantErr: "TunnelMode must be one of",
+			wantErr: "tunnelMode must be one of",
 		},
 		{
 			name:    "invalid multifd",
 			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, MultifdChannels: -1},
-			wantErr: "MultifdChannels must be non-negative",
+			wantErr: "multifdChannels must be non-negative",
 		},
 	}
 	for _, tt := range cases {

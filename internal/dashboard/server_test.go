@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,9 +17,6 @@ import (
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
-
-// (Stub migrate.sh helpers removed: tests now use fakeOrchestrator from
-// orch_fakes_test.go to drive migration submissions in-process.)
 
 // waitMigrationDone polls until the migration goroutine finishes.
 func waitMigrationDone(t *testing.T, app *App, timeout time.Duration) {
@@ -109,6 +108,18 @@ func TestRun_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestRun_InvalidAddr(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--addr", "localhost"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid --addr") {
+		t.Fatalf("expected addr error, got: %s", stderr.String())
+	}
+}
+
 func TestRun_InvalidLogFormat(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
@@ -123,6 +134,8 @@ func TestRun_InvalidLogFormat(t *testing.T) {
 
 func TestRun_CaseInsensitiveLogFlags(t *testing.T) {
 	// Not parallel: SetupLogger calls slog.SetDefault.
+	origLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Pre-cancel so the server shuts down immediately.
 	var stdout, stderr bytes.Buffer
@@ -204,7 +217,7 @@ func TestValidFormValue(t *testing.T) {
 		"val`cmd`",                             // backtick
 		"val with space",                       // space
 		"val\nnewline",                         // newline
-		strings.Repeat("a", maxFormValueLen+1), // exceeds length limit
+		strings.Repeat("a", orchestrator.MaxSafeArgValueLen+1), // exceeds length limit
 	}
 	for _, v := range rejected {
 		if validFormValue(v) {
@@ -212,8 +225,8 @@ func TestValidFormValue(t *testing.T) {
 		}
 	}
 	// Value at exactly the limit should be accepted.
-	if !validFormValue(strings.Repeat("a", maxFormValueLen)) {
-		t.Error("validFormValue at maxFormValueLen should be accepted")
+	if !validFormValue(strings.Repeat("a", orchestrator.MaxSafeArgValueLen)) {
+		t.Error("validFormValue at orchestrator.MaxSafeArgValueLen should be accepted")
 	}
 }
 
@@ -312,6 +325,84 @@ func TestHandleStatus_IncludesLogsAndPings(t *testing.T) {
 	}
 	if len(status.Pings) != 1 || status.Pings[0].Latency != 1.5 {
 		t.Fatalf("unexpected pings: %v", status.Pings)
+	}
+}
+
+func TestHandleStatus_DeltaLogsAndPings(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	app.appendLog("old log")
+	app.addPing(1.5, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	app.handleStatus(w, req)
+	var baseline StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &baseline); err != nil {
+		t.Fatalf("failed to unmarshal baseline status: %v", err)
+	}
+
+	app.appendLog("new log")
+	app.addPing(2.5, "")
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/status?logs_after=%d&pings_after=%d", baseline.LogsNext, baseline.PingsNext), nil)
+	w = httptest.NewRecorder()
+	app.handleStatus(w, req)
+	var status StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to unmarshal delta status: %v", err)
+	}
+	if len(status.Logs) != 1 || status.Logs[0] != "new log" {
+		t.Fatalf("unexpected delta logs: %v", status.Logs)
+	}
+	if len(status.Pings) != 1 || status.Pings[0].Latency != 2.5 {
+		t.Fatalf("unexpected delta pings: %v", status.Pings)
+	}
+	if status.LogsReset || status.PingsReset {
+		t.Fatalf("unexpected reset flags: logs=%v pings=%v", status.LogsReset, status.PingsReset)
+	}
+}
+
+func TestHandleStatus_DeltaResetSignals(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	app.appendLog("old log")
+	app.addPing(1.5, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	app.handleStatus(w, req)
+	var baseline StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &baseline); err != nil {
+		t.Fatalf("failed to unmarshal baseline status: %v", err)
+	}
+
+	app.migrationMutex.Lock()
+	app.migrationOutput = nil
+	app.migrationLogSeq++
+	app.migrationMutex.Unlock()
+	app.loadgenMutex.Lock()
+	app.pingLog = app.pingLog[:0]
+	app.pingSeq++
+	app.loadgenMutex.Unlock()
+	app.appendLog("new log")
+	app.addPing(2.5, "")
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/status?logs_after=%d&pings_after=%d", baseline.LogsNext, baseline.PingsNext), nil)
+	w = httptest.NewRecorder()
+	app.handleStatus(w, req)
+	var status StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to unmarshal reset status: %v", err)
+	}
+	if !status.LogsReset || !status.PingsReset {
+		t.Fatalf("expected reset flags, got logs=%v pings=%v", status.LogsReset, status.PingsReset)
+	}
+	if len(status.Logs) != 1 || status.Logs[0] != "new log" {
+		t.Fatalf("unexpected reset logs: %v", status.Logs)
+	}
+	if len(status.Pings) != 1 || status.Pings[0].Latency != 2.5 {
+		t.Fatalf("unexpected reset pings: %v", status.Pings)
 	}
 }
 

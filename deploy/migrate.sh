@@ -159,6 +159,16 @@ if [[ -z "$QMP_DEST" && -n "$POD_NAME" ]]; then
     QMP_DEST="/run/vc/vm/katamaran-dest/qmp.sock"
 fi
 
+if [[ -n "$POD_NAME" && -z "$POD_NAMESPACE" || -z "$POD_NAME" && -n "$POD_NAMESPACE" ]]; then
+    echo "Error: --pod-name and --pod-namespace must be supplied together" >&2
+    usage 2
+fi
+
+if [[ -n "$DEST_POD_NAME" && -z "$DEST_POD_NAMESPACE" || -z "$DEST_POD_NAME" && -n "$DEST_POD_NAMESPACE" ]]; then
+    echo "Error: --dest-pod-name and --dest-pod-namespace must be supplied together" >&2
+    usage 2
+fi
+
 missing_args=()
 [[ -z "$SOURCE_NODE" ]] && missing_args+=(--source-node)
 [[ -z "$DEST_NODE" ]] && missing_args+=(--dest-node)
@@ -187,50 +197,57 @@ LOG_FORMAT="${LOG_FORMAT,,}"
 
 if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
     echo "Error: invalid --tunnel-mode '$TUNNEL_MODE' (valid: ipip, gre, none)" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ "$TAP_IFACE" == *[[:space:]]* ]]; then
     echo "Error: --tap must be a single interface name without spaces" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ ! "$DOWNTIME" =~ ^[1-9][0-9]*$ ]]; then
     echo "Error: --downtime must be a positive integer, got '$DOWNTIME'" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ "$DOWNTIME" -gt 60000 ]]; then
     echo "Error: --downtime must be between 1 and 60000, got '$DOWNTIME'" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ ! "$MULTIFD_CHANNELS" =~ ^[0-9]+$ ]]; then
     echo "Error: --multifd-channels must be a non-negative integer, got '$MULTIFD_CHANNELS'" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ -n "$LOG_LEVEL" && "$LOG_LEVEL" != "debug" && "$LOG_LEVEL" != "info" && "$LOG_LEVEL" != "warn" && "$LOG_LEVEL" != "error" ]]; then
     echo "Error: invalid --log-level '$LOG_LEVEL' (valid: debug, info, warn, error)" >&2
-    exit 1
+    exit 2
 fi
 
 if [[ -n "$LOG_FORMAT" && "$LOG_FORMAT" != "text" && "$LOG_FORMAT" != "json" ]]; then
     echo "Error: invalid --log-format '$LOG_FORMAT' (valid: text, json)" >&2
-    exit 1
+    exit 2
 fi
 
 # Reject shell metacharacters in values that will be interpolated into
 # job YAML via envsubst → /bin/sh -c.  Defence-in-depth: the dashboard
 # already validates these, but migrate.sh can also be called directly.
 shell_safe_re='^[a-zA-Z0-9_./:@=-]+$'
+arg_label() {
+    case "$1" in
+        IMAGE_REF) echo "--image" ;;
+        TAP_IFACE) echo "--tap" ;;
+        KUBECTL_CONTEXT) echo "--context" ;;
+        KATAMARAN_MIGRATION_ID|JOB_SUFFIX) echo "$1" ;;
+        *) local flag_name="${1,,}"; echo "--${flag_name//_/-}" ;;
+    esac
+}
 for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT POD_NAME POD_NAMESPACE DEST_POD_NAME DEST_POD_NAMESPACE KATAMARAN_MIGRATION_ID JOB_SUFFIX; do
     val="${!var_name}"
     if [[ -n "$val" && ! "$val" =~ $shell_safe_re ]]; then
-        flag_name="${var_name,,}"
-        flag_name="${flag_name//_/-}"
-        echo "Error: --${flag_name} contains invalid characters" >&2
-        exit 1
+        echo "Error: $(arg_label "$var_name") contains invalid characters" >&2
+        exit 2
     fi
 done
 

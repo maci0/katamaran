@@ -397,15 +397,20 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 		return fmt.Errorf("start virtiofsd: %w", err)
 	}
 
-	binary, qemuArgs, err := transformCmdline(args, srcSandboxDir, dstSandboxDir, srcSandboxID, dstSandboxID, srcNvdimm, dstNvdimm)
+	_, qemuArgs, err := transformCmdline(args, srcSandboxDir, dstSandboxDir, srcSandboxID, dstSandboxID, srcNvdimm, dstNvdimm)
 	if err != nil {
 		return fmt.Errorf("transform cmdline: %w", err)
 	}
-	if cfg.QEMUBinary != "" {
-		binary = cfg.QEMUBinary
+	// Do not trust argv[0] from the captured cmdline as the binary to exec:
+	// a compromised source pod could write an arbitrary path there and use
+	// cmdline replay as a vector to exec a non-QEMU binary on the dest node.
+	// Pin to the configured override or the bundled Kata QEMU path.
+	binary := cfg.QEMUBinary
+	if binary == "" {
+		binary = destReplayDefaultQEMU
 	}
 	if !filepath.IsAbs(binary) {
-		slog.Warn("argv[0] is not absolute, falling back to default QEMU binary", "argv0", binary, "fallback", destReplayDefaultQEMU)
+		slog.Warn("configured QEMU binary is not absolute, falling back to default", "configured", binary, "fallback", destReplayDefaultQEMU)
 		binary = destReplayDefaultQEMU
 	}
 
@@ -488,6 +493,16 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 	return nil
 }
 
+type logWriter struct {
+	process string
+	stream  string
+}
+
+func (w logWriter) Write(p []byte) (n int, err error) {
+	slog.Warn("child process output", "process", w.process, "stream", w.stream, "output", string(p))
+	return len(p), nil
+}
+
 // spawnDetachedProcess launches name+args as a detached child process. Stdout
 // and stderr are silenced (matching e2e.sh's `>/dev/null 2>&1`). The child
 // is not waited on; QEMU and virtiofsd run for the lifetime of the dest pod.
@@ -497,39 +512,16 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 // when migration completes (or when the dest job pod is torn down).
 var spawnDetachedProcess = func(_ context.Context, name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe %s: %w", name, err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe %s: %w", name, err)
-	}
+	cmd.Stdout = logWriter{name, "stdout"}
+	cmd.Stderr = logWriter{name, "stderr"}
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 	slog.Info("child process started", "process", name, "pid", cmd.Process.Pid)
-	// Stream both stderr and stdout to slog as they appear. Keeps QEMU
-	// crash diagnostics visible via `kubectl logs` even after the parent
-	// process moves on to RunDestination.
-	streamPipe := func(stream string, r interface{ Read([]byte) (int, error) }) {
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := r.Read(buf)
-			if n > 0 {
-				slog.Warn("child process output", "process", name, "stream", stream, "output", string(buf[:n]))
-			}
-			if rerr != nil {
-				return
-			}
-		}
-	}
-	go streamPipe("stderr", stderr)
-	go streamPipe("stdout", stdout)
 	go func() {
 		err := cmd.Wait()
-		slog.Warn("child process exited", "process", name, "pid", cmd.Process.Pid, "error", fmt.Sprintf("%v", err))
+		slog.Warn("child process exited", "process", name, "pid", cmd.Process.Pid, "error", err)
 	}()
 	return nil
 }

@@ -183,26 +183,6 @@ func (f *fakeOrch) callsFor(op string) []fakeOrchCall {
 	return out
 }
 
-// fakeDisc is a stub orchestrator.Discoverer that returns scripted lookups.
-type fakeDisc struct {
-	srcNode string
-	destIP  string
-	err     error
-}
-
-func (f *fakeDisc) ListKataPods(context.Context) ([]orchestrator.PodInfo, error) {
-	return nil, nil
-}
-func (f *fakeDisc) ListKataNodes(context.Context) ([]orchestrator.NodeInfo, error) {
-	return nil, nil
-}
-func (f *fakeDisc) LookupPodNode(context.Context, string, string) (string, error) {
-	return f.srcNode, f.err
-}
-func (f *fakeDisc) LookupNodeInternalIP(context.Context, string) (string, error) {
-	return f.destIP, f.err
-}
-
 func newMigrationCR(name string, finalizers []string, withDeletion bool, status map[string]any) *unstructured.Unstructured {
 	obj := map[string]any{
 		"apiVersion": "katamaran.io/v1alpha1",
@@ -292,9 +272,9 @@ func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 	destJob := batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "katamaran-dest-id-m3",
-			Namespace: jobNamespace,
+			Namespace: orchestrator.DefaultJobNamespace,
 			Labels: map[string]string{
-				"katamaran.io/migration-id":   "id-m3",
+				orchestrator.MigrationIDLabel: "id-m3",
 				"app.kubernetes.io/component": "dest",
 			},
 		},
@@ -329,9 +309,9 @@ func TestReconciler_RecoverFromAnyNonTerminalPhase(t *testing.T) {
 	destJob := batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "katamaran-dest-id-cutover",
-			Namespace: jobNamespace,
+			Namespace: orchestrator.DefaultJobNamespace,
 			Labels: map[string]string{
-				"katamaran.io/migration-id":   "id-cutover",
+				orchestrator.MigrationIDLabel: "id-cutover",
 				"app.kubernetes.io/component": "dest",
 			},
 		},

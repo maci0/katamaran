@@ -1,7 +1,7 @@
 // katamaran-mgr is a minimal Kubernetes controller for the Migration CRD
 // (katamaran.io/v1alpha1). It runs in-cluster, polls Migration
-// resources, and submits each Pending migration to the embedded Native
-// orchestrator. Status is patched back to the CR.
+// resources, and submits each Pending migration to the embedded orchestrator
+// (Native in normal cluster deployments). Status is patched back to the CR.
 //
 // Active replica is selected via Lease-based leader election so a
 // Deployment scaled past 1 stays consistent (only the leader reconciles).
@@ -11,22 +11,25 @@
 // recovered / deleted / inflight migrations).
 //
 // Deployment: see config/crd/migration.yaml for the CRD itself, and a
-// matching ServiceAccount + ClusterRole + ClusterRoleBinding granting
-// `migrations.katamaran.io` get/list/watch/patch, `jobs` create/get/list/delete,
-// `pods/exec` create, `pods/log` get, and coordination.k8s.io/leases
-// get/list/create/update for leader election.
+// matching ServiceAccount + ClusterRole + ClusterRoleBinding granting access
+// to Migration CRs and status, Jobs, pod/node discovery, pods/log, pods/exec,
+// transient stager pods for replayCmdline, and coordination.k8s.io/leases for
+// leader election.
 package main
 
 import (
 	"context"
+	"errors"
 	"expvar"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,6 +68,11 @@ Other:
   -v, --version                   Show version and exit
   -h, --help                      Show this help and exit
 
+Exit codes:
+  0   Clean shutdown (signal received, leader released)
+  1   Runtime error (Kubernetes connection lost, reconciler failure)
+  2   Argument or configuration error
+
 Examples:
   # Run in-cluster with leader election (default)
   katamaran-mgr
@@ -97,17 +105,28 @@ func main() {
 		return
 	}
 	if *showVersion || *showVersionShort {
-		fmt.Println("katamaran-mgr", buildinfo.Version)
+		fmt.Fprintf(os.Stdout, "katamaran-mgr %s\n", buildinfo.Version)
 		return
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+	if !validListenAddr(*addr) {
+		fmt.Fprintf(os.Stderr, "Error: invalid --addr %q (expected host:port, for example :8081 or 0.0.0.0:8081)\n\n", *addr)
 		printUsage(os.Stderr)
 		os.Exit(2)
 	}
 
+	// Normalize enum flags for case-insensitive matching.
+	*logFormat = strings.ToLower(*logFormat)
+	*logLevel = strings.ToLower(*logLevel)
+
 	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-mgr"); err != nil {
-		fail(err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage(os.Stderr)
+		os.Exit(2)
 	}
 
 	cfg, err := loadConfig(*kubeconfig)
@@ -198,7 +217,7 @@ func main() {
 }
 
 func runReconciler(ctx context.Context, rec *controller.Reconciler) {
-	if err := rec.Run(ctx); err != nil && err != context.Canceled {
+	if err := rec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fail(err)
 	}
 }
@@ -225,7 +244,7 @@ func serveDebug(ctx context.Context, addr string) {
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fail(fmt.Errorf("debug server: %w", err))
 	}
 }
@@ -242,6 +261,15 @@ func loadConfig(kubeconfig string) (*rest.Config, error) {
 }
 
 func fail(err error) {
-	fmt.Fprintf(os.Stderr, "katamaran-mgr: %v\n", err)
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	os.Exit(1)
+}
+
+func validListenAddr(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return false
+	}
+	_, err = net.LookupPort("tcp", port)
+	return err == nil
 }

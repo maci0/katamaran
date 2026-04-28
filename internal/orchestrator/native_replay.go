@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -35,7 +36,7 @@ import (
 // caller.
 func (n *native) stageCmdline(ctx context.Context, id MigrationID, srcPodName, srcPodNamespace, destNode string) (string, error) {
 	if n.config == nil {
-		return "", fmt.Errorf("Native orchestrator missing rest.Config; cannot stream into pods")
+		return "", fmt.Errorf("native orchestrator missing rest.Config; cannot stream into pods")
 	}
 	srcCmdlinePath, err := n.waitForCmdlineMarker(ctx, srcPodNamespace, srcPodName)
 	if err != nil {
@@ -81,15 +82,19 @@ func (n *native) waitForCmdlineMarker(ctx context.Context, namespace, name strin
 				slog.Debug("waitForCmdlineMarker: opening pod log stream failed, will retry", "pod", name, "namespace", namespace, "error", err)
 			}
 		} else {
-			data, readErr := io.ReadAll(stream)
+			scanner := bufio.NewScanner(stream)
+			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if i := strings.Index(line, marker); i >= 0 {
+					_ = stream.Close()
+					return strings.TrimSpace(line[i+len(marker):]), nil
+				}
+			}
+			readErr := scanner.Err()
 			_ = stream.Close()
 			if readErr != nil && deadline.Err() == nil {
 				slog.Debug("waitForCmdlineMarker: reading pod log stream failed, will retry", "pod", name, "namespace", namespace, "error", readErr)
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				if i := strings.Index(line, marker); i >= 0 {
-					return strings.TrimSpace(line[i+len(marker):]), nil
-				}
 			}
 		}
 		select {
@@ -100,13 +105,50 @@ func (n *native) waitForCmdlineMarker(ctx context.Context, namespace, name strin
 	}
 }
 
+// maxPodCatBytes bounds the bytes podCat will buffer from the source pod's
+// stdout. The captured QEMU cmdline is well under 64 KiB in practice; cap
+// at 1 MiB so a misbehaving or compromised source pod cannot exhaust dest
+// memory by streaming an unbounded `cat` payload through SPDY exec.
+const maxPodCatBytes = 1 << 20
+
 // podCat runs `cat <path>` in the named pod and returns stdout.
 func (n *native) podCat(ctx context.Context, namespace, name, path string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	if err := n.podStream(ctx, namespace, name, []string{"cat", path}, nil, &stdout, &stderr); err != nil {
+	limited := &limitWriter{w: &stdout, n: maxPodCatBytes}
+	if err := n.podStream(ctx, namespace, name, []string{"cat", path}, nil, limited, &stderr); err != nil {
 		return nil, fmt.Errorf("cat %s: %w (stderr=%s)", path, err, strings.TrimSpace(stderr.String()))
 	}
+	if limited.exceeded {
+		return nil, fmt.Errorf("cat %s: output exceeded %d bytes", path, maxPodCatBytes)
+	}
 	return stdout.Bytes(), nil
+}
+
+// limitWriter wraps an io.Writer with an absolute byte budget. Writes that
+// would exceed the budget are silently dropped past the limit and the
+// exceeded flag is set so the caller can fail the operation.
+type limitWriter struct {
+	w        io.Writer
+	n        int64
+	exceeded bool
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.n <= 0 {
+		l.exceeded = true
+		return len(p), nil
+	}
+	if int64(len(p)) > l.n {
+		l.exceeded = true
+		_, err := l.w.Write(p[:l.n])
+		l.n = 0
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	l.n -= int64(len(p))
+	return l.w.Write(p)
 }
 
 // podWrite writes content to path inside pod by piping to `tee`. The path

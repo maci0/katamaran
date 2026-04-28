@@ -5,7 +5,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
 	"github.com/maci0/katamaran/internal/qmptest"
@@ -80,8 +79,6 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 
 			if strings.Contains(line, "migrate-incoming") {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				// After accepting migrate-incoming, send RESUME event.
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
 				continue
 			}
@@ -125,8 +122,6 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 			}
 			if strings.Contains(line, "nbd-server-add") {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				// After NBD setup is complete, send RESUME event.
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
 				continue
 			}
@@ -155,7 +150,6 @@ func TestRunDestination_SharedStorage_Multifd(t *testing.T) {
 
 			if strings.Contains(line, "migrate-incoming") {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
 				continue
 			}
@@ -385,7 +379,6 @@ func TestRunDestination_GARPFailure(t *testing.T) {
 
 			if strings.Contains(line, "migrate-incoming") {
 				conn.Write([]byte(`{"return":{}}` + "\n"))
-				time.Sleep(10 * time.Millisecond)
 				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
 				continue
 			}

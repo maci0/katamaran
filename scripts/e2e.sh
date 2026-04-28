@@ -1,6 +1,8 @@
 #!/bin/bash
 # e2e.sh — Unified E2E test harness for Katamaran live migration.
 #
+# Usage: ./scripts/e2e.sh [options]
+#
 # --provider <name>  Cluster provider: 'minikube' (default) or 'kind'.
 # --cni <name>       CNI plugin: 'auto' (default), 'calico', 'cilium', 'flannel',
 #                    'ovn', or 'kindnet'.
@@ -51,17 +53,17 @@ done
 
 if [[ "${STORAGE}" != "none" && "${STORAGE}" != "local" && "${STORAGE}" != "nfs" ]]; then
     error "--storage must be 'none', 'local', or 'nfs' (got '${STORAGE}')"
-    exit 1
+    exit 2
 fi
 
 if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
     error "--provider must be 'minikube' or 'kind' (got '${PROVIDER}')"
-    exit 1
+    exit 2
 fi
 
 if [[ "${METHOD}" != "job" && "${METHOD}" != "crd" && "${METHOD}" != "direct" ]]; then
     error "--method must be 'job', 'crd', or 'direct' (got '${METHOD}')"
-    exit 1
+    exit 2
 fi
 
 if [[ "${METHOD}" == "direct" ]]; then
@@ -71,7 +73,7 @@ fi
 
 case "${CNI}" in
     auto|calico|cilium|flannel|ovn|kindnet) ;;
-    *) error "--cni must be 'auto', 'calico', 'cilium', 'flannel', 'ovn', or 'kindnet' (got '${CNI}')"; exit 1 ;;
+    *) error "--cni must be 'auto', 'calico', 'cilium', 'flannel', 'ovn', or 'kindnet' (got '${CNI}')"; exit 2 ;;
 esac
 
 readonly KATA_CHART_VERSION="${KATA_VERSION}"

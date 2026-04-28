@@ -50,21 +50,46 @@ func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
-	names := map[string]bool{}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("expected exactly 2 jobs, got %d: %+v", len(jobs.Items), jobs.Items)
+	}
+	byComponent := map[string]batchv1.Job{}
 	for _, j := range jobs.Items {
-		names[j.Name] = true
-	}
-	hasSrc, hasDest := false, false
-	for n := range names {
-		if strings.HasPrefix(n, "katamaran-source-") {
-			hasSrc = true
-		}
-		if strings.HasPrefix(n, "katamaran-dest-") {
-			hasDest = true
+		component := j.Labels["app.kubernetes.io/component"]
+		byComponent[component] = j
+		if j.Labels[MigrationIDLabel] != string(id) {
+			t.Fatalf("job %s migration label = %q, want %q", j.Name, j.Labels[MigrationIDLabel], id)
 		}
 	}
+	src, hasSrc := byComponent["source"]
+	dest, hasDest := byComponent["dest"]
 	if !hasSrc || !hasDest {
-		t.Fatalf("expected katamaran-source-<id> and katamaran-dest-<id>, got %v", names)
+		t.Fatalf("expected source and dest jobs, got components %v", byComponent)
+	}
+	if !strings.HasPrefix(src.Name, "katamaran-source-") || !strings.HasPrefix(dest.Name, "katamaran-dest-") {
+		t.Fatalf("unexpected job names: source=%q dest=%q", src.Name, dest.Name)
+	}
+	if src.Spec.Template.Spec.NodeName != "n1" || dest.Spec.Template.Spec.NodeName != "n2" {
+		t.Fatalf("jobs scheduled to wrong nodes: source=%q dest=%q", src.Spec.Template.Spec.NodeName, dest.Spec.Template.Spec.NodeName)
+	}
+
+	sourceCmd := jobCommand(t, src)
+	for _, want := range []string{
+		"--mode source",
+		"--dest-ip 10.0.0.20",
+		"--pod-name vm-a",
+		"--pod-namespace default",
+		"--multifd-channels 0",
+	} {
+		if !strings.Contains(sourceCmd, want) {
+			t.Fatalf("source command missing %q: %s", want, sourceCmd)
+		}
+	}
+	destCmd := jobCommand(t, dest)
+	for _, want := range []string{"--mode dest", "--multifd-channels 0"} {
+		if !strings.Contains(destCmd, want) {
+			t.Fatalf("dest command missing %q: %s", want, destCmd)
+		}
 	}
 }
 
@@ -142,4 +167,12 @@ func TestExpandShellVars(t *testing.T) {
 	if expandShellVars("${unknown}", nil) != "" {
 		t.Fatal("expected unknown var to expand to empty")
 	}
+}
+
+func jobCommand(t *testing.T, job batchv1.Job) string {
+	t.Helper()
+	if len(job.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("job %s containers = %d, want 1", job.Name, len(job.Spec.Template.Spec.Containers))
+	}
+	return strings.Join(job.Spec.Template.Spec.Containers[0].Command, " ")
 }

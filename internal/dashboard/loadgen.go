@@ -68,6 +68,7 @@ func (a *App) tryStartLoadgen(w http.ResponseWriter, r *http.Request, loadgenTyp
 	a.loadgenRunning = true
 	a.loadgenType = loadgenType
 	a.pingLog = a.pingLog[:0]
+	a.pingSeq++
 	ctx, cancel := context.WithCancel(context.Background())
 	a.loadgenCancel = cancel
 	a.loadgenMutex.Unlock()
@@ -150,11 +151,11 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 		cmd := exec.CommandContext(ctx, "ping", "-i", "0.2", pingTarget)
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			slog.Error("Failed to create ping stdout pipe", "target", pingTarget, "error", err)
+			slog.Error("Failed to create ping stdout pipe", "target", pingTarget, "error", err, "request_id", reqID)
 			return
 		}
 		if err := cmd.Start(); err != nil {
-			slog.Error("Failed to start ping process", "target", pingTarget, "error", err)
+			slog.Error("Failed to start ping process", "target", pingTarget, "error", err, "request_id", reqID)
 			return
 		}
 
@@ -193,6 +194,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 func (a *App) addPing(lat float64, errStr string) {
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()
+	a.pingSeq++
 	a.pingLog = append(a.pingLog, PingData{
 		Time:    time.Now().Format(time.RFC3339Nano),
 		Latency: lat,

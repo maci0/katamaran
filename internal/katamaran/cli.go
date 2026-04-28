@@ -33,11 +33,11 @@ var (
 	sourceOnlyFlags = map[string]bool{
 		"dest-ip": true, "vm-ip": true, "tunnel-mode": true,
 		"downtime": true, "auto-downtime": true,
-		"emit-cmdline-to": true,
+		"emit-cmdline-to": true, "pod-name": true, "pod-namespace": true,
 	}
 	destOnlyFlags = map[string]bool{
 		"tap": true, "tap-netns": true,
-		"replay-cmdline": true,
+		"replay-cmdline": true, "dest-pod-name": true, "dest-pod-namespace": true,
 	}
 )
 
@@ -80,6 +80,12 @@ Other:
   -v, --version            Show version and exit
   -h, --help               Show this help and exit
 
+Exit codes:
+  0   Migration succeeded
+  1   Migration failed (runtime error)
+  2   Argument or validation error
+  130 Interrupted by signal (SIGINT/SIGTERM)
+
 Environment variables:
   KATAMARAN_MIGRATION_ID   Correlation ID added to all log entries (set by the dashboard)
 
@@ -94,6 +100,10 @@ Examples:
   # Source with shared storage and GRE tunnel
   katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
     --dest-ip 10.0.0.2 --vm-ip 10.244.1.5 --shared-storage --tunnel-mode gre
+
+  # Source in pod mode (resolve QMP and VM IP from a Kubernetes pod)
+  katamaran --mode source --dest-ip 10.0.0.2 \
+    --pod-name kata-demo --pod-namespace default
 `)
 }
 

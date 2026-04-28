@@ -1,10 +1,10 @@
 package orchestrator
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -20,23 +20,22 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// native is the in-cluster client-go implementation of Orchestrator. It
-// renders the source/dest Job manifests in process from embedded templates,
-// submits them via clientset, and reports status by polling Job conditions.
+// native is the client-go implementation of Orchestrator. It renders the
+// source/dest Job manifests in process from embedded templates, submits
+// them via clientset, and reports status by polling Job conditions.
 //
 // What it covers today:
 //
 //   - Apply / Watch / Stop for both legacy explicit-fields and pod-picker
 //     mode requests.
-//   - Status updates: PhaseSubmitted on submit, PhaseTransferring once both
-//     jobs are scheduled, PhaseSucceeded when the source Job reaches
-//     condition=Complete, PhaseFailed when it reaches condition=Failed.
+//   - Status updates: PhaseSubmitted on submit, PhaseTransferring from source
+//     KATAMARAN_PROGRESS log markers when available, PhaseSucceeded when the
+//     destination Job reaches condition=Complete, and PhaseFailed when the
+//     destination fails or the source fails without a successful handover.
 //
-// What it does NOT cover yet (Script orchestrator is still the canonical
-// path for these):
-//
-//   - Granular RAM-transfer progress (no log scraping yet).
-//   - Per-pod log streaming for the dashboard log pane.
+// Limitations: only structured KATAMARAN_PROGRESS / KATAMARAN_RESULT marker
+// lines are tailed from the source pod. Full per-pod log streaming for the
+// dashboard log pane is not implemented.
 //
 // ReplayCmdline support: when the request has ReplayCmdline=true, the
 // orchestrator submits the source Job, tails the source pod's logs for the
@@ -82,11 +81,10 @@ type nativeRun struct {
 // NewFromKubeconfig for ReplayCmdline support.
 var ErrReplayCmdlineNotSupported = errors.New("ReplayCmdline requires a rest.Config (use orchestrator.New, not NewFromClient)")
 
-// New builds an Orchestrator using the in-cluster service account.
-// Job manifests are submitted into kube-system (matching the existing
-// migrate.sh layout). The returned implementation supports
-// ReplayCmdline because it carries a rest.Config for SPDY remote-
-// command calls.
+// New builds an Orchestrator using the in-cluster service account. Job
+// manifests are submitted into kube-system. The returned implementation
+// supports ReplayCmdline because it carries a rest.Config for SPDY
+// remote-command calls.
 func New() (Orchestrator, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -146,7 +144,7 @@ func NewFromClient(c kubernetes.Interface) Orchestrator {
 func newFromClient(c kubernetes.Interface) *native {
 	return &native{
 		client:    c,
-		namespace: "kube-system",
+		namespace: DefaultJobNamespace,
 		inflight:  map[MigrationID]*nativeRun{},
 	}
 }
@@ -188,6 +186,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
 			return "", fmt.Errorf("create source job: %w", err)
 		}
+		slog.Info("Migration source job created; destination waits for cmdline replay", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	} else {
 		// Dest first so the migrate-incoming listener is up before source connects.
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
@@ -199,6 +198,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			}
 			return "", fmt.Errorf("create source job: %w", err)
 		}
+		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -238,6 +238,9 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("Progress tail unavailable: source pod was not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
+		}
 		return // source pod never appeared; poll will surface the failure
 	}
 	const (
@@ -287,12 +290,14 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			}
 			continue
 		}
-		data, readErr := io.ReadAll(stream)
-		_ = stream.Close()
-		if readErr != nil && ctx.Err() == nil {
-			slog.Debug("tailProgress: reading source pod log stream failed", "migration_id", id, "pod", srcPod, "error", readErr)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
+		// Stream line-by-line instead of materializing the whole 30s log
+		// window as a single string + slice; per-tick payload can be hundreds
+		// of KB on chatty migrations.
+		scanner := bufio.NewScanner(stream)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		done := false
+		for scanner.Scan() {
+			line := scanner.Text()
 			if seen[line] {
 				continue
 			}
@@ -305,7 +310,8 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				run.resultRAMTotal = parseInt64(fields["ram_total"])
 				run.resultCaptured = true
 				run.resultMu.Unlock()
-				return
+				done = true
+				break
 			}
 			i := strings.Index(line, progressMarker)
 			if i < 0 {
@@ -321,11 +327,20 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				RAMTransferred: parseInt64(fields["ram_transferred"]),
 				RAMTotal:       parseInt64(fields["ram_total"]),
 			}) {
-				return
+				done = true
+				break
 			}
 			if fields["status"] == "failed" || fields["status"] == "cancelled" {
-				return
+				done = true
+				break
 			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil && ctx.Err() == nil {
+			slog.Debug("tailProgress: reading source pod log stream failed", "migration_id", id, "pod", srcPod, "error", scanErr)
+		}
+		_ = stream.Close()
+		if done {
+			return
 		}
 	}
 }
@@ -374,20 +389,24 @@ func parseInt64(s string) int64 {
 func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
+		slog.Error("Cmdline replay failed: source pod not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)})
 		run.cancel()
 		return
 	}
 	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode); err != nil {
+		slog.Error("Cmdline replay staging failed", "migration_id", id, "source_pod", srcPod, "dest_node", req.DestNode, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)})
 		run.cancel()
 		return
 	}
 	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+		slog.Error("Cmdline replay destination job create failed", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)})
 		run.cancel()
 		return
 	}
+	slog.Info("Cmdline replay staged; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 }
 
 // send pushes u onto run.updates if the run is still live. If poll has
@@ -503,6 +522,7 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Warn("Migration poll canceled", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "error", ctx.Err())
 			run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: ctx.Err()}
 			return
 		case <-ticker.C:
@@ -511,29 +531,37 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 
 			// Dest=Complete → success, even if source failed.
 			if destErr == nil {
-				if cond := jobCondition(destJob); cond == batchv1.JobComplete {
+				if cond := TerminalJobCondition(destJob); cond == batchv1.JobComplete {
+					slog.Info("Migration destination job completed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
 					run.updates <- n.succeededUpdate(id, run)
 					return
 				} else if cond == batchv1.JobFailed {
+					slog.Error("Migration destination job failed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("dest job failed")}
 					return
 				}
+			} else if !apierrors.IsNotFound(destErr) {
+				slog.Debug("Migration destination job status unavailable", "migration_id", id, "dest_job", run.destJob, "error", destErr)
 			}
 
 			// Source job state.
 			if srcErr != nil {
 				if apierrors.IsNotFound(srcErr) {
+					slog.Error("Migration source job disappeared", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job disappeared")}
 					return
 				}
+				slog.Debug("Migration source job status unavailable", "migration_id", id, "source_job", run.srcJob, "error", srcErr)
 				continue
 			}
-			srcCond := jobCondition(srcJob)
+			srcCond := TerminalJobCondition(srcJob)
 			if srcCond == batchv1.JobFailed {
 				if sourceFailedAt.IsZero() {
 					sourceFailedAt = time.Now()
+					slog.Warn("Migration source job failed; waiting for destination grace window", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace)
 				}
 				if time.Since(sourceFailedAt) > sourceFailGrace {
+					slog.Error("Migration source job failed and destination did not complete", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace)
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job failed and dest did not complete within grace window")}
 					return
 				}
@@ -545,18 +573,6 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			}
 		}
 	}
-}
-
-func jobCondition(job *batchv1.Job) batchv1.JobConditionType {
-	for _, c := range job.Status.Conditions {
-		if c.Status != "True" {
-			continue
-		}
-		if c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed {
-			return c.Type
-		}
-	}
-	return ""
 }
 
 // buildExtraArgs assembles the EXTRA_ARGS string the source/dest containers

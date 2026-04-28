@@ -9,7 +9,7 @@ Zero-packet-drop live migration for [Kata Containers](https://katacontainers.io/
 ### TL;DR
 
 ```bash
-make                # builds bin/katamaran and bin/katamaran-dashboard
+make                # builds all katamaran binaries into bin/
 
 # Destination node (run first)
 sudo ./bin/katamaran --mode dest --qmp /run/vc/vm/<id>/extra-monitor.sock --tap tap0_kata
@@ -303,8 +303,8 @@ internal/
     types.go                    # Dashboard state and API response types
     validate.go                 # Input validation and SSRF prevention
   logging/
-    logutil.go                  # Logging setup helpers (SetupLogger)
-    logutil_test.go             # Logging tests
+    logging.go                  # Logging setup helpers (SetupLogger)
+    logging_test.go             # Logging tests
   migration/
     config.go                   # Config types, constants, and helpers (validators, formatQEMUHost)
     config_test.go              # Config unit tests and FuzzFormatQEMUHost
@@ -323,7 +323,7 @@ internal/
     fuzz_test.go                # Fuzz tests for QMP protocol parsing (6 targets)
     types.go                    # QMP protocol types and command argument structs
   qmptest/
-    helpers.go                  # Shared test helpers for faking a QMP server
+    qmptest.go                  # Shared test helpers for faking a QMP server
   buildinfo/
     buildinfo.go                # Build version variable (overridden via ldflags)
 deploy/

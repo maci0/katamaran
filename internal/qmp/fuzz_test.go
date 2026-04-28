@@ -151,8 +151,6 @@ func FuzzClientProtocol(f *testing.F) {
 			conn.Read(buf)
 			conn.Write(executeData)
 			conn.Read(buf)
-
-			time.Sleep(50 * time.Millisecond)
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

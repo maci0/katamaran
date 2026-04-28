@@ -26,6 +26,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"expvar"
 	"fmt"
 	"log/slog"
@@ -54,6 +55,7 @@ var (
 	mDeleted         = expvar.NewInt("katamaran_migrations_deleted_total")
 	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
 	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
+	mWatchLost       = expvar.NewInt("katamaran_migrations_watch_lost_total")
 )
 
 // MigrationGVR is the GroupVersionResource the controller reconciles.
@@ -67,10 +69,6 @@ var MigrationGVR = schema.GroupVersionResource{
 // underlying Jobs are still running. Reconcile removes it after
 // orchestrator.Stop has been called on the tracked migrationID.
 const finalizerName = "katamaran.io/finalizer"
-
-// jobNamespace is where the Native orchestrator submits source/dest Jobs.
-// Kept in sync with the Native default so recovery can find them on restart.
-const jobNamespace = "kube-system"
 
 // Reconciler watches Migration resources and submits each pending one to
 // the embedded orchestrator. Status is patched back to the CR as the
@@ -220,20 +218,37 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", err.Error())
 		return
 	}
-	if r.Discoverer != nil && req.SourcePod != nil {
+	if req.SourcePod != nil {
+		if r.Discoverer == nil {
+			slog.Error("Migration cannot be resolved: discoverer unavailable", "migration", key)
+			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve migration", "discoverer unavailable")
+			return
+		}
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
 		srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-		if lerr == nil && srcNode != "" {
-			req.SourceNode = srcNode
+		if lerr != nil || srcNode == "" {
+			lookupCancel()
+			if lerr == nil {
+				lerr = fmt.Errorf("source pod node is empty")
+			}
+			slog.Error("Resolve source pod node failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
+			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve source pod node", lerr.Error())
+			return
 		}
+		req.SourceNode = srcNode
 		destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
 		lookupCancel()
 		if lerr != nil || destIP == "" {
-			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve dest node IP", fmt.Sprintf("%v", lerr))
+			if lerr == nil {
+				lerr = fmt.Errorf("destination node InternalIP is empty")
+			}
+			slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
+			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve dest node IP", lerr.Error())
 			return
 		}
 		req.DestIP = destIP
 		if req.SourceNode == req.DestNode {
+			slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
 			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", "source pod already runs on destNode")
 			return
 		}
@@ -247,12 +262,12 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		return
 	}
 	r.updateTrack(key, id, cancel)
-	slog.Info("Migration submitted", "migration", key, "migrationID", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
+	slog.Info("Migration submitted", "migration", key, "migration_id", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
 	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
 
 	updates, err := r.Orchestrator.Watch(jobCtx, id)
 	if err != nil {
-		slog.Error("Watch failed", "migration", key, "migrationID", id, "error", err)
+		slog.Error("Watch failed", "migration", key, "migration_id", id, "error", err)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), "Watch failed", err.Error())
 		return
 	}
@@ -270,8 +285,17 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		mSucceeded.Add(1)
 	case string(orchestrator.PhaseFailed):
 		mFailed.Add(1)
+	default:
+		mFailed.Add(1)
+		mWatchLost.Add(1)
+		msg := "watch closed without terminal status"
+		if lastPhase != "" {
+			msg += " (last phase " + lastPhase + ")"
+		}
+		slog.Error("Migration watch closed without terminal status", "migration", key, "migration_id", id, "last_phase", lastPhase)
+		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
-	slog.Info("Migration finished", "migration", key, "migrationID", id, "final_phase", lastPhase)
+	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
 }
 
 // recover reattaches to a Migration left in a non-terminal phase by a
@@ -280,10 +304,12 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 // patches .status.phase based on their conditions.
 func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
 	mRecovered.Add(1)
+	mInflight.Add(1)
+	defer mInflight.Add(-1)
 	defer r.untrack(key)
 
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
-	slog.Info("Recovering in-flight Migration after controller restart", "migration", key, "migrationID", id)
+	slog.Info("Recovering in-flight Migration after controller restart", "migration", key, "migration_id", id)
 
 	if r.Kube == nil {
 		slog.Warn("Recovery skipped: no Kube clientset wired", "migration", key)
@@ -291,11 +317,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		return
 	}
 	if id == "" {
+		slog.Error("Recovery failed: no migration ID on status", "migration", key)
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
 		return
 	}
 
-	selector := "katamaran.io/migration-id=" + id
+	selector := orchestrator.MigrationIDLabel + "=" + id
 	deadline := time.Now().Add(r.StatusTimeout)
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
@@ -306,12 +333,13 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		case <-ticker.C:
 		}
 		if time.Now().After(deadline) {
+			slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			return
 		}
-		jobs, err := r.Kube.BatchV1().Jobs(jobNamespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		jobs, err := r.Kube.BatchV1().Jobs(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil {
-			slog.Error("recover: list jobs failed", "migration", key, "error", err)
+			slog.Error("recover: list jobs failed", "migration", key, "migration_id", id, "error", err)
 			continue
 		}
 		var src, dest *batchv1.Job
@@ -325,19 +353,23 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			}
 		}
 		if dest != nil {
-			if cond := jobCondition(dest); cond == batchv1.JobComplete {
+			if cond := orchestrator.TerminalJobCondition(dest); cond == batchv1.JobComplete {
+				slog.Info("Recovery completed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				return
 			} else if cond == batchv1.JobFailed {
+				slog.Error("Recovery failed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", "")
 				return
 			}
 		}
-		if dest == nil && src != nil && jobCondition(src) == batchv1.JobFailed {
+		if dest == nil && src != nil && orchestrator.TerminalJobCondition(src) == batchv1.JobFailed {
+			slog.Error("Recovery failed from source job before destination started", "migration", key, "migration_id", id, "source_job", src.Name)
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", "")
 			return
 		}
 		if dest == nil && src == nil {
+			slog.Error("Recovery failed: source and destination jobs disappeared", "migration", key, "migration_id", id)
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
 			return
 		}
@@ -353,11 +385,11 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	}
 	mDeleted.Add(1)
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
-	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migrationID", id)
+	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migration_id", id)
 	if id != "" {
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id)); err != nil {
-			slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migrationID", id, "error", err)
+			slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migration_id", id, "error", err)
 		}
 		cancel()
 	}
@@ -370,17 +402,6 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	if err := r.removeFinalizer(ctx, obj); err != nil {
 		slog.Error("remove finalizer failed", "migration", key, "error", err)
 	}
-}
-
-// jobCondition returns the most recent terminal condition (Complete or Failed)
-// on a Job, or "" if neither is set yet.
-func jobCondition(job *batchv1.Job) batchv1.JobConditionType {
-	for _, c := range job.Status.Conditions {
-		if c.Status == "True" && (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) {
-			return c.Type
-		}
-	}
-	return ""
 }
 
 // hasFinalizer returns true if the Migration carries our finalizer.
@@ -398,7 +419,7 @@ func (r *Reconciler) addFinalizer(ctx context.Context, obj *unstructured.Unstruc
 	finalizers := append([]string{}, obj.GetFinalizers()...)
 	finalizers = append(finalizers, finalizerName)
 	patch := map[string]any{"metadata": map[string]any{"finalizers": finalizers}}
-	patchBytes, err := jsonMarshal(patch)
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}
@@ -416,7 +437,7 @@ func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unst
 		}
 	}
 	patch := map[string]any{"metadata": map[string]any{"finalizers": out}}
-	patchBytes, err := jsonMarshal(patch)
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}
@@ -463,36 +484,14 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 // subresource. Errors are logged and swallowed because the next reconcile
 // tick will retry.
 func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
-	status := map[string]any{
-		"phase":   phase,
-		"message": nil,
-		"error":   nil,
+	u := orchestrator.StatusUpdate{
+		Phase:   orchestrator.StatusPhase(phase),
+		Message: message,
 	}
 	if migrationID != "" {
-		status["migrationID"] = migrationID
+		u.ID = orchestrator.MigrationID(migrationID)
 	}
-	if message != "" {
-		status["message"] = message
-	}
-	if errStr != "" {
-		status["error"] = errStr
-	}
-	if phase == string(orchestrator.PhaseSubmitted) {
-		status["startedAt"] = time.Now().UTC().Format(time.RFC3339)
-	}
-	if phase == string(orchestrator.PhaseSucceeded) || phase == string(orchestrator.PhaseFailed) {
-		status["completedAt"] = time.Now().UTC().Format(time.RFC3339)
-	}
-	patch := map[string]any{"status": status}
-	patchBytes, err := jsonMarshal(patch)
-	if err != nil {
-		return err
-	}
-	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
-	if err != nil {
-		slog.Error("patch status failed", "migration", key, "error", err)
-	}
-	return err
+	return r.patchStatusUpdate(ctx, key, u, errStr)
 }
 
 func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {
@@ -524,7 +523,7 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 		status["completedAt"] = time.Now().UTC().Format(time.RFC3339)
 	}
 	patch := map[string]any{"status": status}
-	patchBytes, err := jsonMarshal(patch)
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}

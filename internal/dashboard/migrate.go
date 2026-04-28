@@ -115,7 +115,6 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 	// Reject requests missing required fields. The frontend validates
 	// these too, but direct API callers (curl, scripts) bypass that.
-	// Aligned with orchestrator validation and the legacy migrate.sh flags.
 	//
 	// Pod-picker mode: when source_pod_name is set, the user picked a pod
 	// from the dropdown and we resolve source_node + dest_ip via the
@@ -152,8 +151,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// paths.
 	var resolvedSrcNode, resolvedDestIP string
 	if podMode {
-		disc := a.discovery()
+		disc := a.discoverer
 		if disc == nil {
+			slog.Warn("Migration request rejected: discoverer not configured", "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr)
 			jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 			return
 		}
@@ -163,18 +163,38 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		var err error
 		resolvedSrcNode, err = disc.LookupPodNode(r.Context(), ns, pod)
 		if err != nil {
+			slog.Warn("Migration request rejected: source pod lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, "lookup source pod: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		resolvedDestIP, err = disc.LookupNodeInternalIP(r.Context(), dest)
 		if err != nil {
+			slog.Warn("Migration request rejected: destination node lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, "lookup dest node: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if resolvedSrcNode == dest {
+			slog.Warn("Migration request rejected: source pod already on destination node", "source_pod", ns+"/"+pod, "node", dest, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, "source and dest node must differ", http.StatusBadRequest)
 			return
 		}
+	}
+
+	// Build and validate the orchestrator request before touching migration
+	// state. Earlier handleMigrate flipped isMigrating + bumped counters
+	// before Validate, so a bad request polluted /api/status's
+	// last_migration_* fields and the lifetime "failed" counter even though
+	// no migration ever ran.
+	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
+	if err := orchestrator.Validate(req); err != nil {
+		slog.Warn("Migration request rejected: invalid orchestrator request", "error", err, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if a.orch == nil {
+		slog.Error("Migration request rejected: orchestrator not configured", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
+		return
 	}
 
 	a.migrationMutex.Lock()
@@ -182,7 +202,6 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		runningID := a.migrationID
 		a.migrationMutex.Unlock()
 		slog.Warn("Migration request rejected: already running", "running_migration_id", runningID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr)
-		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":        "Migration already running",
 			"migration_id": runningID,
@@ -191,6 +210,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 	a.isMigrating = true
 	a.migrationOutput = nil
+	a.migrationLogSeq++
 	a.logBufferWrapped = false
 	a.latestProgress = nil
 	migrationID := generateID()
@@ -204,22 +224,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationCancel = cancel
 	a.migrationMutex.Unlock()
 
-	// Translate the form into an orchestrator.Request and validate.
-	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
-	if err := orchestrator.Validate(req); err != nil {
-		a.abortPendingMigration(cancel, err.Error())
-		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	logSourceNode, logDestIP, logVMIP := req.SourceNode, req.DestIP, req.VMIP
-	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
-
-	if a.orch == nil {
-		a.abortPendingMigration(cancel, "no orchestrator wired")
-		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
-		return
-	}
+	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", req.SourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", req.DestIP, "vm_ip", req.VMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 	go a.runOrchestrator(ctx, a.orch, req, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
@@ -244,6 +249,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	a.appendLog(">>> Submitting migration via Native orchestrator…")
 	id, err := orch.Apply(ctx, req)
 	if err != nil {
+		slog.Error("Migration apply failed", "migration_id", migrationID, "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
 		return
@@ -251,6 +257,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	a.appendLog(">>> Migration submitted, id=" + string(id))
 	updates, err := orch.Watch(ctx, id)
 	if err != nil {
+		slog.Error("Migration watch failed", "migration_id", migrationID, "orchestrator_id", string(id), "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
 		return
@@ -258,9 +265,29 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	var terminal orchestrator.StatusPhase
 	var terminalErr error
 	phaseAt := map[orchestrator.StatusPhase]time.Time{}
+	var lastLoggedPhase orchestrator.StatusPhase
 	for u := range updates {
 		if _, seen := phaseAt[u.Phase]; !seen {
 			phaseAt[u.Phase] = u.When
+		}
+		if u.Phase != lastLoggedPhase || u.Phase.IsTerminal() || u.RAMTotal > 0 || u.Error != nil {
+			attrs := []any{"migration_id", migrationID, "orchestrator_id", string(id), "phase", u.Phase}
+			if u.Message != "" {
+				attrs = append(attrs, "message", u.Message)
+			}
+			if u.RAMTotal > 0 {
+				attrs = append(attrs, "ram_transferred", u.RAMTransferred, "ram_total", u.RAMTotal)
+			}
+			if u.DowntimeMS > 0 {
+				attrs = append(attrs, "downtime_ms", u.DowntimeMS)
+			}
+			if u.Error != nil {
+				attrs = append(attrs, "error", u.Error)
+				slog.Warn("Migration phase update", attrs...)
+			} else {
+				slog.Info("Migration phase update", attrs...)
+			}
+			lastLoggedPhase = u.Phase
 		}
 		if u.RAMTotal > 0 || u.Phase == orchestrator.PhaseSucceeded {
 			a.migrationMutex.Lock()
@@ -297,17 +324,22 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 			terminalErr = u.Error
 		}
 	}
+	elapsed := time.Since(start).Round(time.Millisecond)
 	switch terminal {
 	case orchestrator.PhaseSucceeded:
 		a.setMigrationResult("success", "")
+		slog.Info("Migration finished", "migration_id", migrationID, "outcome", "success", "elapsed", elapsed)
 	case orchestrator.PhaseFailed:
 		msg := "migration failed"
 		if terminalErr != nil {
 			msg = terminalErr.Error()
 		}
 		a.setMigrationResult("error", msg)
+		slog.Error("Migration finished", "migration_id", migrationID, "outcome", "error", "elapsed", elapsed, "error", msg)
 	default:
-		a.setMigrationResult("error", "watch closed without terminal status")
+		msg := "watch closed without terminal status"
+		a.setMigrationResult("error", msg)
+		slog.Error("Migration finished", "migration_id", migrationID, "outcome", "error", "elapsed", elapsed, "error", msg)
 	}
 }
 
@@ -359,24 +391,6 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
 
-// abortPendingMigration unwinds the migration state set up at the start of
-// handleMigrate when a pre-launch check (Validate, missing orchestrator) fails.
-// Counterpart to runOrchestrator's deferred cleanup, which only runs once the
-// orchestrator goroutine has been kicked off.
-func (a *App) abortPendingMigration(cancel context.CancelFunc, errMsg string) {
-	a.migrationMutex.Lock()
-	a.isMigrating = false
-	a.migrationID = ""
-	a.migrationCancel = nil
-	a.migrationsFailed++
-	a.lastMigrationResult = "error"
-	a.lastMigrationError = errMsg
-	a.migrationMutex.Unlock()
-	dashboardMigrationsActive.Add(-1)
-	dashboardMigrationResultsByOutcome.Add("error", 1)
-	cancel()
-}
-
 // setMigrationResult updates the final status and error message of the completed migration.
 func (a *App) setMigrationResult(result, errMsg string) {
 	a.migrationMutex.Lock()
@@ -398,6 +412,7 @@ func (a *App) appendLog(msg string) {
 	}
 	a.migrationMutex.Lock()
 	defer a.migrationMutex.Unlock()
+	a.migrationLogSeq++
 	a.migrationOutput = append(a.migrationOutput, msg)
 	if len(a.migrationOutput) > maxLogLines {
 		a.migrationOutput = slices.Delete(a.migrationOutput, 0, len(a.migrationOutput)-maxLogLines)

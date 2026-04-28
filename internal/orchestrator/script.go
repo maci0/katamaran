@@ -10,9 +10,9 @@ import (
 )
 
 // Script wraps deploy/migrate.sh and exposes it through the Orchestrator
-// interface for ad-hoc CLI runs and CI smoke. Production paths
-// (dashboard, katamaran-orchestrator, Migration CRD controller) use the
-// Native orchestrator instead — Script is kept for backward-compat.
+// interface for ad-hoc CLI runs and CI smoke. The dashboard and Migration
+// CRD controller use the Native orchestrator in normal cluster deployments;
+// katamaran-orchestrator uses Script by default unless --native is passed.
 //
 // Status fidelity is intentionally low: the script's stdout is a stream of
 // human-readable lines, not structured progress events. Watch emits a single
@@ -21,8 +21,8 @@ import (
 //
 // Callers wanting per-step phase updates should use the Native orchestrator.
 type Script struct {
-	// ScriptPath is the absolute path to deploy/migrate.sh. When empty,
-	// Apply searches the working directory and /usr/local/bin/migrate.sh.
+	// ScriptPath is the path to deploy/migrate.sh. When empty, Apply uses
+	// deploy/migrate.sh relative to the current working directory.
 	ScriptPath string
 
 	mu       sync.Mutex

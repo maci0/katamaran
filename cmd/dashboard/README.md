@@ -133,4 +133,4 @@ Access the dashboard via `kubectl port-forward -n kube-system svc/katamaran-dash
 └─────────────────────────────────────────────┘
 ```
 
-The server has zero third-party dependencies. It uses graceful shutdown via `signal.NotifyContext`, HTTP server timeouts, and context-based cancellation for child processes.
+The HTTP layer uses the Go standard library; Kubernetes orchestration and discovery are handled through client-go. The server uses graceful shutdown via `signal.NotifyContext`, HTTP server timeouts, and context-based cancellation for child processes.

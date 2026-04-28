@@ -22,6 +22,8 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+      - name: Verify go modules
+        run: go mod verify
       - name: Lint
         run: make vet
       - name: Vulnerability check
@@ -41,6 +43,16 @@ jobs:
       - name: Lint shell scripts
         run: shellcheck -x -e SC1091,SC2016,SC2155,SC2317,SC2329 scripts/*.sh deploy/migrate.sh
 
+  template-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Job templates in deploy/ match internal/orchestrator/templates/
+        run: |
+          diff -u deploy/job-source.yaml internal/orchestrator/templates/job-source.yaml
+          diff -u deploy/job-dest.yaml internal/orchestrator/templates/job-dest.yaml
+
   build-and-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -50,14 +62,14 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build binaries
-        run: make all
+        run: make -j4 all
       - name: Smoke tests
         run: make smoke
 
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [lint-and-test, build-and-smoke, shellcheck]
+    needs: [lint-and-test, build-and-smoke, shellcheck, template-sync]
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +81,7 @@ jobs:
           - name: dashboard
             file: Dockerfile.dashboard
             tag: katamaran-dashboard:ci
-            smoke: ./dashboard --version
+            smoke: --version
           - name: mgr
             file: Dockerfile.mgr
             tag: katamaran-mgr:ci

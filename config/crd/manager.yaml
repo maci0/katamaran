@@ -107,3 +107,5 @@ spec:
           runAsGroup: 1000
           capabilities:
             drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault

@@ -11,16 +11,16 @@ import (
 // calling Apply or BuildArgs.
 func Validate(req Request) error {
 	if req.SourceNode == "" || req.DestNode == "" {
-		return errors.New("SourceNode and DestNode are required")
+		return errors.New("sourceNode and DestNode are required")
 	}
 	if req.SourceNode == req.DestNode {
-		return errors.New("SourceNode and DestNode must differ")
+		return errors.New("sourceNode and DestNode must differ")
 	}
 	if req.DestIP == "" {
-		return errors.New("DestIP is required")
+		return errors.New("destIP is required")
 	}
 	if req.Image == "" {
-		return errors.New("Image is required")
+		return errors.New("image is required")
 	}
 	if req.SourcePod == nil {
 		// Legacy mode: SourceQMP + VMIP required.
@@ -28,28 +28,28 @@ func Validate(req Request) error {
 			return errors.New("either SourcePod or (SourceQMP + VMIP) is required")
 		}
 	} else if req.SourcePod.Name == "" || req.SourcePod.Namespace == "" {
-		return errors.New("SourcePod requires both Name and Namespace")
+		return errors.New("sourcePod requires both Name and Namespace")
 	}
 	if req.DestPod != nil && (req.DestPod.Name == "" || req.DestPod.Namespace == "") {
-		return errors.New("DestPod requires both Name and Namespace")
+		return errors.New("destPod requires both Name and Namespace")
 	}
 	tunnelMode := strings.ToLower(req.TunnelMode)
 	if tunnelMode != "" && tunnelMode != "ipip" && tunnelMode != "gre" && tunnelMode != "none" {
-		return fmt.Errorf("TunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
+		return fmt.Errorf("tunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
 	}
 	if req.DowntimeMS < 0 || req.DowntimeMS > 60000 {
-		return fmt.Errorf("DowntimeMS must be between 1 and 60000 when set, got %d", req.DowntimeMS)
+		return fmt.Errorf("downtimeMS must be between 1 and 60000 when set, got %d", req.DowntimeMS)
 	}
 	if req.MultifdChannels < 0 {
-		return fmt.Errorf("MultifdChannels must be non-negative, got %d", req.MultifdChannels)
+		return fmt.Errorf("multifdChannels must be non-negative, got %d", req.MultifdChannels)
 	}
 	logLevel := strings.ToLower(req.LogLevel)
 	if logLevel != "" && logLevel != "debug" && logLevel != "info" && logLevel != "warn" && logLevel != "error" {
-		return fmt.Errorf("LogLevel must be one of debug, info, warn, or error, got %q", req.LogLevel)
+		return fmt.Errorf("logLevel must be one of debug, info, warn, or error, got %q", req.LogLevel)
 	}
 	logFormat := strings.ToLower(req.LogFormat)
 	if logFormat != "" && logFormat != "text" && logFormat != "json" {
-		return fmt.Errorf("LogFormat must be one of text or json, got %q", req.LogFormat)
+		return fmt.Errorf("logFormat must be one of text or json, got %q", req.LogFormat)
 	}
 	if err := validateRequestArgValues(req); err != nil {
 		return err
@@ -57,7 +57,8 @@ func Validate(req Request) error {
 	return nil
 }
 
-const maxSafeArgValueLen = 512
+// MaxSafeArgValueLen caps argument length to prevent buffer bloat.
+const MaxSafeArgValueLen = 512
 
 func validateRequestArgValues(req Request) error {
 	type requestArgValue struct {
@@ -92,18 +93,22 @@ func validateRequestArgValues(req Request) error {
 		)
 	}
 	for _, f := range fields {
-		if err := validateSafeArgValue(f.name, f.value); err != nil {
+		if err := ValidateSafeArgValue(f.name, f.value); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateSafeArgValue(field, value string) error {
+// ValidateSafeArgValue checks that a string is safe to be passed as an argument
+// to the katamaran CLI. It rejects overly long strings, path traversal, and
+// characters with shell meaning. Exposed so the dashboard can validate raw
+// form inputs before building a Request.
+func ValidateSafeArgValue(field, value string) error {
 	if value == "" {
 		return nil
 	}
-	if len(value) > maxSafeArgValueLen {
+	if len(value) > MaxSafeArgValueLen {
 		return fmt.Errorf("%s is too long", field)
 	}
 	if strings.Contains(value, "..") {

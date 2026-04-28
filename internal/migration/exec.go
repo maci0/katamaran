@@ -1,7 +1,6 @@
 package migration
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,7 +28,7 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 	slog.Debug("Executing command", "command", name, "args", args)
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out bytes.Buffer
+	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 

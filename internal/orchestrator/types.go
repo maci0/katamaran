@@ -5,15 +5,17 @@ import "time"
 // Request is the high-level shape of a migration submission. It is consumed
 // by both dashboard form posts and Migration CRD reconciliation.
 //
-// One of SourcePod or SourceQMP must be supplied, but not both:
+// Source selection has two modes:
 //
 //   - SourcePod = pod-picker mode. The source job's resolver finds the kata
 //     sandbox, QEMU PID, and pod IP at runtime via the in-cluster apiserver.
+//     SourceQMP and VMIP may still be set as explicit overrides.
 //
-//   - SourceQMP = legacy explicit mode. The caller already knows the QMP
-//     socket path and supplies VMIP separately.
+//   - SourceQMP + VMIP = legacy explicit mode. The caller already knows the
+//     QMP socket path and pod IP.
 //
-// DestPod / DestQMP work the same way for the destination side.
+// DestPod and DestQMP select an existing destination QEMU. In ReplayCmdline
+// mode both are optional because the destination job can spawn QEMU itself.
 type Request struct {
 	// SourceNode is the Kubernetes node name where the source job runs.
 	// Required.
@@ -23,25 +25,27 @@ type Request struct {
 	// Required, must differ from SourceNode.
 	DestNode string
 
-	// SourcePod identifies the source pod (pod-picker mode). Mutually
-	// exclusive with SourceQMP+VMIP.
+	// SourcePod identifies the source pod (pod-picker mode). SourceQMP and
+	// VMIP are optional overrides when SourcePod is set.
 	SourcePod *PodRef
 
-	// SourceQMP is an absolute path to the source QEMU's QMP unix socket
-	// (legacy mode). Mutually exclusive with SourcePod.
+	// SourceQMP is an absolute path to the source QEMU's QMP unix socket.
+	// Required with VMIP in legacy explicit mode; optional in pod-picker mode.
 	SourceQMP string
 
-	// VMIP is the source VM's pod IP (legacy mode only). When SourcePod is
-	// set, the source resolver derives this from the apiserver.
+	// VMIP is the source VM's pod IP. Required with SourceQMP in legacy
+	// explicit mode; optional in pod-picker mode, where the resolver derives
+	// it from the apiserver by default.
 	VMIP string
 
 	// DestPod identifies a kata pod on the destination node whose sandbox
 	// QMP socket the destination job should connect to (pod-picker mode).
-	// Mutually exclusive with DestQMP. Optional in ReplayCmdline mode.
+	// Optional in ReplayCmdline mode. If DestQMP is also set, DestQMP is an
+	// explicit override.
 	DestPod *PodRef
 
 	// DestQMP is an absolute path to a destination-side QEMU QMP socket
-	// (legacy mode). Mutually exclusive with DestPod.
+	// (legacy mode or an override for DestPod resolution).
 	DestQMP string
 
 	// DestIP is the destination node IP that source QEMU connects to for
