@@ -19,7 +19,7 @@ package main
 
 import (
 	"context"
-	_ "expvar"
+	"expvar"
 	"flag"
 	"fmt"
 	"io"
@@ -116,7 +116,7 @@ func main() {
 	if err != nil {
 		// Fall back to NewScript if not running in-cluster — mostly useful
 		// during local development.
-		slog.Warn("Native orchestrator unavailable, falling back to Script", "error", err)
+		slog.Warn("Orchestrator unavailable, falling back to Script", "error", err)
 		orch = orchestrator.NewScript("")
 	} else {
 		orch = nat
@@ -127,7 +127,7 @@ func main() {
 		disc, derr = orchestrator.NewDiscovererFromKubeconfig(*kubeconfig, "")
 	}
 	if derr != nil {
-		slog.Warn("NativeDiscoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
+		slog.Warn("Discoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
 	}
 
 	rec := controller.NewReconciler(dyn, kube, orch, disc)
@@ -202,7 +202,7 @@ func serveDebug(ctx context.Context, addr string) {
 	}
 	mux.HandleFunc("GET /healthz", plainOK("ok"))
 	mux.HandleFunc("GET /readyz", plainOK("ready"))
-	mux.Handle("/debug/vars", http.DefaultServeMux) // expvar default handler
+	mux.Handle("GET /debug/vars", expvar.Handler())
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()

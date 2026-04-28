@@ -141,10 +141,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// CLI for users who still want to drive migrate.sh from a script.
 	if nat, err := orchestrator.New(); err == nil {
 		app.orch = nat
-		slog.Info("Migration: using Native orchestrator (in-cluster client-go)")
+		slog.Info("Migration: orchestrator using in-cluster client-go")
 	} else if nat, err2 := orchestrator.NewFromKubeconfig("", ""); err2 == nil {
 		app.orch = nat
-		slog.Info("Migration: using Native orchestrator (kubeconfig)", "in_cluster_err", err)
+		slog.Info("Migration: orchestrator using kubeconfig", "in_cluster_err", err)
 	} else {
 		fmt.Fprintf(stderr, "Error: cannot reach Kubernetes API: %v / %v\n", err, err2)
 		return 1

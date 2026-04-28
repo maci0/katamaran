@@ -33,7 +33,7 @@ import (
 // filesystem (typically /tmp/katamaran-cmdlines/cmdline-<id>.txt). The
 // dest job's EXTRA_ARGS gets `--replay-cmdline <path>` appended by the
 // caller.
-func (n *Native) stageCmdline(ctx context.Context, id MigrationID, srcPodName, srcPodNamespace, destNode string) (string, error) {
+func (n *native) stageCmdline(ctx context.Context, id MigrationID, srcPodName, srcPodNamespace, destNode string) (string, error) {
 	if n.config == nil {
 		return "", fmt.Errorf("Native orchestrator missing rest.Config; cannot stream into pods")
 	}
@@ -67,7 +67,7 @@ func (n *Native) stageCmdline(ctx context.Context, id MigrationID, srcPodName, s
 // waitForCmdlineMarker tails the source pod's logs until it sees the
 // KATAMARAN_CMDLINE_AT=<path> marker. Returns the captured path. Times out
 // after 5 minutes.
-func (n *Native) waitForCmdlineMarker(ctx context.Context, namespace, name string) (string, error) {
+func (n *native) waitForCmdlineMarker(ctx context.Context, namespace, name string) (string, error) {
 	deadline, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	const marker = "KATAMARAN_CMDLINE_AT="
@@ -92,7 +92,7 @@ func (n *Native) waitForCmdlineMarker(ctx context.Context, namespace, name strin
 }
 
 // podCat runs `cat <path>` in the named pod and returns stdout.
-func (n *Native) podCat(ctx context.Context, namespace, name, path string) ([]byte, error) {
+func (n *native) podCat(ctx context.Context, namespace, name, path string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	if err := n.podStream(ctx, namespace, name, []string{"cat", path}, nil, &stdout, &stderr); err != nil {
 		return nil, fmt.Errorf("cat %s: %w (stderr=%s)", path, err, strings.TrimSpace(stderr.String()))
@@ -103,7 +103,7 @@ func (n *Native) podCat(ctx context.Context, namespace, name, path string) ([]by
 // podWrite writes content to path inside pod by piping to `tee`. The path
 // is fully controlled by the orchestrator (composed from migration ID), so
 // shell injection is not a concern.
-func (n *Native) podWrite(ctx context.Context, namespace, name, path string, content []byte) error {
+func (n *native) podWrite(ctx context.Context, namespace, name, path string, content []byte) error {
 	cmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p %q && tee %q > /dev/null", dirOf(path), path)}
 	var stderr bytes.Buffer
 	if err := n.podStream(ctx, namespace, name, cmd, bytes.NewReader(content), io.Discard, &stderr); err != nil {
@@ -114,7 +114,7 @@ func (n *Native) podWrite(ctx context.Context, namespace, name, path string, con
 
 // podStream runs cmd in pod via SPDY remotecommand. In-process equivalent
 // of `kubectl exec`.
-func (n *Native) podStream(ctx context.Context, namespace, name string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func (n *native) podStream(ctx context.Context, namespace, name string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	opts := &corev1.PodExecOptions{
 		Command: cmd,
 		Stdin:   stdin != nil,
@@ -141,7 +141,7 @@ func (n *Native) podStream(ctx context.Context, namespace, name string, cmd []st
 // createStagerPod creates a small busybox-like pod on destNode whose only
 // purpose is to give us a writable hostPath into /tmp/katamaran-cmdlines on
 // that node. We immediately stream into it to write the cmdline file.
-func (n *Native) createStagerPod(ctx context.Context, podName, destNode string) error {
+func (n *native) createStagerPod(ctx context.Context, podName, destNode string) error {
 	priv := true
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: n.namespace},
@@ -182,7 +182,7 @@ func (n *Native) createStagerPod(ctx context.Context, podName, destNode string) 
 }
 
 // waitPodReady polls until the named pod is Running with all containers ready.
-func (n *Native) waitPodReady(ctx context.Context, namespace, name string) error {
+func (n *native) waitPodReady(ctx context.Context, namespace, name string) error {
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	for {

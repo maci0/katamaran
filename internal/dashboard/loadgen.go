@@ -58,6 +58,7 @@ func (a *App) tryStartLoadgen(w http.ResponseWriter, r *http.Request, loadgenTyp
 		runningType := a.loadgenType
 		a.loadgenMutex.Unlock()
 		slog.Warn("Load generator request rejected: already running", "running_type", runningType, "requested_type", loadgenType, "request_id", requestIDFromContext(r.Context()))
+		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":        "Load generator already running",
 			"loadgen_type": runningType,

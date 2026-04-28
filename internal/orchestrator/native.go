@@ -47,7 +47,7 @@ import (
 // ErrReplayCmdlineNotSupported.
 //
 // Use New for the in-cluster path and NewFromClient for tests.
-type Native struct {
+type native struct {
 	client    kubernetes.Interface
 	config    *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
 	namespace string
@@ -79,25 +79,26 @@ type nativeRun struct {
 // has ReplayCmdline=true but the Native orchestrator was constructed without
 // a rest.Config (e.g. via NewFromClient in tests). Use New for
 // in-cluster ReplayCmdline support.
-var ErrReplayCmdlineNotSupported = errors.New("Native ReplayCmdline requires a rest.Config (use New, not NewFromClient)")
+var ErrReplayCmdlineNotSupported = errors.New("ReplayCmdline requires a rest.Config (use orchestrator.New, not NewFromClient)")
 
-// New builds a Native orchestrator using the in-cluster service
-// account. Job manifests are submitted into kube-system (matching the
-// existing migrate.sh layout). The returned Native supports ReplayCmdline
-// because it has a rest.Config for SPDY remote-command calls.
-func New() (*Native, error) {
+// New builds an Orchestrator using the in-cluster service account.
+// Job manifests are submitted into kube-system (matching the existing
+// migrate.sh layout). The returned implementation supports
+// ReplayCmdline because it carries a rest.Config for SPDY remote-
+// command calls.
+func New() (Orchestrator, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster config: %w", err)
 	}
-	return newNativeFromRestConfig(cfg)
+	return newFromRestConfig(cfg)
 }
 
-// NewFromKubeconfig builds a Native orchestrator from a kubeconfig
-// file. Intended for out-of-cluster usage (dashboard run on a developer
+// NewFromKubeconfig builds an Orchestrator from a kubeconfig file.
+// Intended for out-of-cluster usage (dashboard run on a developer
 // laptop, integration tests, etc). Pass an empty path to use the default
 // loading rules (KUBECONFIG env / ~/.kube/config).
-func NewFromKubeconfig(path, contextName string) (*Native, error) {
+func NewFromKubeconfig(path, contextName string) (Orchestrator, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if path != "" {
 		rules.ExplicitPath = path
@@ -110,24 +111,28 @@ func NewFromKubeconfig(path, contextName string) (*Native, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
-	return newNativeFromRestConfig(cfg)
+	return newFromRestConfig(cfg)
 }
 
-func newNativeFromRestConfig(cfg *rest.Config) (*Native, error) {
+func newFromRestConfig(cfg *rest.Config) (*native, error) {
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
 	}
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	n.config = cfg
 	return n, nil
 }
 
-// NewFromClient is the test-friendly constructor. The returned Native
-// does NOT support ReplayCmdline (no rest.Config for SPDY) — set .config
-// manually if needed.
-func NewFromClient(c kubernetes.Interface) *Native {
-	return &Native{
+// NewFromClient is the test-friendly constructor. The returned
+// Orchestrator does NOT support ReplayCmdline (no rest.Config for
+// SPDY) — production code paths should use New or NewFromKubeconfig.
+func NewFromClient(c kubernetes.Interface) Orchestrator {
+	return newFromClient(c)
+}
+
+func newFromClient(c kubernetes.Interface) *native {
+	return &native{
 		client:    c,
 		namespace: "kube-system",
 		inflight:  map[MigrationID]*nativeRun{},
@@ -140,7 +145,7 @@ func NewFromClient(c kubernetes.Interface) *Native {
 // In ReplayCmdline mode the dest Job is held back until the source has
 // emitted the QEMU cmdline marker, so the cmdline file is staged on the
 // destination node before katamaran-dest starts.
-func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
+func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if err := Validate(req); err != nil {
 		return "", err
 	}
@@ -216,7 +221,7 @@ func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // or ctx cancel. Plain `status=completed` is NOT terminal here — the
 // RESULT line lands a few ms after — so we keep polling until RESULT
 // arrives or the run is torn down.
-func (n *Native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
+func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
 		return // source pod never appeared; poll will surface the failure
@@ -307,7 +312,7 @@ func parseProgressFields(s string) map[string]string {
 
 // succeededUpdate builds the final PhaseSucceeded StatusUpdate, attaching
 // captured downtime / RAM totals from tailProgress when available.
-func (n *Native) succeededUpdate(id MigrationID, run *nativeRun) StatusUpdate {
+func (n *native) succeededUpdate(id MigrationID, run *nativeRun) StatusUpdate {
 	u := StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
 	run.resultMu.Lock()
 	if run.resultCaptured {
@@ -333,7 +338,7 @@ func parseInt64(s string) int64 {
 // stageThenStartDest runs the cmdline-staging flow for ReplayCmdline mode:
 // finds the source pod, copies the cmdline off it, stages on the dest node,
 // then submits the dest Job. Failures abort the run with PhaseFailed.
-func (n *Native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
+func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)})
@@ -371,7 +376,7 @@ func (run *nativeRun) send(u StatusUpdate) {
 
 // firstSourcePod waits up to 60s for the source Job's pod to be created
 // and returns its name. We need the pod (not the Job) to read logs from.
-func (n *Native) firstSourcePod(ctx context.Context, jobName string) (string, error) {
+func (n *native) firstSourcePod(ctx context.Context, jobName string) (string, error) {
 	deadline, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	for {
@@ -391,7 +396,7 @@ func (n *Native) firstSourcePod(ctx context.Context, jobName string) (string, er
 
 // Watch returns the channel of status updates for id. ErrUnknownID if the
 // migration completed and was reaped before Watch was called.
-func (n *Native) Watch(_ context.Context, id MigrationID) (<-chan StatusUpdate, error) {
+func (n *native) Watch(_ context.Context, id MigrationID) (<-chan StatusUpdate, error) {
 	n.mu.Lock()
 	run, ok := n.inflight[id]
 	n.mu.Unlock()
@@ -403,7 +408,7 @@ func (n *Native) Watch(_ context.Context, id MigrationID) (<-chan StatusUpdate, 
 
 // Stop deletes both Jobs (background propagation). The watcher will emit a
 // terminal update when the source Job's controller reports Failed.
-func (n *Native) Stop(ctx context.Context, id MigrationID) error {
+func (n *native) Stop(ctx context.Context, id MigrationID) error {
 	n.mu.Lock()
 	run, ok := n.inflight[id]
 	n.mu.Unlock()
@@ -432,7 +437,7 @@ func (n *Native) Stop(ctx context.Context, id MigrationID) error {
 //	dest=Failed            → PhaseFailed
 //	source=Failed && dest pending → keep waiting (dest may still complete)
 //	source=Failed && dest never starts → PhaseFailed
-func (n *Native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
+func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer func() {
 		// Signal finished BEFORE closing updates so concurrent senders
 		// (tailProgress, stageThenStartDest) can break out via the

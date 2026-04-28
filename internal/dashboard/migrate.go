@@ -180,6 +180,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		runningID := a.migrationID
 		a.migrationMutex.Unlock()
 		slog.Warn("Migration request rejected: already running", "running_migration_id", runningID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr)
+		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":        "Migration already running",
 			"migration_id": runningID,

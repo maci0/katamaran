@@ -29,13 +29,13 @@ var (
 func discoverer() orchestrator.Discoverer {
 	defaultDiscovererOnce.Do(func() {
 		if d, err := orchestrator.NewDiscoverer(); err == nil {
-			slog.Info("Discovery: using NativeDiscoverer (client-go)")
+			slog.Info("Discovery: client-go (in-cluster)")
 			defaultDiscoverer = d
 			return
 		}
 		if os.Getenv("KUBECONFIG") != "" {
 			if d, err := orchestrator.NewDiscovererFromKubeconfig("", ""); err == nil {
-				slog.Info("Discovery: using NativeDiscoverer (kubeconfig)")
+				slog.Info("Discovery: client-go (kubeconfig)")
 				defaultDiscoverer = d
 				return
 			}
