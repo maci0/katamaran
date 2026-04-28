@@ -3,6 +3,9 @@
 .gitignore
 .opencode/
 .sisyphus/
+.playwright-mcp/
+.vscode/
+.idea/
 .minikube-build/
 Dockerfile
 Dockerfile.*
@@ -28,7 +31,10 @@ coverage.out
 *.orig
 *.patch
 .env*
+.DS_Store
+.review-loop.lock
 
 # Root-level build artifacts (match .gitignore)
 /katamaran
 /dashboard
+/katamaran-mgr

@@ -20,16 +20,16 @@ var sourceJobTemplate []byte
 //go:embed templates/job-dest.yaml
 var destJobTemplate []byte
 
-// renderSourceJob and renderDestJob substitute ${VAR} placeholders in the
-// embedded templates and decode the result into a typed *batchv1.Job ready
-// for Create. The substitution intentionally mirrors `envsubst $VAR` from
-// migrate.sh: simple shell-style variable expansion with no defaults or
-// nested expressions.
 // jobSuffix returns the per-migration Job name suffix. Migration IDs are
 // 16 lowercase hex chars — short enough to embed in a 253-char Job name
 // and long enough to avoid collisions across concurrent migrations.
 func jobSuffix(id MigrationID) string { return string(id) }
 
+// renderSourceJob and renderDestJob substitute ${VAR} placeholders in the
+// embedded templates and decode the result into a typed *batchv1.Job ready
+// for Create. The substitution intentionally mirrors `envsubst $VAR` from
+// migrate.sh: simple shell-style variable expansion with no defaults or
+// nested expressions.
 func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
 	return renderJob(sourceJobTemplate, map[string]string{
 		"NODE_NAME":              req.SourceNode,

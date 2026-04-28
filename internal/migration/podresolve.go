@@ -53,12 +53,12 @@ func resolveSandbox(root string, p procFS, podIP string) (Resolved, error) {
 		}
 		pid, err := p.PIDForSandbox(e.Name())
 		if err != nil {
-			slog.Debug("PIDForSandbox failed; skipping", "sandbox", e.Name(), "error", err)
+			slog.Warn("PIDForSandbox failed; skipping", "sandbox", e.Name(), "error", err)
 			continue
 		}
 		ok, err := p.NetnsHasIP(pid, podIP)
 		if err != nil {
-			slog.Debug("NetnsHasIP failed; skipping", "sandbox", e.Name(), "pid", pid, "error", err)
+			slog.Warn("NetnsHasIP failed; skipping", "sandbox", e.Name(), "pid", pid, "error", err)
 			continue
 		}
 		if ok {
@@ -105,7 +105,7 @@ func (realProc) PIDForSandbox(uuid string) (int, error) {
 		return 0, fmt.Errorf("parse PID %q: %w", lines[0], err)
 	}
 	if len(lines) > 1 {
-		slog.Debug("pgrep returned multiple PIDs; using first", "sandbox", uuid, "pids", lines)
+		slog.Warn("pgrep returned multiple PIDs; using first", "sandbox", uuid, "pids", lines)
 	}
 	return pid, nil
 }

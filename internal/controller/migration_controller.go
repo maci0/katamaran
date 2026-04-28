@@ -53,6 +53,7 @@ var (
 	mRecovered  = expvar.NewInt("katamaran_migrations_recovered_total")
 	mDeleted    = expvar.NewInt("katamaran_migrations_deleted_total")
 	mInflight   = expvar.NewInt("katamaran_migrations_inflight")
+	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
 )
 
 // MigrationGVR is the GroupVersionResource the controller reconciles.
@@ -76,7 +77,7 @@ const jobNamespace = "kube-system"
 // orchestrator emits StatusUpdate events.
 type Reconciler struct {
 	Dynamic       dynamic.Interface
-	Kube          kubernetes.Interface    // optional; enables restart recovery via direct Job inspection
+	Kube          kubernetes.Interface // optional; enables restart recovery via direct Job inspection
 	Orchestrator  orchestrator.Orchestrator
 	Discoverer    orchestrator.Discoverer // resolves source node + dest IP from the spec
 	PollInterval  time.Duration
@@ -118,7 +119,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := r.reconcileAll(ctx); err != nil {
-				slog.Warn("reconcile loop", "error", err)
+				mReconcileErrors.Add(1)
+				slog.Error("reconcile loop failed", "error", err)
 			}
 		}
 	}
@@ -143,7 +145,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 		// a race between submit and delete cannot orphan jobs.
 		if !hasFinalizer(obj) {
 			if err := r.addFinalizer(ctx, obj); err != nil {
-				slog.Warn("add finalizer", "migration", key, "error", err)
+				slog.Error("add finalizer failed", "migration", key, "error", err)
 				continue
 			}
 		}
@@ -156,7 +158,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 				continue
 			}
 			go r.dispatch(ctx, key, obj)
-		case phase == string(orchestrator.PhaseSubmitted) || phase == string(orchestrator.PhaseTransferring):
+		case !orchestrator.StatusPhase(phase).IsTerminal():
 			// In-flight from a previous controller incarnation. Recover
 			// by inspecting Job state directly.
 			if r.isTracked(key) {
@@ -240,7 +242,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	defer cancel()
 	id, err := r.Orchestrator.Apply(jobCtx, req)
 	if err != nil {
-		slog.Warn("Apply failed", "migration", key, "error", err)
+		slog.Error("Apply failed", "migration", key, "error", err)
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "Apply failed", err.Error())
 		return
 	}
@@ -250,7 +252,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 
 	updates, err := r.Orchestrator.Watch(jobCtx, id)
 	if err != nil {
-		slog.Warn("Watch failed", "migration", key, "migrationID", id, "error", err)
+		slog.Error("Watch failed", "migration", key, "migrationID", id, "error", err)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), "Watch failed", err.Error())
 		return
 	}
@@ -260,7 +262,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		if u.Error != nil {
 			errStr = u.Error.Error()
 		}
-		_ = r.patchStatus(ctx, key, string(u.ID), string(u.Phase), u.Message, errStr)
+		_ = r.patchStatusUpdate(ctx, key, u, errStr)
 		lastPhase = string(u.Phase)
 	}
 	switch lastPhase {
@@ -309,7 +311,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		}
 		jobs, err := r.Kube.BatchV1().Jobs(jobNamespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil {
-			slog.Warn("recover: list jobs", "migration", key, "error", err)
+			slog.Error("recover: list jobs failed", "migration", key, "error", err)
 			continue
 		}
 		var src, dest *batchv1.Job
@@ -366,7 +368,7 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	delete(r.tracking, key)
 	r.mu.Unlock()
 	if err := r.removeFinalizer(ctx, obj); err != nil {
-		slog.Warn("remove finalizer", "migration", key, "error", err)
+		slog.Error("remove finalizer failed", "migration", key, "error", err)
 	}
 }
 
@@ -462,7 +464,9 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 // tick will retry.
 func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
 	status := map[string]any{
-		"phase": phase,
+		"phase":   phase,
+		"message": nil,
+		"error":   nil,
 	}
 	if migrationID != "" {
 		status["migrationID"] = migrationID
@@ -486,7 +490,47 @@ func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, 
 	}
 	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 	if err != nil {
-		slog.Warn("patch status", "migration", key, "error", err)
+		slog.Error("patch status failed", "migration", key, "error", err)
+	}
+	return err
+}
+
+func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {
+	status := map[string]any{
+		"phase":   string(u.Phase),
+		"message": nil,
+		"error":   nil,
+	}
+	if u.ID != "" {
+		status["migrationID"] = string(u.ID)
+	}
+	if u.Message != "" {
+		status["message"] = u.Message
+	}
+	if errStr != "" {
+		status["error"] = errStr
+	}
+	if u.RAMTransferred > 0 || u.RAMTotal > 0 {
+		status["ramTransferred"] = u.RAMTransferred
+		status["ramTotal"] = u.RAMTotal
+	}
+	if u.DowntimeMS > 0 {
+		status["actualDowntimeMS"] = u.DowntimeMS
+	}
+	if u.Phase == orchestrator.PhaseSubmitted {
+		status["startedAt"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	if u.Phase == orchestrator.PhaseSucceeded || u.Phase == orchestrator.PhaseFailed {
+		status["completedAt"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	patch := map[string]any{"status": status}
+	patchBytes, err := jsonMarshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
+	if err != nil {
+		slog.Error("patch status failed", "migration", key, "error", err)
 	}
 	return err
 }

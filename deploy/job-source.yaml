@@ -3,12 +3,16 @@
 # are applied at install-time via deploy/dashboard.yaml (or out-of-band)
 # so the dashboard's runtime kubectl apply doesn't need RBAC write perms.
 # Rendered via envsubst by deploy/migrate.sh.
-# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID
+# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: katamaran-source
+  name: katamaran-source-${JOB_SUFFIX}
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source
+    katamaran.io/migration-id: "${KATAMARAN_MIGRATION_ID}"
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 900

@@ -40,3 +40,6 @@ sweep-results/
 # Root-level build artifacts
 /katamaran
 /dashboard
+/katamaran-mgr
+.playwright-mcp/
+.review-loop.lock

@@ -1,11 +1,15 @@
 # Destination-side migration Job template.
 # Rendered via envsubst by deploy/migrate.sh.
-# Variables: NODE_NAME, IMAGE, QMP_SOCKET, EXTRA_ARGS, KATAMARAN_MIGRATION_ID
+# Variables: NODE_NAME, IMAGE, QMP_SOCKET, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: katamaran-dest
+  name: katamaran-dest-${JOB_SUFFIX}
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dest
+    katamaran.io/migration-id: "${KATAMARAN_MIGRATION_ID}"
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 900

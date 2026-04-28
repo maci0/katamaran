@@ -284,9 +284,11 @@ func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 	pods, err := ListKataPods(r.Context())
 	if err != nil {
-		jsonError(w, "list pods: "+err.Error(), http.StatusInternalServerError)
+		slog.Warn("list kata pods failed", "error", err, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Failed to list pods", http.StatusBadGateway)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, pods)
 }
 
@@ -294,9 +296,11 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := ListKataNodes(r.Context())
 	if err != nil {
-		jsonError(w, "list nodes: "+err.Error(), http.StatusInternalServerError)
+		slog.Warn("list kata nodes failed", "error", err, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Failed to list nodes", http.StatusBadGateway)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, nodes)
 }
 

@@ -294,7 +294,7 @@ func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 			Name:      "katamaran-dest-id-m3",
 			Namespace: jobNamespace,
 			Labels: map[string]string{
-				"katamaran.io/migration-id":    "id-m3",
+				"katamaran.io/migration-id":   "id-m3",
 				"app.kubernetes.io/component": "dest",
 			},
 		},
@@ -319,6 +319,42 @@ func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("recovery never patched succeeded")
+}
+
+func TestReconciler_RecoverFromAnyNonTerminalPhase(t *testing.T) {
+	cr := newMigrationCR("m-cutover", []string{finalizerName}, false, map[string]any{
+		"phase":       "cutover",
+		"migrationID": "id-cutover",
+	})
+	destJob := batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "katamaran-dest-id-cutover",
+			Namespace: jobNamespace,
+			Labels: map[string]string{
+				"katamaran.io/migration-id":   "id-cutover",
+				"app.kubernetes.io/component": "dest",
+			},
+		},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{
+				{Type: batchv1.JobComplete, Status: "True"},
+			},
+		},
+	}
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, destJob)
+	if err := rec.reconcileAll(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-cutover", metav1.GetOptions{})
+		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		if phase == string(orchestrator.PhaseSucceeded) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("recovery never patched succeeded from cutover")
 }
 
 func TestReconciler_RecoverFromMissingJobs(t *testing.T) {
@@ -355,5 +391,52 @@ func TestMarkTracking_SingleClaim(t *testing.T) {
 	rec.untrack(key)
 	if !rec.markTracking(key) {
 		t.Fatal("after untrack, markTracking should succeed again")
+	}
+}
+
+func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
+	cr := newMigrationCR("m5", []string{finalizerName}, false, map[string]any{
+		"phase":   "submitted",
+		"message": "old message",
+		"error":   "old error",
+	})
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+	err := rec.patchStatusUpdate(context.Background(), types.NamespacedName{Namespace: "default", Name: "m5"}, orchestrator.StatusUpdate{
+		ID:             "id-m5",
+		Phase:          orchestrator.PhaseTransferring,
+		RAMTransferred: 123,
+		RAMTotal:       456,
+	}, "")
+	if err != nil {
+		t.Fatalf("patchStatusUpdate: %v", err)
+	}
+	got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	if phase, _, _ := unstructured.NestedString(got.Object, "status", "phase"); phase != string(orchestrator.PhaseTransferring) {
+		t.Fatalf("phase = %q, want transferring", phase)
+	}
+	if xfer, _, _ := unstructured.NestedInt64(got.Object, "status", "ramTransferred"); xfer != 123 {
+		t.Fatalf("ramTransferred = %d, want 123", xfer)
+	}
+	if total, _, _ := unstructured.NestedInt64(got.Object, "status", "ramTotal"); total != 456 {
+		t.Fatalf("ramTotal = %d, want 456", total)
+	}
+	if _, found, _ := unstructured.NestedString(got.Object, "status", "message"); found {
+		t.Fatalf("stale message was not cleared")
+	}
+	if _, found, _ := unstructured.NestedString(got.Object, "status", "error"); found {
+		t.Fatalf("stale error was not cleared")
+	}
+
+	err = rec.patchStatusUpdate(context.Background(), types.NamespacedName{Namespace: "default", Name: "m5"}, orchestrator.StatusUpdate{
+		ID:         "id-m5",
+		Phase:      orchestrator.PhaseSucceeded,
+		DowntimeMS: 17,
+	}, "")
+	if err != nil {
+		t.Fatalf("patchStatusUpdate succeeded: %v", err)
+	}
+	got, _ = dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	if downtime, _, _ := unstructured.NestedInt64(got.Object, "status", "actualDowntimeMS"); downtime != 17 {
+		t.Fatalf("actualDowntimeMS = %d, want 17", downtime)
 	}
 }

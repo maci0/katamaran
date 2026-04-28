@@ -12,7 +12,14 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # Stage 2 — minimal runtime
 FROM alpine:3.23
+ARG VERSION=dev
 RUN addgroup -g 1000 mgr && adduser -D -u 1000 -G mgr mgr
 COPY --from=builder /katamaran-mgr /usr/local/bin/katamaran-mgr
 USER mgr
+EXPOSE 8081
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -q --spider http://localhost:8081/healthz || exit 1
+LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.description="Katamaran Migration CRD controller" \
+      org.opencontainers.image.version="${VERSION}"
 ENTRYPOINT ["/usr/local/bin/katamaran-mgr"]

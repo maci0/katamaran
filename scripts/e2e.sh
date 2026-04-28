@@ -9,8 +9,8 @@
 #                    migration including storage mirroring. 'nfs' deploys an NFS server
 #                    pod and uses it as shared storage.
 # --kata-version <v> Kata Containers chart version (default: '3.24.0').
-# --method <name>    Orchestration method: 'job' (default). 'direct' is accepted
-#                    for compatibility but currently exits as not implemented.
+# --method <name>    Orchestration method: 'job' (default) or 'crd'. 'direct' is
+#                    accepted for compatibility but exits as not implemented.
 # --ping-proof       Verify zero-drop sch_plug buffering from migration logs.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
 # --teardown         Tear down the cluster and exit.
@@ -59,8 +59,13 @@ if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
     exit 1
 fi
 
-if [[ "${METHOD}" != "job" && "${METHOD}" != "direct" ]]; then
-    error "--method must be 'job' or 'direct' (got '${METHOD}')"
+if [[ "${METHOD}" != "job" && "${METHOD}" != "crd" && "${METHOD}" != "direct" ]]; then
+    error "--method must be 'job', 'crd', or 'direct' (got '${METHOD}')"
+    exit 1
+fi
+
+if [[ "${METHOD}" == "direct" ]]; then
+    error "--method direct is accepted for compatibility but is not implemented."
     exit 1
 fi
 
@@ -639,7 +644,11 @@ elif [[ "${METHOD}" == "crd" ]]; then
     [[ "${STORAGE}" == "local" ]] && STORAGE_BOOL="false"
     log "Building + loading katamaran-mgr image..."
     (cd "${PROJECT_ROOT}" && make mgr) >/dev/null
-    minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
+    if [[ "${PROVIDER}" == "minikube" ]]; then
+        minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
+    else
+        kind load image-archive "${PROJECT_ROOT}/mgr.tar" --name "${PROFILE}" >/dev/null
+    fi
     log "Installing Migration CRD + katamaran-mgr controller..."
     kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/migration.yaml" >/dev/null
     kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/manager.yaml" >/dev/null

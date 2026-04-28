@@ -29,8 +29,16 @@ spec:
                 type: object
                 required: [namespace, name]
                 properties:
-                  namespace: { type: string }
-                  name:      { type: string }
+                  namespace:
+                    type: string
+                    minLength: 1
+                    maxLength: 253
+                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                  name:
+                    type: string
+                    minLength: 1
+                    maxLength: 253
+                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
               destPod:
                 description: |
                   Optional reference to a kata pod on the destination node whose
@@ -39,14 +47,28 @@ spec:
                 type: object
                 required: [namespace, name]
                 properties:
-                  namespace: { type: string }
-                  name:      { type: string }
+                  namespace:
+                    type: string
+                    minLength: 1
+                    maxLength: 253
+                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                  name:
+                    type: string
+                    minLength: 1
+                    maxLength: 253
+                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
               destNode:
                 description: Kubernetes node name to migrate to.
                 type: string
+                minLength: 1
+                maxLength: 253
+                pattern: '^[a-zA-Z0-9_./:@=-]+$'
               image:
                 description: katamaran container image used for source/dest jobs.
                 type: string
+                minLength: 1
+                maxLength: 512
+                pattern: '^[a-zA-Z0-9_./:@=-]+$'
               sharedStorage:
                 description: Skip NBD drive-mirror (Ceph/NFS).
                 type: boolean
@@ -79,9 +101,11 @@ spec:
                   Lifecycle phase: submitted, dest-starting, src-starting,
                   transferring, cutover, succeeded, failed.
                 type: string
+                enum: [submitted, dest-starting, src-starting, transferring, cutover, succeeded, failed]
               migrationID:
                 description: Orchestrator-assigned correlation ID propagated to katamaran logs.
                 type: string
+                pattern: '^[a-f0-9]{16}$'
               message:
                 type: string
               error:
@@ -95,12 +119,15 @@ spec:
               ramTransferred:
                 type: integer
                 format: int64
+                minimum: 0
               ramTotal:
                 type: integer
                 format: int64
+                minimum: 0
               actualDowntimeMS:
                 type: integer
                 format: int64
+                minimum: 0
     subresources:
       status: {}
     additionalPrinterColumns:

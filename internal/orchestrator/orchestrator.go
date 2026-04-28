@@ -1,7 +1,7 @@
 // Package orchestrator coordinates a single live-migration: it takes a
 // high-level Request, renders the source/destination Job manifests, applies
 // them via the Kubernetes API, and reports Status back. It is the layer that
-// the dashboard's HTTP handlers and a future Migration controller both consume.
+// the dashboard's HTTP handlers and the Migration CRD controller both consume.
 //
 // Two implementations exist:
 //
@@ -16,7 +16,7 @@
 //
 // The Request type is mode-agnostic: callers can specify either an explicit
 // QMP socket path (legacy) or a pod identity (modern, lets the source job
-// resolve sandbox/PID/IP at runtime). See PodPickerMode.
+// resolve sandbox/PID/IP at runtime). See Request.SourcePod in types.go.
 package orchestrator
 
 import (

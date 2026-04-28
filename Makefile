@@ -74,7 +74,7 @@ mgr:
 # Remove build artifacts
 clean:
 	rm -rf bin/
-	rm -f katamaran.tar dashboard.tar coverage.out *_cover.out
+	rm -f katamaran.tar dashboard.tar mgr.tar coverage.out *_cover.out
 
 # Show available targets
 help:
@@ -83,6 +83,8 @@ help:
 	@echo "Targets:"
 	@echo "  build            Build bin/katamaran"
 	@echo "  build-dashboard  Build bin/katamaran-dashboard"
+	@echo "  build-orchestrator Build bin/katamaran-orchestrator"
+	@echo "  build-mgr        Build bin/katamaran-mgr"
 	@echo "  test             Run unit tests with race detector"
 	@echo "  smoke            Run smoke tests (no VMs required)"
 	@echo "  fuzz             Run fuzz test seed corpus (instant)"
@@ -90,4 +92,5 @@ help:
 	@echo "  vet              Run go vet and gofmt checks"
 	@echo "  image            Build katamaran container image"
 	@echo "  dashboard        Build dashboard container image"
+	@echo "  mgr              Build katamaran-mgr container image"
 	@echo "  clean            Remove build artifacts"

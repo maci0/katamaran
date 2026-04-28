@@ -22,6 +22,7 @@ import (
 	_ "expvar"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,8 +40,39 @@ import (
 
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/controller"
+	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
+
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, `katamaran-mgr — Kubernetes controller for the Migration CRD (katamaran.io/v1alpha1)
+
+Usage:
+  katamaran-mgr [flags]
+  katamaran-mgr --version
+  katamaran-mgr --help
+
+Flags:
+  --kubeconfig string             Optional path to kubeconfig (out-of-cluster only)
+  --addr string                   HTTP listen address for /healthz, /readyz, /debug/vars (default ":8081")
+  --leader-namespace string       Namespace holding the leader-election Lease (default "kube-system")
+  --leader-name string            Lease object name for leader election (default "katamaran-mgr")
+  --disable-leader-election       Run reconciler without leader election (single-replica development only)
+  --log-format string             Log output format: 'text' or 'json' (default "json")
+  --log-level string              Log level: 'debug', 'info', 'warn', or 'error' (default "info")
+
+Other:
+  -v, --version                   Show version and exit
+  -h, --help                      Show this help and exit
+
+Examples:
+  # Run in-cluster with leader election (default)
+  katamaran-mgr
+
+  # Local development against a kubeconfig, no leader election
+  katamaran-mgr --kubeconfig ~/.kube/config --disable-leader-election --log-format text
+`)
+}
 
 func main() {
 	kubeconfig := flag.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
@@ -49,10 +81,18 @@ func main() {
 	leaderName := flag.String("leader-name", "katamaran-mgr", "Lease object name for leader election")
 	skipLeaderElect := flag.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	showVersionShort := flag.Bool("v", false, "")
+	logFormat := flag.String("log-format", "json", "Log output format: 'text' or 'json'")
+	logLevel := flag.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
+	flag.Usage = func() { printUsage(os.Stderr) }
 	flag.Parse()
-	if *showVersion {
+	if *showVersion || *showVersionShort {
 		fmt.Println("katamaran-mgr", buildinfo.Version)
 		return
+	}
+
+	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-mgr"); err != nil {
+		fail(err)
 	}
 
 	cfg, err := loadConfig(*kubeconfig)
@@ -146,8 +186,16 @@ func runReconciler(ctx context.Context, rec *controller.Reconciler) {
 // to listen is fatal — the probes are how Kubernetes knows we're alive.
 func serveDebug(ctx context.Context, addr string) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ready")) })
+	plainOK := func(body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body + "\n"))
+		}
+	}
+	mux.HandleFunc("GET /healthz", plainOK("ok"))
+	mux.HandleFunc("GET /readyz", plainOK("ready"))
 	mux.Handle("/debug/vars", http.DefaultServeMux) // expvar default handler
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

@@ -50,6 +50,26 @@ func TestValidate(t *testing.T) {
 			name: "valid legacy mode",
 			req:  Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourceQMP: "/q", VMIP: "10.0.0.1"},
 		},
+		{
+			name:    "unsafe source pod name",
+			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p;sh"}},
+			wantErr: "SourcePod.Name contains invalid characters",
+		},
+		{
+			name:    "unsafe path traversal",
+			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourceQMP: "/run/../qmp.sock", VMIP: "10.0.0.1"},
+			wantErr: "SourceQMP contains invalid path traversal",
+		},
+		{
+			name:    "invalid tunnel mode",
+			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, TunnelMode: "vxlan"},
+			wantErr: "TunnelMode must be one of",
+		},
+		{
+			name:    "invalid multifd",
+			req:     Request{SourceNode: "a", DestNode: "b", DestIP: "1.2.3.4", Image: "x", SourcePod: &PodRef{Namespace: "ns", Name: "p"}, MultifdChannels: -1},
+			wantErr: "MultifdChannels must be non-negative",
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

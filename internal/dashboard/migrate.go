@@ -231,7 +231,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		dashboardMigrationsActive.Add(-1)
 		dashboardMigrationResultsByOutcome.Add("error", 1)
 		cancel()
-		jsonError(w, "no orchestrator wired", http.StatusServiceUnavailable)
+		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	go a.runOrchestrator(ctx, orch, req, migrationID)
@@ -241,8 +241,8 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 // runOrchestrator submits req to orch, reflects each StatusUpdate into the
 // dashboard log buffer, and finalises migration counters when the watch
-// channel closes. Mirrors the bookkeeping runCommand does so /api/status
-// behaves identically regardless of which orchestrator backs the migration.
+// channel closes, so /api/status behaves identically regardless of which
+// orchestrator backs the migration.
 func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID string) {
 	start := time.Now()
 	defer func() {

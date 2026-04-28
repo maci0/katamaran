@@ -8,8 +8,8 @@
 //
 //   - Scripts and CI pipelines that want a structured (not bash-tail)
 //     migration runner.
-//   - A future Migration CRD reconciler that wants to invoke the same
-//     orchestration code path the dashboard uses.
+//   - The Migration CRD reconciler (internal/controller), which invokes the
+//     same orchestration code path the dashboard uses.
 //
 // Example:
 //
@@ -36,30 +36,73 @@ import (
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, `katamaran-orchestrator — Submit a Migration request (JSON on stdin) and stream NDJSON status updates
+
+Usage:
+  echo '<json>' | katamaran-orchestrator [flags]
+  katamaran-orchestrator --version
+  katamaran-orchestrator --help
+
+Flags:
+  --native               Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh
+  --script string        Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh).
+                         Mutually exclusive with --native.
+  --kubeconfig string    Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)
+
+Other:
+  -v, --version          Show version and exit
+  -h, --help             Show this help and exit
+
+Exit codes:
+  0   PhaseSucceeded
+  1   PhaseFailed (or runtime error)
+  2   Argument or request-decoding error
+
+Example:
+  echo '{
+    "SourceNode":"worker-a","DestNode":"worker-b","DestIP":"10.0.0.20",
+    "Image":"localhost/katamaran:dev",
+    "SourcePod":{"Namespace":"default","Name":"kata-demo"},
+    "DestPod":{"Namespace":"default","Name":"kata-dest-shell"},
+    "SharedStorage":true,"ReplayCmdline":true
+  }' | katamaran-orchestrator --native
+`)
+}
+
 func main() {
 	scriptPath := flag.String("script", "", "Path to deploy/migrate.sh (default: search ./deploy/migrate.sh and /usr/local/bin/migrate.sh)")
 	native := flag.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
 	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	showVersionShort := flag.Bool("v", false, "")
+	flag.Usage = func() { printUsage(os.Stderr) }
 	flag.Parse()
-	if *showVersion {
+	if *showVersion || *showVersionShort {
 		fmt.Println("katamaran-orchestrator", buildinfo.Version)
 		return
 	}
 	_ = kubeconfig // reserved for a future Native-out-of-cluster constructor
 
+	// Detect mutually exclusive flags so users do not silently get one mode
+	// while believing they configured the other.
+	if *native && *scriptPath != "" {
+		fmt.Fprintln(os.Stderr, "Error: --native and --script are mutually exclusive")
+		os.Exit(2)
+	}
+
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: read stdin: %v\n", err)
 		os.Exit(2)
 	}
 	var req orchestrator.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		fmt.Fprintf(os.Stderr, "decode request JSON: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: decode request JSON: %v\n", err)
 		os.Exit(2)
 	}
 	if err := orchestrator.Validate(req); err != nil {
-		fmt.Fprintf(os.Stderr, "invalid request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: invalid request: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -71,7 +114,7 @@ func main() {
 	if *native {
 		nat, err := orchestrator.NewNative()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "native orchestrator init: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: native orchestrator init: %v\n", err)
 			os.Exit(2)
 		}
 		o = nat
@@ -80,12 +123,12 @@ func main() {
 	}
 	id, err := o.Apply(ctx, req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "apply: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: apply: %v\n", err)
 		os.Exit(1)
 	}
 	updates, err := o.Watch(ctx, id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: watch: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -93,7 +136,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		// Best-effort stop on signal. The watcher will still emit the final
-		// PhaseFailed update once migrate.sh exits.
+		// PhaseFailed update once the orchestrator finishes tearing down.
 		_ = o.Stop(context.Background(), id)
 	}()
 	exit := 0
