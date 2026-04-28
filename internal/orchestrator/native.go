@@ -100,6 +100,17 @@ func New() (Orchestrator, error) {
 // laptop, integration tests, etc). Pass an empty path to use the default
 // loading rules (KUBECONFIG env / ~/.kube/config).
 func NewFromKubeconfig(path, contextName string) (Orchestrator, error) {
+	cfg, err := loadKubeconfig(path, contextName)
+	if err != nil {
+		return nil, err
+	}
+	return newFromRestConfig(cfg)
+}
+
+// loadKubeconfig resolves a kubeconfig-derived *rest.Config using the standard
+// clientcmd loading rules. Shared by NewFromKubeconfig and
+// NewDiscovererFromKubeconfig so both follow identical path/context resolution.
+func loadKubeconfig(path, contextName string) (*rest.Config, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if path != "" {
 		rules.ExplicitPath = path
@@ -112,7 +123,7 @@ func NewFromKubeconfig(path, contextName string) (Orchestrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
-	return newFromRestConfig(cfg)
+	return cfg, nil
 }
 
 func newFromRestConfig(cfg *rest.Config) (*native, error) {

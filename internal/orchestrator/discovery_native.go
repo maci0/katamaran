@@ -8,7 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // nativeDiscoverer is the only Discoverer implementation. Constructors
@@ -35,17 +34,9 @@ func NewDiscoverer() (Discoverer, error) {
 // file. Intended for local development and tests; production pods
 // should use NewDiscoverer.
 func NewDiscovererFromKubeconfig(path, contextName string) (Discoverer, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if path != "" {
-		rules.ExplicitPath = path
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if contextName != "" {
-		overrides.CurrentContext = contextName
-	}
-	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	cfg, err := loadKubeconfig(path, contextName)
 	if err != nil {
-		return nil, fmt.Errorf("kubeconfig: %w", err)
+		return nil, err
 	}
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

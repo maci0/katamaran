@@ -13,10 +13,17 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// sandboxUUIDRe restricts sandbox identifiers to characters that cannot have
+// special meaning when interpolated into the `pgrep -f` regex. Sandbox dir
+// names come from /run/vc/vm/<uuid>; rejecting unexpected characters bounds
+// the input even if a bug or attacker creates an oddly named directory.
+var sandboxUUIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // procFS abstracts the host-process / netns probing so tests can stub it.
 // PIDForSandbox locates the QEMU PID for a given sandbox UUID. NetnsHasIP
@@ -91,6 +98,9 @@ type realProc struct{}
 // (e.g. helper processes whose cmdline mentions the sandbox path), the first
 // one is returned and the rest are logged at debug level.
 func (realProc) PIDForSandbox(uuid string) (int, error) {
+	if !sandboxUUIDRe.MatchString(uuid) {
+		return 0, fmt.Errorf("invalid sandbox identifier %q", uuid)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), procExecTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "pgrep", "-f", "sandbox-"+uuid).Output()

@@ -46,12 +46,31 @@ func validTargetPort(port string) bool {
 	return err == nil && p >= 1 && p <= 65535
 }
 
+// blockedMetadataIPs are well-known cloud-provider instance metadata
+// endpoints. AWS/GCP/Azure share 169.254.169.254 (already covered by the
+// link-local check on most platforms but pinned here defensively); AWS IMDS
+// also exposes an IPv6 alias. Accessing these from the dashboard pod could
+// disclose node IAM credentials, so we hard-block them.
+var blockedMetadataIPs = []net.IP{
+	net.ParseIP("169.254.169.254"),
+	net.ParseIP("fd00:ec2::254"),
+}
+
 func blockedTargetIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
+	if ip.IsLoopback() ||
 		ip.IsUnspecified() ||
 		ip.IsLinkLocalUnicast() ||
-		ip.IsMulticast() ||
-		ip.Equal(net.ParseIP("169.254.169.254"))
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() {
+		return true
+	}
+	for _, blocked := range blockedMetadataIPs {
+		if ip.Equal(blocked) {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupSafeTargetIPs(ctx context.Context, host string) ([]net.IP, error) {

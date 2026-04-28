@@ -207,17 +207,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// Translate the form into an orchestrator.Request and validate.
 	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
 	if err := orchestrator.Validate(req); err != nil {
-		a.migrationMutex.Lock()
-		a.isMigrating = false
-		a.migrationID = ""
-		a.migrationCancel = nil
-		a.migrationsFailed++
-		a.lastMigrationResult = "error"
-		a.lastMigrationError = err.Error()
-		a.migrationMutex.Unlock()
-		dashboardMigrationsActive.Add(-1)
-		dashboardMigrationResultsByOutcome.Add("error", 1)
-		cancel()
+		a.abortPendingMigration(cancel, err.Error())
 		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -226,17 +216,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 
 	if a.orch == nil {
-		a.migrationMutex.Lock()
-		a.isMigrating = false
-		a.migrationID = ""
-		a.migrationCancel = nil
-		a.migrationsFailed++
-		a.lastMigrationResult = "error"
-		a.lastMigrationError = "no orchestrator wired"
-		a.migrationMutex.Unlock()
-		dashboardMigrationsActive.Add(-1)
-		dashboardMigrationResultsByOutcome.Add("error", 1)
-		cancel()
+		a.abortPendingMigration(cancel, "no orchestrator wired")
 		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -377,6 +357,24 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Migration stop requested", "migration_id", migrationID, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
+}
+
+// abortPendingMigration unwinds the migration state set up at the start of
+// handleMigrate when a pre-launch check (Validate, missing orchestrator) fails.
+// Counterpart to runOrchestrator's deferred cleanup, which only runs once the
+// orchestrator goroutine has been kicked off.
+func (a *App) abortPendingMigration(cancel context.CancelFunc, errMsg string) {
+	a.migrationMutex.Lock()
+	a.isMigrating = false
+	a.migrationID = ""
+	a.migrationCancel = nil
+	a.migrationsFailed++
+	a.lastMigrationResult = "error"
+	a.lastMigrationError = errMsg
+	a.migrationMutex.Unlock()
+	dashboardMigrationsActive.Add(-1)
+	dashboardMigrationResultsByOutcome.Add("error", 1)
+	cancel()
 }
 
 // setMigrationResult updates the final status and error message of the completed migration.

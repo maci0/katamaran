@@ -135,6 +135,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: KATAMARAN_MIGRATION_IMAGE contains invalid characters\n")
 		return 1
 	}
+	if allowedImage == "" {
+		// /api/migrate has no built-in authentication; without an image
+		// allowlist any caller able to reach it can launch arbitrary
+		// privileged container images on cluster nodes via the rendered
+		// source/dest Jobs. Warn loudly so operators set the allowlist
+		// (or deploy the dashboard behind external auth).
+		slog.Warn("KATAMARAN_MIGRATION_IMAGE is unset: any image submitted to /api/migrate will be accepted; set this env var to pin migrations to a single trusted image")
+	}
 
 	app := &App{startTime: time.Now(), allowedImage: allowedImage}
 

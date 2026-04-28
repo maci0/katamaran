@@ -158,7 +158,11 @@ func recoverMiddleware(next http.Handler) http.Handler {
 func csrfCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if sfs := r.Header.Get("Sec-Fetch-Site"); sfs == "cross-site" || sfs == "cross-origin" {
+			// Sec-Fetch-Site is browser-set and unforgeable from script. The
+			// only values that prove the request originated from our exact
+			// origin (or a non-browser caller) are "same-origin" and "none";
+			// "same-site" still allows a sibling subdomain to attack us.
+			if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" && sfs != "none" {
 				slog.Warn("CSRF check rejected request (sec-fetch-site)", "method", r.Method, "path", r.URL.Path, "sec_fetch_site", sfs, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
 				csrfForbidden(w, r)
 				return

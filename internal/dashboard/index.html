@@ -88,7 +88,10 @@
             <div class="flex flex-wrap items-center gap-3 sm:justify-end">
                 <span id="last-result" role="status" class="text-xs" aria-describedby="last-result-detail"></span>
                 <span id="last-result-detail" class="sr-only"></span>
-                <span id="status-badge" role="status" aria-live="polite" aria-atomic="true" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Connecting&hellip;</span>
+                <span class="flex items-center gap-1">
+                    <span id="status-badge" role="status" aria-live="polite" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300">Connecting&hellip;</span>
+                    <span id="status-timer" aria-hidden="true" class="text-xs text-slate-400 font-mono"></span>
+                </span>
             </div>
         </div>
     </header>
@@ -223,7 +226,7 @@
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <div class="flex items-center justify-between mb-3">
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &mdash; Zero-Drop Proof</h2>
-                        <span id="loadgen-indicator" class="text-xs text-slate-400" aria-live="polite"></span>
+                        <span id="loadgen-indicator" class="text-xs text-slate-400"></span>
                     </div>
                     <div style="height:280px;position:relative" role="img" aria-label="Latency chart showing ping response times over time">
                         <canvas id="latencyChart" aria-hidden="true"></canvas>
@@ -738,19 +741,24 @@
             var indicator = document.getElementById('loadgen-indicator');
             var hasPings = data.pings && data.pings.length > 0;
 
+            var statusTimer = document.getElementById('status-timer');
+            function setBadge(label, cls) {
+                if (badge.textContent !== label) badge.textContent = label;
+                if (badge.className !== cls) badge.className = cls;
+            }
             if (data.migrating) {
                 var elapsed = data.migration_elapsed_seconds || 0;
                 var mins = Math.floor(elapsed / 60);
                 var secs = elapsed % 60;
                 var timeStr = mins > 0 ? mins + 'm ' + secs + 's' : secs + 's';
-                badge.textContent = 'Migrating \u2014 ' + timeStr;
-                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-hull-600/30 text-hull-300 animate-pulse transition-all duration-300';
+                setBadge('Migrating', 'px-3 py-1 rounded-full text-xs font-semibold bg-hull-600/30 text-hull-300 animate-pulse transition-all duration-300');
+                statusTimer.textContent = '\u2014 ' + timeStr;
             } else if (data.loadgen_running) {
-                badge.textContent = 'Loadgen Active';
-                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-emerald-600/30 text-emerald-300 animate-pulse transition-all duration-300';
+                setBadge('Loadgen Active', 'px-3 py-1 rounded-full text-xs font-semibold bg-emerald-600/30 text-emerald-300 animate-pulse transition-all duration-300');
+                statusTimer.textContent = '';
             } else {
-                badge.textContent = 'Idle';
-                badge.className = 'px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300';
+                setBadge('Idle', 'px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300 transition-all duration-300');
+                statusTimer.textContent = '';
             }
 
             if (data.migrating) {
@@ -929,7 +937,7 @@
             } else {
                 chartEmpty.style.display = '';
                 indicator.textContent = '';
-                document.getElementById('latencyChart').parentElement.setAttribute('aria-label', 'Latency chart showing ping response times over time');
+                document.getElementById('latencyChart').parentElement.setAttribute('aria-label', 'Latency chart is empty. Start ICMP Ping or HTTP Load to populate it.');
                 document.getElementById('stat-sent').textContent = '0';
                 var lostEl = document.getElementById('stat-lost');
                 lostEl.querySelector('[aria-hidden]').textContent = '0';
