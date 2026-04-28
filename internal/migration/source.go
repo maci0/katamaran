@@ -71,9 +71,6 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
 		}
 		resolvedQEMUPID = res.PID
-		// Emit netns/iface so the orchestrator (deploy/migrate.sh) can pass them
-		// to the dest job. Format is parser-friendly and unique per migration.
-		fmt.Printf("KATAMARAN_RESOLVED tap_netns=/proc/%d/ns/net tap=tap0_kata\n", res.PID)
 		// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
 		// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
 		// TCP migration stream. Mirrors scripts/e2e.sh:454. Best-effort: a pod
