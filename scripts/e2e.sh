@@ -632,8 +632,65 @@ if [[ "${METHOD}" == "job" ]]; then
             error "Migration failed!"
             exit 1
         }
+elif [[ "${METHOD}" == "crd" ]]; then
+    # CRD path: install CRD + katamaran-mgr controller, submit a Migration CR,
+    # wait for status.phase to reach a terminal value, fail if it isn't succeeded.
+    STORAGE_BOOL="true"
+    [[ "${STORAGE}" == "local" ]] && STORAGE_BOOL="false"
+    log "Building + loading katamaran-mgr image..."
+    (cd "${PROJECT_ROOT}" && make mgr) >/dev/null
+    minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
+    log "Installing Migration CRD + katamaran-mgr controller..."
+    kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/migration.yaml" >/dev/null
+    kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/manager.yaml" >/dev/null
+    kubectl --context "${CTX}" -n kube-system rollout status deploy/katamaran-mgr --timeout=60s
+    MIG_NAME="e2e-$(date +%s)"
+    log "Submitting Migration CR ${MIG_NAME}..."
+    cat <<EOF | kubectl --context "${CTX}" apply -f - >/dev/null
+apiVersion: katamaran.io/v1alpha1
+kind: Migration
+metadata:
+  name: ${MIG_NAME}
+  namespace: default
+spec:
+  sourcePod: { namespace: default, name: kata-src }
+  destNode: ${NODE2}
+  image: localhost/katamaran:dev
+  sharedStorage: ${STORAGE_BOOL}
+  replayCmdline: true
+  tunnelMode: none
+EOF
+    MIG_LOG=$(mktemp)
+    {
+        echo ">>> Watching Migration ${MIG_NAME} for terminal phase..."
+        deadline=$(( $(date +%s) + 600 ))
+        last=""
+        while true; do
+            phase=$(kubectl --context "${CTX}" get migration "${MIG_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            if [[ -n "${phase}" && "${phase}" != "${last}" ]]; then
+                echo ">>> phase=${phase}"
+                last="${phase}"
+            fi
+            if [[ "${phase}" == "succeeded" || "${phase}" == "failed" ]]; then
+                break
+            fi
+            if (( $(date +%s) > deadline )); then
+                echo ">>> Migration ${MIG_NAME} did not reach terminal phase within 600s"
+                kubectl --context "${CTX}" get migration "${MIG_NAME}" -o yaml | tail -25
+                kubectl --context "${CTX}" -n kube-system logs deploy/katamaran-mgr --tail=40
+                exit 1
+            fi
+            sleep 2
+        done
+        echo ">>> Final Migration status:"
+        kubectl --context "${CTX}" get migration "${MIG_NAME}" -o yaml | tail -15
+        if [[ "${phase}" != "succeeded" ]]; then
+            exit 1
+        fi
+    } 2>&1 | tee "${MIG_LOG}"
+    kubectl --context "${CTX}" delete migration "${MIG_NAME}" --ignore-not-found >/dev/null || true
 else
-    error "Direct method not implemented."
+    error "Unknown --method '${METHOD}' (expected: job, crd)."
     exit 1
 fi
 
