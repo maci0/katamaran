@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -189,7 +191,82 @@ func (n *Native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		go n.stageThenStartDest(runCtx, id, run, req, destJob)
 	}
 	go n.poll(runCtx, id, run)
+	go n.tailProgress(runCtx, id, run)
 	return id, nil
+}
+
+// tailProgress watches the source pod's logs for KATAMARAN_PROGRESS markers
+// emitted by the source binary's RAM-migration polling loop, and re-emits
+// them as PhaseTransferring StatusUpdates with RAMTransferred / RAMTotal
+// populated. Best-effort: if the pod isn't reachable yet we retry; once we
+// see a terminal-status marker we exit.
+func (n *Native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
+	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
+	if err != nil {
+		return // source pod never appeared; poll will surface the failure
+	}
+	const marker = "KATAMARAN_PROGRESS "
+	seen := map[string]bool{} // dedupe identical marker lines
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, &corev1.PodLogOptions{Container: "katamaran"})
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			continue
+		}
+		data, _ := io.ReadAll(stream)
+		_ = stream.Close()
+		for _, line := range strings.Split(string(data), "\n") {
+			i := strings.Index(line, marker)
+			if i < 0 || seen[line] {
+				continue
+			}
+			seen[line] = true
+			payload := line[i+len(marker):]
+			fields := parseProgressFields(payload)
+			run.updates <- StatusUpdate{
+				ID:             id,
+				Phase:          PhaseTransferring,
+				When:           time.Now(),
+				Message:        "status=" + fields["status"],
+				RAMTransferred: parseInt64(fields["ram_transferred"]),
+				RAMTotal:       parseInt64(fields["ram_total"]),
+			}
+			if fields["status"] == "completed" || fields["status"] == "failed" || fields["status"] == "cancelled" {
+				return
+			}
+		}
+	}
+}
+
+// parseProgressFields parses key=value pairs separated by spaces.
+func parseProgressFields(s string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range strings.Fields(s) {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		out[kv[:eq]] = kv[eq+1:]
+	}
+	return out
+}
+
+func parseInt64(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // stageThenStartDest runs the cmdline-staging flow for ReplayCmdline mode:

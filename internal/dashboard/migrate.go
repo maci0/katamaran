@@ -272,7 +272,10 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	var terminalErr error
 	for u := range updates {
 		line := ">>> " + string(u.Phase)
-		if u.Message != "" {
+		if u.RAMTotal > 0 {
+			pct := int((u.RAMTransferred * 100) / u.RAMTotal)
+			line += fmt.Sprintf(": %d%% (%s / %s)", pct, humanBytes(u.RAMTransferred), humanBytes(u.RAMTotal))
+		} else if u.Message != "" {
 			line += ": " + u.Message
 		}
 		if u.Error != nil {
@@ -297,6 +300,21 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		a.setMigrationResult("error", "watch closed without terminal status")
 	}
 	_ = migrationID
+}
+
+// humanBytes formats a byte count as MB / GB for log lines. Avoids the
+// overhead of pulling in a units library for one display string.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // handleMigrateStop processes a request to cancel an ongoing migration.

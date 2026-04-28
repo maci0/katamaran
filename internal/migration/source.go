@@ -615,6 +615,11 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
 			if statusChanged || remainingChanged {
 				slog.Info("Migration status", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+				// Stable, parser-friendly progress marker the orchestrator
+				// scrapes from pod logs to surface RAM transfer progress
+				// without depending on slog's text/json layout.
+				fmt.Printf("KATAMARAN_PROGRESS status=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
+					info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
 				prevStatus = info.Status
 				lastLoggedRemaining = info.RAM.Remaining
 			}
