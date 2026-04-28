@@ -25,6 +25,11 @@ var destJobTemplate []byte
 // for Create. The substitution intentionally mirrors `envsubst $VAR` from
 // migrate.sh: simple shell-style variable expansion with no defaults or
 // nested expressions.
+// jobSuffix returns the per-migration Job name suffix. Migration IDs are
+// 16 lowercase hex chars — short enough to embed in a 253-char Job name
+// and long enough to avoid collisions across concurrent migrations.
+func jobSuffix(id MigrationID) string { return string(id) }
+
 func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
 	return renderJob(sourceJobTemplate, map[string]string{
 		"NODE_NAME":              req.SourceNode,
@@ -34,6 +39,7 @@ func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Jo
 		"VM_IP":                  req.VMIP,
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
+		"JOB_SUFFIX":             jobSuffix(id),
 	})
 }
 
@@ -44,6 +50,7 @@ func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job,
 		"QMP_SOCKET":             firstNonEmpty(req.DestQMP, "/run/vc/vm/katamaran-dest/qmp.sock"),
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
+		"JOB_SUFFIX":             jobSuffix(id),
 	})
 }
 

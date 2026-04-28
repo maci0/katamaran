@@ -57,6 +57,12 @@ REPLAY_CMDLINE=false
 CMDLINE_HOST_DIR="/tmp/katamaran-cmdlines"
 CMDLINE_FILENAME=""
 export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
+# JOB_SUFFIX disambiguates Job names so multiple concurrent migrations
+# don't collide. The Native orchestrator uses the migration ID itself;
+# this shell harness only ever runs one migration at a time so a stable
+# "default" suffix keeps the job names predictable for the kubectl wait /
+# logs / delete invocations below.
+export JOB_SUFFIX="${JOB_SUFFIX:-default}"
 
 usage() {
     local code="${1:-1}"
@@ -308,7 +314,7 @@ cleanup() {
     fi
     if [[ "$MIG_SUCCESS" == "true" ]]; then
         echo ">>> Cleaning up migration jobs..."
-        "${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found 2>/dev/null || true
+        "${KUBECTL[@]}" -n kube-system delete job katamaran-dest-default katamaran-source-default --ignore-not-found 2>/dev/null || true
     else
         echo ">>> Migration failed; keeping jobs for forensic debugging."
     fi
@@ -318,20 +324,20 @@ trap cleanup EXIT
 dump_debug() {
     echo ""
     echo "=== DESTINATION LOGS ==="
-    "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest || true
+    "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest-default || true
     echo ""
     echo "=== SOURCE LOGS ==="
-    "${KUBECTL[@]}" -n kube-system logs job/katamaran-source || true
+    "${KUBECTL[@]}" -n kube-system logs job/katamaran-source-default || true
     echo ""
     echo "=== DESTINATION DESCRIBE ==="
-    "${KUBECTL[@]}" -n kube-system describe job/katamaran-dest || true
+    "${KUBECTL[@]}" -n kube-system describe job/katamaran-dest-default || true
     echo ""
     echo "=== SOURCE DESCRIBE ==="
-    "${KUBECTL[@]}" -n kube-system describe job/katamaran-source || true
+    "${KUBECTL[@]}" -n kube-system describe job/katamaran-source-default || true
 }
 
 echo ">>> Preparing migration..."
-"${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found
+"${KUBECTL[@]}" -n kube-system delete job katamaran-dest-default katamaran-source-default --ignore-not-found
 
 # Build dest-job EXTRA_ARGS once. In replay-cmdline mode we still set --tap
 # below so the dest can install the sch_plug qdisc on its own tap0_kata
@@ -351,22 +357,22 @@ deploy_dest_job() {
     export QMP_SOCKET="$QMP_DEST"
     export IMAGE="$IMAGE_REF"
     export EXTRA_ARGS="$DEST_EXTRA_ARGS_FULL"
-    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
     echo ">>> Waiting for destination pod to appear..."
     for _ in $(seq 1 30); do
-        if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest --no-headers 2>/dev/null | grep -q .; then
+        if "${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-dest-default --no-headers 2>/dev/null | grep -q .; then
             break
         fi
         sleep 2
     done
     echo ">>> Waiting for destination pod to be ready..."
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l job-name=katamaran-dest --timeout=60s
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l job-name=katamaran-dest-default --timeout=60s
 
     echo ">>> Waiting for destination service loop to become ready..."
     ready=0
     for _ in $(seq 1 60); do
-        if "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest 2>/dev/null | grep -q "Waiting for QEMU RESUME"; then
+        if "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest-default 2>/dev/null | grep -q "Waiting for QEMU RESUME"; then
             ready=1
             break
         fi
@@ -387,7 +393,7 @@ deploy_source_job() {
     export DEST_IP="$DEST_IP"
     export VM_IP="$VM_IP"
     export EXTRA_ARGS="$SRC_EXTRA_ARGS"
-    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
 }
 
 # ship_cmdline_to_dest copies the captured QEMU cmdline file from the source
@@ -402,7 +408,7 @@ ship_cmdline_to_dest() {
     echo ">>> Waiting for source job to capture QEMU cmdline..."
     src_pod=""
     for _ in $(seq 1 60); do
-        src_pod="$("${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-source -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        src_pod="$("${KUBECTL[@]}" -n kube-system get pod -l job-name=katamaran-source-default -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
         if [[ -n "$src_pod" ]] && "${KUBECTL[@]}" -n kube-system logs "$src_pod" 2>/dev/null | grep -q "KATAMARAN_CMDLINE_AT="; then
             break
         fi
@@ -476,13 +482,13 @@ fi
 
 echo ">>> Waiting for migration to complete..."
 set +e
-"${KUBECTL[@]}" -n kube-system wait --for=condition=complete job/katamaran-source --timeout=600s
+"${KUBECTL[@]}" -n kube-system wait --for=condition=complete job/katamaran-source-default --timeout=600s
 wait_rc=$?
 set -e
 
 # Wait for dest job to complete too (it finishes shortly after source).
 if [[ "$wait_rc" -eq 0 ]]; then
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete job/katamaran-dest --timeout=60s 2>/dev/null || true
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete job/katamaran-dest-default --timeout=60s 2>/dev/null || true
 fi
 
 dump_debug

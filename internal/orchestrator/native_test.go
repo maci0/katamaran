@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,8 +54,17 @@ func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	for _, j := range jobs.Items {
 		names[j.Name] = true
 	}
-	if !names["katamaran-source"] || !names["katamaran-dest"] {
-		t.Fatalf("expected both jobs, got %v", names)
+	hasSrc, hasDest := false, false
+	for n := range names {
+		if strings.HasPrefix(n, "katamaran-source-") {
+			hasSrc = true
+		}
+		if strings.HasPrefix(n, "katamaran-dest-") {
+			hasDest = true
+		}
+	}
+	if !hasSrc || !hasDest {
+		t.Fatalf("expected katamaran-source-<id> and katamaran-dest-<id>, got %v", names)
 	}
 }
 
@@ -72,7 +82,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 			return false, nil, nil
 		}
 		name := ga.GetName()
-		if name != "katamaran-source" && name != "katamaran-dest" {
+		if !strings.HasPrefix(name, "katamaran-source-") && !strings.HasPrefix(name, "katamaran-dest-") {
 			return false, nil, nil
 		}
 		return true, &batchv1.Job{

@@ -32,7 +32,6 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -253,14 +252,8 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 
 // recover reattaches to a Migration left in a non-terminal phase by a
 // previous controller incarnation. It polls the source/dest Jobs in
-// kube-system and patches .status.phase based on their conditions.
-//
-// Native uses singleton Job names (katamaran-source / katamaran-dest), so
-// only one in-flight migration can ever exist at a time. After a controller
-// restart we know the Jobs we're inspecting belong to whatever is in the
-// only non-terminal Migration. If two non-terminal Migrations exist after
-// a restart (which would be a pre-existing data corruption), we mark the
-// extras as failed so the queue can drain.
+// kube-system (located by the katamaran.io/migration-id label) and
+// patches .status.phase based on their conditions.
 func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
 	defer r.untrack(key)
 
@@ -272,7 +265,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
 		return
 	}
+	if id == "" {
+		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
+		return
+	}
 
+	selector := "katamaran.io/migration-id=" + id
 	deadline := time.Now().Add(r.StatusTimeout)
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
@@ -286,8 +284,22 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			return
 		}
-		dest, derr := r.Kube.BatchV1().Jobs(jobNamespace).Get(ctx, "katamaran-dest", metav1.GetOptions{})
-		if derr == nil {
+		jobs, err := r.Kube.BatchV1().Jobs(jobNamespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			slog.Warn("recover: list jobs", "migration", key, "error", err)
+			continue
+		}
+		var src, dest *batchv1.Job
+		for i := range jobs.Items {
+			j := &jobs.Items[i]
+			switch j.Labels["app.kubernetes.io/component"] {
+			case "source":
+				src = j
+			case "dest":
+				dest = j
+			}
+		}
+		if dest != nil {
 			if cond := jobCondition(dest); cond == batchv1.JobComplete {
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				return
@@ -295,17 +307,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", "")
 				return
 			}
-		} else if !apierrors.IsNotFound(derr) {
-			slog.Warn("recover: get dest job", "migration", key, "error", derr)
-			continue
 		}
-		// dest missing or still running — check source for an early failure.
-		src, serr := r.Kube.BatchV1().Jobs(jobNamespace).Get(ctx, "katamaran-source", metav1.GetOptions{})
-		if serr == nil && jobCondition(src) == batchv1.JobFailed && (derr != nil && apierrors.IsNotFound(derr)) {
+		if dest == nil && src != nil && jobCondition(src) == batchv1.JobFailed {
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", "")
 			return
 		}
-		if apierrors.IsNotFound(derr) && apierrors.IsNotFound(serr) {
+		if dest == nil && src == nil {
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
 			return
 		}
