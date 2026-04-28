@@ -31,12 +31,12 @@ type NodeInfo struct {
 //
 // Two implementations exist:
 //
-//   - Kubectl (KubectlDiscoverer): shells out to `kubectl`. Used by the
-//     dashboard image which already ships kubectl. Suited to ad-hoc clients.
+//   - Native (NativeDiscoverer, discovery_native.go): client-go calls
+//     against the apiserver. Default everywhere — the dashboard image
+//     no longer ships kubectl.
 //
-//   - Native (TODO): client-go informers backed by an in-cluster client.
-//     The operator implementation will use this so it does not need kubectl
-//     in its image.
+//   - Kubectl (KubectlDiscoverer): shells out to `kubectl`. Kept as a
+//     fallback for environments where client-go config isn't available.
 type Discoverer interface {
 	// ListKataPods returns all pods in the cluster whose runtimeClassName is
 	// kata-qemu (across all namespaces).

@@ -281,10 +281,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				printUsage(stderr)
 				return 2
 			}
-		} else {
-			// TODO(task-7): in pod mode, populate parsedVM after resolver runs
-			// and re-run the IP family check that we currently skip.
 		}
+		// In pod mode the VM IP is resolved inside the source binary at
+		// runtime, so we can't validate IP family vs --dest-ip here. The
+		// resolver enforces it itself before opening the migration
+		// listener.
 		tm := migration.TunnelMode(*tunnelMode)
 		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
 			_, _ = fmt.Fprintf(stderr, "Error: invalid --tunnel-mode %q (valid: ipip, gre, none)\n\n", *tunnelMode)

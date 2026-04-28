@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-// Script is the dashboard's current orchestrator: it shells out to
-// deploy/migrate.sh. It exists so the dashboard's HTTP handler can switch to
-// the Orchestrator interface without changing runtime behaviour. The Native
-// orchestrator (TODO) will replace it once parity is reached.
+// Script wraps deploy/migrate.sh and exposes it through the Orchestrator
+// interface for ad-hoc CLI runs and CI smoke. Production paths
+// (dashboard, katamaran-orchestrator, Migration CRD controller) use the
+// Native orchestrator instead — Script is kept for backward-compat.
 //
 // Status fidelity is intentionally low: the script's stdout is a stream of
 // human-readable lines, not structured progress events. Watch emits a single

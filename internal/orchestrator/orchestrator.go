@@ -5,13 +5,14 @@
 //
 // Two implementations exist:
 //
-//   - Script (orchestrator/script.go): wraps deploy/migrate.sh. Behavioural
-//     parity with what the dashboard does today. Used as the default until a
-//     fully native implementation lands.
+//   - Native (orchestrator/native.go): renders the Jobs in-process via
+//     client-go and reconciles status by polling Job conditions. Default
+//     in production paths (dashboard, katamaran-orchestrator CLI, the
+//     Migration CRD controller).
 //
-//   - Native (orchestrator/native.go, TODO): renders the Jobs in-process via
-//     client-go and reconciles status from informers. The target for the
-//     operator + a future shell-free dashboard image.
+//   - Script (orchestrator/script.go): wraps deploy/migrate.sh for ad-hoc
+//     CLI runs and CI smoke. Kept for backward-compat — production paths
+//     no longer go through it.
 //
 // The Request type is mode-agnostic: callers can specify either an explicit
 // QMP socket path (legacy) or a pod identity (modern, lets the source job
