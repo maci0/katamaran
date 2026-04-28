@@ -271,7 +271,11 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	}
 	var terminal orchestrator.StatusPhase
 	var terminalErr error
+	phaseAt := map[orchestrator.StatusPhase]time.Time{}
 	for u := range updates {
+		if _, seen := phaseAt[u.Phase]; !seen {
+			phaseAt[u.Phase] = u.When
+		}
 		if u.RAMTotal > 0 || u.Phase == orchestrator.PhaseSucceeded {
 			a.migrationMutex.Lock()
 			a.latestProgress = &MigrationProgress{
@@ -288,6 +292,9 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 			line += fmt.Sprintf(": %s transferred", humanBytes(u.RAMTotal))
 			if u.DowntimeMS > 0 {
 				line += fmt.Sprintf(", %dms downtime", u.DowntimeMS)
+			}
+			if breakdown := phaseBreakdown(start, phaseAt, u.When); breakdown != "" {
+				line += ", " + breakdown
 			}
 		case u.RAMTotal > 0:
 			pct := int((u.RAMTransferred * 100) / u.RAMTotal)
@@ -317,6 +324,24 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		a.setMigrationResult("error", "watch closed without terminal status")
 	}
 	_ = migrationID
+}
+
+// phaseBreakdown formats the wall-clock split between phases for the
+// final succeeded log line, e.g. "35s wall (4s setup + 31s xfer)".
+// Returns "" when the timing data is incomplete (e.g. no transferring
+// phase was seen, as in fast paths or test fakes).
+func phaseBreakdown(start time.Time, phaseAt map[orchestrator.StatusPhase]time.Time, end time.Time) string {
+	wall := end.Sub(start).Round(time.Second)
+	if wall <= 0 {
+		return ""
+	}
+	xferStart, ok := phaseAt[orchestrator.PhaseTransferring]
+	if !ok {
+		return fmt.Sprintf("%s wall", wall)
+	}
+	setup := xferStart.Sub(start).Round(time.Second)
+	xfer := end.Sub(xferStart).Round(time.Second)
+	return fmt.Sprintf("%s wall (%s setup + %s xfer)", wall, setup, xfer)
 }
 
 // humanBytes formats a byte count as MB / GB for log lines. Avoids the
