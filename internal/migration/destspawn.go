@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,20 +54,6 @@ var (
 	// dest pod scheduling + image pull + virtiofsd start + QEMU spawn +
 	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s.
 	destReplaySleep = 25 * time.Second
-
-	// destReadyTimeout caps how long the source waits for the destination's
-	// RAM-migration listener to come up. The orchestrator must (1) ship the
-	// captured cmdline to the dest node, (2) start the dest job, and
-	// (3) the dest must finish copying nvdimm + spawning QEMU + opening the
-	// migrate-incoming listener inside this window. Five minutes is generous
-	// for nested-KVM CI; production environments converge in well under 30s.
-	destReadyTimeout = 5 * time.Minute
-
-	// destReadyPollInterval is the cadence for retrying the dest TCP probe.
-	destReadyPollInterval = 2 * time.Second
-
-	// destReadyDialTimeout bounds each individual TCP connect attempt.
-	destReadyDialTimeout = 2 * time.Second
 )
 
 // memPathRegex matches `mem-path=<path>` clauses inside a memory-backend-file
@@ -548,38 +532,6 @@ var spawnDetachedProcess = func(_ context.Context, name string, args []string) e
 		slog.Warn("child process exited", "process", name, "pid", cmd.Process.Pid, "error", fmt.Sprintf("%v", err))
 	}()
 	return nil
-}
-
-// waitForDestReady blocks until a TCP connection to (destIP, port) succeeds
-// or total elapses. Used by the source side in replay-cmdline mode to wait
-// for the dest job to spawn QEMU and open its migrate-incoming listener.
-//
-// Each connect attempt is bounded by destReadyDialTimeout so a black-holed
-// dest doesn't pin the source for the full poll interval.
-var waitForDestReady = func(ctx context.Context, destIP netip.Addr, port string, total time.Duration) error {
-	deadline := time.Now().Add(total)
-	addr := net.JoinHostPort(destIP.String(), port)
-	var lastErr error
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		dialer := net.Dialer{Timeout: destReadyDialTimeout}
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return fmt.Errorf("dest %s not reachable after %s: %w", addr, total, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(destReadyPollInterval):
-		}
-	}
 }
 
 // waitForSocket polls until path exists as a UNIX socket or total elapses.

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -237,8 +238,12 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 		},
 	}
 
+	// Escape ns/name as single path segments: callers may pass values with
+	// '/' (the orchestrator validation allowlist permits it for legitimate
+	// path-like arg values), but here they must address one Pod resource —
+	// not subresources like /log or /exec.
 	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s",
-		net.JoinHostPort(host, port), ns, name)
+		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(name))
 
 	backoffs := []time.Duration{lookupBackoff1, lookupBackoff2, lookupBackoff3}
 	const attempts = 3
