@@ -12,16 +12,30 @@ metadata:
   name: katamaran-mgr
 rules:
 # Migration CRs.
-- apiGroups: ["kata.katamaran.io"]
+- apiGroups: ["katamaran.io"]
   resources: ["migrations"]
   verbs: ["get", "list", "watch", "patch", "update"]
-- apiGroups: ["kata.katamaran.io"]
+- apiGroups: ["katamaran.io"]
   resources: ["migrations/status"]
   verbs: ["get", "patch", "update"]
 # Pods/nodes for the orchestrator's discoverer + resolver lookups.
+# Pod create/delete is needed because replayCmdline mode spawns a
+# transient stager pod on the dest node to receive the cmdline file.
 - apiGroups: [""]
-  resources: ["pods", "nodes"]
+  resources: ["nodes"]
   verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# Tail source pod logs for KATAMARAN_PROGRESS / KATAMARAN_RESULT markers.
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+# SPDY exec into the source/stager pod to stage the captured QEMU
+# cmdline before submitting the dest Job (replayCmdline mode).
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create", "get"]
 # Jobs the Native orchestrator submits.
 - apiGroups: ["batch"]
   resources: ["jobs"]

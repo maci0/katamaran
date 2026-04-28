@@ -1,5 +1,5 @@
 // Package controller implements a minimal Kubernetes controller for the
-// Migration CRD (kata.katamaran.io/v1alpha1). It uses the dynamic client +
+// Migration CRD (katamaran.io/v1alpha1). It uses the dynamic client +
 // a polling reconcile loop to keep the dependency footprint small (no
 // controller-runtime, no codegen).
 //
@@ -35,7 +35,7 @@ import (
 
 // MigrationGVR is the GroupVersionResource the controller reconciles.
 var MigrationGVR = schema.GroupVersionResource{
-	Group:    "kata.katamaran.io",
+	Group:    "katamaran.io",
 	Version:  "v1alpha1",
 	Resource: "migrations",
 }
@@ -46,6 +46,7 @@ var MigrationGVR = schema.GroupVersionResource{
 type Reconciler struct {
 	Dynamic       dynamic.Interface
 	Orchestrator  orchestrator.Orchestrator
+	Discoverer    orchestrator.Discoverer // resolves source node + dest IP from the spec
 	PollInterval  time.Duration
 	StatusTimeout time.Duration
 
@@ -54,10 +55,11 @@ type Reconciler struct {
 }
 
 // NewReconciler builds a reconciler with sensible defaults.
-func NewReconciler(dyn dynamic.Interface, orch orchestrator.Orchestrator) *Reconciler {
+func NewReconciler(dyn dynamic.Interface, orch orchestrator.Orchestrator, disc orchestrator.Discoverer) *Reconciler {
 	return &Reconciler{
 		Dynamic:       dyn,
 		Orchestrator:  orch,
+		Discoverer:    disc,
 		PollInterval:  5 * time.Second,
 		StatusTimeout: 30 * time.Minute,
 		tracking:      map[types.NamespacedName]bool{},
@@ -122,6 +124,24 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", err.Error())
 		return
 	}
+	if r.Discoverer != nil && req.SourcePod != nil {
+		lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
+		srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
+		if lerr == nil && srcNode != "" {
+			req.SourceNode = srcNode
+		}
+		destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
+		lookupCancel()
+		if lerr != nil || destIP == "" {
+			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve dest node IP", fmt.Sprintf("%v", lerr))
+			return
+		}
+		req.DestIP = destIP
+		if req.SourceNode == req.DestNode {
+			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", "source pod already runs on destNode")
+			return
+		}
+	}
 	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
 	defer cancel()
 	id, err := r.Orchestrator.Apply(jobCtx, req)
@@ -175,13 +195,8 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 	if mc, found, _ := unstructured.NestedInt64(obj, "spec", "multifdChannels"); found {
 		req.MultifdChannels = int(mc)
 	}
-	// SourceNode is required by orchestrator.Validate but not part of the
-	// CRD spec — derive it from the dest's perspective: source is whichever
-	// node the source pod runs on. For now use destNode's label-disambiguated
-	// "any other" placeholder. The orchestrator's Native impl looks the pod
-	// up directly; the Script impl forwards --pod-name to the source job.
-	// Setting a non-empty SourceNode just satisfies Validate.
-	req.SourceNode = "auto"
+	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
+	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil
 }
 

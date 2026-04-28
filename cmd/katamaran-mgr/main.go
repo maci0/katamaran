@@ -1,11 +1,11 @@
 // katamaran-mgr is a minimal Kubernetes controller for the Migration CRD
-// (kata.katamaran.io/v1alpha1). It runs in-cluster, polls Migration
+// (katamaran.io/v1alpha1). It runs in-cluster, polls Migration
 // resources, and submits each Pending migration to the embedded Native
 // orchestrator. Status is patched back to the CR.
 //
 // Deployment: see config/crd/migration.yaml for the CRD itself, and a
 // matching ServiceAccount + ClusterRole + ClusterRoleBinding granting
-// `migrations.kata.katamaran.io` get/list/watch/patch and `jobs` create/get/list/delete.
+// `migrations.katamaran.io` get/list/watch/patch and `jobs` create/get/list/delete.
 package main
 
 import (
@@ -55,7 +55,12 @@ func main() {
 		orch = nat
 	}
 
-	rec := controller.NewReconciler(dyn, orch)
+	disc, derr := orchestrator.NewNativeDiscoverer()
+	if derr != nil {
+		slog.Warn("NativeDiscoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
+	}
+
+	rec := controller.NewReconciler(dyn, orch, disc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
