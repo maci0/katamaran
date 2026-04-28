@@ -24,6 +24,10 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 |--------------|-------------------|---------------------|---------------------|
 | ![](../../docs/screenshots/01-dashboard-initial.png) | ![](../../docs/screenshots/02-dashboard-form-filled.png) | ![](../../docs/screenshots/03-dashboard-completed.png) | ![](../../docs/screenshots/04-dashboard-advanced.png) |
 
+| RAM transfer in flight | Migration completed (progress widget) |
+|------------------------|---------------------------------------|
+| ![](../../docs/screenshots/05-dashboard-progress-bar.png) | ![](../../docs/screenshots/06-dashboard-progress-done.png) |
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
