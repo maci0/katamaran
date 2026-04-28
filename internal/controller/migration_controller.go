@@ -26,6 +26,7 @@ package controller
 
 import (
 	"context"
+	"expvar"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -40,6 +41,18 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
+)
+
+// Process-wide expvar counters surfaced by katamaran-mgr's /debug/vars
+// endpoint. Plain expvar (no Prometheus dep) keeps the mgr image small;
+// users can scrape /debug/vars or wrap it with prom-exporter sidecars.
+var (
+	mDispatched = expvar.NewInt("katamaran_migrations_dispatched_total")
+	mSucceeded  = expvar.NewInt("katamaran_migrations_succeeded_total")
+	mFailed     = expvar.NewInt("katamaran_migrations_failed_total")
+	mRecovered  = expvar.NewInt("katamaran_migrations_recovered_total")
+	mDeleted    = expvar.NewInt("katamaran_migrations_deleted_total")
+	mInflight   = expvar.NewInt("katamaran_migrations_inflight")
 )
 
 // MigrationGVR is the GroupVersionResource the controller reconciles.
@@ -193,6 +206,9 @@ func (r *Reconciler) updateTrack(key types.NamespacedName, id orchestrator.Migra
 }
 
 func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	mDispatched.Add(1)
+	mInflight.Add(1)
+	defer mInflight.Add(-1)
 	defer r.untrack(key)
 
 	slog.Info("Dispatching new Migration", "migration", key)
@@ -247,6 +263,12 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		_ = r.patchStatus(ctx, key, string(u.ID), string(u.Phase), u.Message, errStr)
 		lastPhase = string(u.Phase)
 	}
+	switch lastPhase {
+	case string(orchestrator.PhaseSucceeded):
+		mSucceeded.Add(1)
+	case string(orchestrator.PhaseFailed):
+		mFailed.Add(1)
+	}
 	slog.Info("Migration finished", "migration", key, "migrationID", id, "final_phase", lastPhase)
 }
 
@@ -255,6 +277,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 // kube-system (located by the katamaran.io/migration-id label) and
 // patches .status.phase based on their conditions.
 func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	mRecovered.Add(1)
 	defer r.untrack(key)
 
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
@@ -326,6 +349,7 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	if !hasFinalizer(obj) {
 		return // nothing to do; kube-apiserver already finished deleting
 	}
+	mDeleted.Add(1)
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
 	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migrationID", id)
 	if id != "" {
