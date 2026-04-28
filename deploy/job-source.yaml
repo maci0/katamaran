@@ -1,8 +1,8 @@
 # Source-side migration Job template.
 # The katamaran-source ServiceAccount + ClusterRole + ClusterRoleBinding
 # are applied at install-time via deploy/dashboard.yaml (or out-of-band)
-# so the dashboard's runtime kubectl apply doesn't need RBAC write perms.
-# Rendered via envsubst by deploy/migrate.sh.
+# so the dashboard only needs RBAC to create the Job itself.
+# Rendered by the Native orchestrator or via envsubst by deploy/migrate.sh.
 # Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
 apiVersion: batch/v1
 kind: Job

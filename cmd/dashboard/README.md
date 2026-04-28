@@ -9,7 +9,7 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 - **Pod-picker UX** — pick a kata-qemu source pod and destination node from dropdowns; backend resolves sandbox UUID, QEMU PID, pod IP, and node IP automatically. Optional dest-pod picker for symmetric resolution.
 - **Cmdline replay (zero-config dest)** — when `replay_cmdline=true` is set, the dashboard captures the source QEMU command line and replays it on the destination node with `-incoming defer`. The dest sandbox is spawned by katamaran itself.
 - **Advanced override pane** — every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
-- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); the legacy `deploy/migrate.sh` shell path has been removed.
+- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); it no longer shells out to `deploy/migrate.sh`.
 - **RAM transfer progress bar** — live `submitted → transferring → succeeded` widget driven by `KATAMARAN_PROGRESS` markers tailed from the source pod. Shows percent, transferred/total bytes, then collapses to a green "done" bar with the actual VM downtime once the dest job completes.
 - **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
 - **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data.

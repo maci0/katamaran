@@ -3,7 +3,7 @@ package orchestrator
 import "time"
 
 // Request is the high-level shape of a migration submission. It is consumed
-// by both dashboard form posts and (future) Migration CRD reconciliation.
+// by both dashboard form posts and Migration CRD reconciliation.
 //
 // One of SourcePod or SourceQMP must be supplied, but not both:
 //
@@ -78,7 +78,7 @@ type Request struct {
 	// disables multifd. Both source and destination must agree on the count.
 	MultifdChannels int
 
-	// TapIface is the source tap interface to buffer with tc sch_plug.
+	// TapIface is the destination tap interface to buffer with tc sch_plug.
 	// Defaults to "tap0_kata" in pod-picker mode.
 	TapIface string
 

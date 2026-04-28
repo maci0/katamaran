@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
 type PingData struct {
@@ -44,7 +46,11 @@ type App struct {
 	// production main() to NewNative() (or kubeconfig fallback). Tests
 	// inject a fakeOrchestrator. handleMigrate fails 503 if nil.
 	// readyz also returns 503 until orch is set.
-	orch any // typed as orchestrator.Orchestrator at use site to avoid import cycle in this file
+	orch orchestrator.Orchestrator
+
+	// discoverer backs pod/node dropdowns and pod-mode request resolution.
+	// Nil means use the process default selected by discovery.go.
+	discoverer orchestrator.Discoverer
 
 	startTime time.Time
 

@@ -60,8 +60,8 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ---
 # Source job ServiceAccount + RBAC. Pre-applied at install time so the
-# dashboard's runtime kubectl-apply on job-source.yaml only handles the Job
-# resource and does not need RBAC write permissions.
+# dashboard's Native orchestrator only needs to create migration Jobs at
+# runtime.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

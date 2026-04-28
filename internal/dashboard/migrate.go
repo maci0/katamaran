@@ -58,7 +58,6 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 	return req
 }
 
-
 // handleMigrate processes a form POST to start a new migration.
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// Reject non-form content types early. Without this check, ParseForm
@@ -116,7 +115,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 	// Reject requests missing required fields. The frontend validates
 	// these too, but direct API callers (curl, scripts) bypass that.
-	// Aligned with migrate.sh's required flags.
+	// Aligned with orchestrator validation and the legacy migrate.sh flags.
 	//
 	// Pod-picker mode: when source_pod_name is set, the user picked a pod
 	// from the dropdown and we resolve source_node + dest_ip via kubectl;
@@ -155,12 +154,12 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		ns := r.PostFormValue("source_pod_namespace")
 		dest := r.PostFormValue("dest_node")
 		var err error
-		resolvedSrcNode, err = lookupPodNode(r.Context(), ns, pod)
+		resolvedSrcNode, err = a.discovery().LookupPodNode(r.Context(), ns, pod)
 		if err != nil {
 			jsonError(w, "lookup source pod: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		resolvedDestIP, err = lookupNodeInternalIP(r.Context(), dest)
+		resolvedDestIP, err = a.discovery().LookupNodeInternalIP(r.Context(), dest)
 		if err != nil {
 			jsonError(w, "lookup dest node: "+err.Error(), http.StatusBadRequest)
 			return
@@ -218,8 +217,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	logSourceNode, logDestIP, logVMIP := req.SourceNode, req.DestIP, req.VMIP
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", logSourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", logDestIP, "vm_ip", logVMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 
-	orch, ok := a.orch.(orchestrator.Orchestrator)
-	if !ok {
+	if a.orch == nil {
 		a.migrationMutex.Lock()
 		a.isMigrating = false
 		a.migrationID = ""
@@ -234,7 +232,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	go a.runOrchestrator(ctx, orch, req, migrationID)
+	go a.runOrchestrator(ctx, a.orch, req, migrationID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
@@ -373,7 +371,6 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
-
 
 // setMigrationResult updates the final status and error message of the completed migration.
 func (a *App) setMigrationResult(result, errMsg string) {

@@ -47,12 +47,12 @@ import (
 // endpoint. Plain expvar (no Prometheus dep) keeps the mgr image small;
 // users can scrape /debug/vars or wrap it with prom-exporter sidecars.
 var (
-	mDispatched = expvar.NewInt("katamaran_migrations_dispatched_total")
-	mSucceeded  = expvar.NewInt("katamaran_migrations_succeeded_total")
-	mFailed     = expvar.NewInt("katamaran_migrations_failed_total")
-	mRecovered  = expvar.NewInt("katamaran_migrations_recovered_total")
-	mDeleted    = expvar.NewInt("katamaran_migrations_deleted_total")
-	mInflight   = expvar.NewInt("katamaran_migrations_inflight")
+	mDispatched      = expvar.NewInt("katamaran_migrations_dispatched_total")
+	mSucceeded       = expvar.NewInt("katamaran_migrations_succeeded_total")
+	mFailed          = expvar.NewInt("katamaran_migrations_failed_total")
+	mRecovered       = expvar.NewInt("katamaran_migrations_recovered_total")
+	mDeleted         = expvar.NewInt("katamaran_migrations_deleted_total")
+	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
 	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
 )
 

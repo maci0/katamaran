@@ -9,7 +9,7 @@ This guide covers three install paths:
 ## Prerequisites
 
 - Linux host
-- Go 1.24+
+- Go 1.26+
 - Root privileges on nodes where migration runs (`sudo`)
 - `iproute2` tools (`ip`, `tc`)
 - Kernel modules available on migration nodes:

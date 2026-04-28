@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -33,10 +34,24 @@ func discoverer() orchestrator.Discoverer {
 			defaultDiscoverer = d
 			return
 		}
+		if os.Getenv("KUBECONFIG") != "" {
+			if d, err := orchestrator.NewNativeDiscovererFromKubeconfig("", ""); err == nil {
+				slog.Info("Discovery: using NativeDiscoverer (kubeconfig)")
+				defaultDiscoverer = d
+				return
+			}
+		}
 		slog.Info("Discovery: using KubectlDiscoverer (kubectl shell-out)")
 		defaultDiscoverer = orchestrator.NewKubectlDiscoverer()
 	})
 	return defaultDiscoverer
+}
+
+func (a *App) discovery() orchestrator.Discoverer {
+	if a.discoverer != nil {
+		return a.discoverer
+	}
+	return discoverer()
 }
 
 // ListKataPods lists kata-qemu pods cluster-wide via the default discoverer.
@@ -47,12 +62,4 @@ func ListKataPods(ctx context.Context) ([]PodInfo, error) {
 // ListKataNodes lists kata-runtime-labeled nodes via the default discoverer.
 func ListKataNodes(ctx context.Context) ([]NodeInfo, error) {
 	return discoverer().ListKataNodes(ctx)
-}
-
-func lookupPodNode(ctx context.Context, namespace, name string) (string, error) {
-	return discoverer().LookupPodNode(ctx, namespace, name)
-}
-
-func lookupNodeInternalIP(ctx context.Context, name string) (string, error) {
-	return discoverer().LookupNodeInternalIP(ctx, name)
 }

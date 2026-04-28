@@ -82,7 +82,6 @@ func main() {
 		fmt.Println("katamaran-orchestrator", buildinfo.Version)
 		return
 	}
-	_ = kubeconfig // reserved for a future Native-out-of-cluster constructor
 
 	// Detect mutually exclusive flags so users do not silently get one mode
 	// while believing they configured the other.
@@ -113,6 +112,9 @@ func main() {
 	var o orchestrator.Orchestrator
 	if *native {
 		nat, err := orchestrator.NewNative()
+		if err != nil {
+			nat, err = orchestrator.NewNativeFromKubeconfig(*kubeconfig, "")
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: native orchestrator init: %v\n", err)
 			os.Exit(2)

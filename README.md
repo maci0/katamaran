@@ -55,7 +55,7 @@ This section walks you through building katamaran, setting up a two-node cluster
 
 ### Tutorial Requirements
 
-In addition to the [runtime prerequisites](#prerequisites) (QEMU 6.2+, Kata 3.x, iproute2, Go 1.24+), the tutorial requires:
+In addition to the [runtime prerequisites](#prerequisites) (QEMU 6.2+, Kata 3.x, iproute2, Go 1.26+), the tutorial requires:
 
 - Linux host with KVM (`/dev/kvm` must exist)
 - `minikube`, `kubectl`, `helm` installed
@@ -266,7 +266,7 @@ To ensure absolute safety during orchestration, `katamaran` implements strict co
 | **QEMU** | 6.2+ | Must support `drive-mirror`, `nbd-server-start`, `announce-self`, QMP |
 | **Kata Containers** | 3.x | QMP socket must be accessible |
 | **iproute2** | any | `tc` (sch_plug qdisc) + `ip tunnel` (IPIP/GRE/ip6tnl/ip6gre) |
-| **Go** | 1.24+ | Install system-wide |
+| **Go** | 1.26+ | Install system-wide |
 
 For CNI compatibility details (OVN-Kubernetes, Cilium, Calico, Flannel, and others), see [Networking: CNI Compatibility](#networking-cni-compatibility) under Kubernetes Integration.
 

@@ -13,7 +13,7 @@
 ./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
-All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.24+.
+All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.26+.
 
 > **Note:** E2E tests build the katamaran container image from source and deploy the binary to nodes via a DaemonSet. A pre-built local `bin/katamaran` is not required for E2E tests.
 
@@ -41,7 +41,7 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 
 - Linux host with KVM support (`/dev/kvm` must exist)
 - Nested virtualization enabled (required for Kata Containers inside minikube)
-- Go 1.24+ (install system-wide)
+- Go 1.26+ (install system-wide)
 
 ### Verify Nested Virtualization
 

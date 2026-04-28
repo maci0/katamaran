@@ -142,7 +142,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if nat, err := orchestrator.NewNative(); err == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (in-cluster client-go)")
-	} else if nat, err2 := orchestrator.NewNativeFromKubeconfig(os.Getenv("KUBECONFIG"), ""); err2 == nil {
+	} else if nat, err2 := orchestrator.NewNativeFromKubeconfig("", ""); err2 == nil {
 		app.orch = nat
 		slog.Info("Migration: using Native orchestrator (kubeconfig)", "in_cluster_err", err)
 	} else {
@@ -280,9 +280,9 @@ func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "index.html")
 }
 
-// handleListPods returns kata-runtime pods discovered via kubectl.
+// handleListPods returns kata-runtime pods discovered from Kubernetes.
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
-	pods, err := ListKataPods(r.Context())
+	pods, err := a.discovery().ListKataPods(r.Context())
 	if err != nil {
 		slog.Warn("list kata pods failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list pods", http.StatusBadGateway)
@@ -292,9 +292,9 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pods)
 }
 
-// handleListNodes returns nodes labeled for the kata runtime via kubectl.
+// handleListNodes returns nodes labeled for the kata runtime.
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
-	nodes, err := ListKataNodes(r.Context())
+	nodes, err := a.discovery().ListKataNodes(r.Context())
 	if err != nil {
 		slog.Warn("list kata nodes failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list nodes", http.StatusBadGateway)

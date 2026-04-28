@@ -111,6 +111,9 @@ func main() {
 	var orch orchestrator.Orchestrator
 	nat, err := orchestrator.NewNative()
 	if err != nil {
+		nat, err = orchestrator.NewNativeFromKubeconfig(*kubeconfig, "")
+	}
+	if err != nil {
 		// Fall back to NewScript if not running in-cluster — mostly useful
 		// during local development.
 		slog.Warn("Native orchestrator unavailable, falling back to Script", "error", err)
@@ -120,6 +123,9 @@ func main() {
 	}
 
 	disc, derr := orchestrator.NewNativeDiscoverer()
+	if derr != nil {
+		disc, derr = orchestrator.NewNativeDiscovererFromKubeconfig(*kubeconfig, "")
+	}
 	if derr != nil {
 		slog.Warn("NativeDiscoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
 	}

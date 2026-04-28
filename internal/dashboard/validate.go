@@ -128,24 +128,24 @@ func validTarget(target string) bool {
 	return true
 }
 
-// maxFormValueLen caps the length of form values passed to migrate.sh.
-// Prevents extremely long arguments from reaching subprocess argv.
+// maxFormValueLen caps migration form values before they are rendered into
+// Job command arguments.
 const maxFormValueLen = 512
 
-// formValueRe is the allowlist for form values passed to migrate.sh.
-// Aligned with migrate.sh's shell_safe_re to ensure defence-in-depth
-// rejects the same characters at both layers.
+// formValueRe is the allowlist for values that may be rendered into Job
+// command arguments. Keep it aligned with deploy/migrate.sh's shell_safe_re
+// so direct script and dashboard submissions accept the same character set.
 var formValueRe = regexp.MustCompile(`^[a-zA-Z0-9_./:@=\-]+$`)
 
 // validFormValue checks that a form value contains only shell-safe characters
-// and does not exceed maxFormValueLen. Uses a whitelist aligned with
-// migrate.sh's shell_safe_re regex, rejecting any characters that could be
-// misinterpreted by envsubst or /bin/sh -c.
+// and does not exceed maxFormValueLen. The Job templates still run the
+// katamaran command through /bin/sh -c, so reject characters with shell
+// meaning before values reach the orchestrator.
 //
 // Also rejects ".." path-traversal sequences. The allowlist regex includes
 // "." for legitimate path/IP/version components, but ".." enables path
 // traversal in fields passed as filesystem paths (qmp_source, qmp_dest,
-// tap_netns) to migrate.sh — escaping intended directories to access
+// tap_netns), escaping intended directories to access
 // arbitrary unix sockets or namespaces.
 func validFormValue(v string) bool {
 	if len(v) > maxFormValueLen || !formValueRe.MatchString(v) {

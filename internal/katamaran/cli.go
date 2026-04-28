@@ -60,7 +60,9 @@ Common flags:
 
 Source mode flags:
   --dest-ip string         Destination node IP address (required)
-  --vm-ip string           VM pod IP for traffic redirection (required)
+  --vm-ip string           VM pod IP for traffic redirection (required unless using pod mode)
+  --pod-name string        Source pod name (alternative to --qmp/--vm-ip)
+  --pod-namespace string   Source pod namespace (required with --pod-name)
   --tunnel-mode string     Tunnel mode: 'ipip', 'gre', or 'none' (default "ipip")
   --downtime int           Max allowed downtime in milliseconds, 1-60000 (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
@@ -69,6 +71,9 @@ Source mode flags:
 Destination mode flags:
   --tap string             Tap interface name for tc sch_plug buffering
   --tap-netns string       Network namespace path for tap interface (e.g. /proc/PID/ns/net)
+  --dest-pod-name string   Destination pod name (alternative to --qmp)
+  --dest-pod-namespace string
+                           Destination pod namespace (required with --dest-pod-name)
   --replay-cmdline string  Spawn QEMU on dest by replaying captured source cmdline (with -incoming defer)
 
 Other:

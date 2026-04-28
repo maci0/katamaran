@@ -21,6 +21,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 )
 
 // Orchestrator runs a single live migration to completion.
@@ -43,3 +44,8 @@ type Orchestrator interface {
 // also propagated into the source/dest pods via the KATAMARAN_MIGRATION_ID
 // env var so logs and metrics correlate end-to-end.
 type MigrationID string
+
+// ErrUnknownID is returned by Watch/Stop for a migration ID that the
+// orchestrator does not know about (already finished + cleaned, or never
+// started).
+var ErrUnknownID = errors.New("unknown migration ID")

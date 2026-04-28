@@ -33,7 +33,7 @@ cd "${SCRIPT_DIR}"
 if command -v go &>/dev/null; then
     GO_CMD="go"
 else
-    echo "Error: Go not found. Install Go 1.24+ system-wide."
+    echo "Error: Go not found. Install Go 1.26+ system-wide."
     exit 1
 fi
 readonly GO_CMD
@@ -177,7 +177,7 @@ if [[ -x "${BINARY}" ]]; then
         fail "--help output should include --mode flag description"
     fi
 
-    for flag_name in dest-ip vm-ip qmp tap tap-netns drive-id shared-storage tunnel-mode downtime auto-downtime multifd-channels log-format log-level; do
+    for flag_name in dest-ip vm-ip pod-name pod-namespace qmp tap tap-netns dest-pod-name dest-pod-namespace drive-id shared-storage tunnel-mode downtime auto-downtime emit-cmdline-to replay-cmdline multifd-channels log-format log-level; do
         if echo "${HELP_OUT}" | grep -q -- "--${flag_name}"; then
             pass "--help output includes --${flag_name} flag"
         else

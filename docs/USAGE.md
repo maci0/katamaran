@@ -125,13 +125,20 @@ The repository includes:
 
 ### Required inputs
 
+All modes require:
+
 - source node name
 - destination node name
+- destination node IP
+- image reference
+
+Legacy explicit-fields mode also requires:
+
 - destination tap interface name
 - source and destination QMP socket paths
-- destination node IP
 - VM pod IP
-- image reference
+
+Pod-picker mode requires source pod name + namespace instead of source QMP, VM IP, and tap values; the resolver derives those at runtime.
 
 ### Example (legacy explicit-fields mode)
 
@@ -192,7 +199,7 @@ deploy/migrate.sh --help
 
 `bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin and emits newline-delimited JSON `StatusUpdate` events on stdout. Exit code: 0 on success, 1 on migration failure, 2 on input error.
 
-Useful for CI pipelines and a future Migration CRD reconciler — no shell parsing of `migrate.sh` output.
+Useful for CI pipelines and the Migration CRD controller — no shell parsing of `migrate.sh` output.
 
 ```bash
 echo '{
@@ -224,8 +231,8 @@ The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/m
 
 ## Validation Rules
 
-- `--dest-ip` and `--vm-ip` are required in `source` mode
-- `--dest-ip` and `--vm-ip` must be the same address family
+- Source mode requires `--dest-ip` plus either `--vm-ip` or `--pod-name` + `--pod-namespace`
+- When `--vm-ip` is supplied explicitly, `--dest-ip` and `--vm-ip` must be the same address family
 - `--tunnel-mode` must be `ipip`, `gre`, or `none`
 - `--downtime` must be between 1 and 60000
 - Source-only flags in dest mode (and vice versa) produce warnings

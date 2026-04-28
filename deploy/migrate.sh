@@ -95,7 +95,7 @@ usage() {
         echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
         echo "  --downtime <ms>         Max allowed downtime in milliseconds, 1-60000 (default: 25)"
         echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
-        echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 4, 0 to disable)"
+        echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 0, disabled)"
         echo "  --log-level <level>     Log level for katamaran: debug, info, warn, error"
         echo "  --log-format <fmt>      Log output format for katamaran: text or json"
         echo "  --context <context>     Kubectl context to use"
