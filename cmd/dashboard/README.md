@@ -9,11 +9,12 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 - **Pod-picker UX** — pick a kata-qemu source pod and destination node from dropdowns; backend resolves sandbox UUID, QEMU PID, pod IP, and node IP automatically. Optional dest-pod picker for symmetric resolution.
 - **Cmdline replay (zero-config dest)** — when `replay_cmdline=true` is set, the dashboard captures the source QEMU command line and replays it on the destination node with `-incoming defer`. The dest sandbox is spawned by katamaran itself.
 - **Advanced override pane** — every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
-- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and trigger `deploy/migrate.sh` with one click.
+- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); the legacy `deploy/migrate.sh` shell path has been removed.
+- **RAM transfer progress bar** — live `submitted → transferring → succeeded` widget driven by `KATAMARAN_PROGRESS` markers tailed from the source pod. Shows percent, transferred/total bytes, then collapses to a green "done" bar with the actual VM downtime once the dest job completes.
 - **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
 - **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data.
 - **Live stats** — packets transmitted, dropped, average latency, max latency (computed from ping data).
-- **Color-coded log viewer** — red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries.
+- **Color-coded log viewer** — red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries. Final succeeded line includes wall-clock + setup/xfer breakdown, e.g. `>>> succeeded: 2.25 GB transferred, 27ms downtime, 30s wall (2s setup + 28s xfer)`.
 - **Status badges** — idle (gray), migration running (blue pulse), loadgen active (green pulse).
 - **Dark theme** — navy/slate backgrounds with SVG katamaran boat + animated wave header.
 
@@ -28,13 +29,13 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/healthz` | GET | Kubernetes liveness probe (lightweight, always returns 200 OK) |
-| `/readyz` | GET | Kubernetes readiness probe (returns 200 if `migrate.sh` is found, 503 otherwise) |
+| `/readyz` | GET | Kubernetes readiness probe (returns 200 once a Native orchestrator is wired, 503 otherwise) |
 | `/` | GET | Dashboard frontend |
 | `/api/pods` | GET | List of `kata-qemu` pods cluster-wide: `[{namespace, name, node, pod_ip}]`. Backs the Source Pod and Dest Pod dropdowns. |
 | `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
 | `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `shared_storage`, `replay_cmdline`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`. |
 | `/api/migrate/stop` | POST | Cancel running migration |
-| `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}` |
+| `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, migration_progress, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}`. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
 | `/api/ping?target=<host-or-ip>` | POST | Start continuous ping (5/sec) to target |
 | `/api/ping/stop` | POST | Stop active ping/loadgen |
 | `/api/httpgen?target=<host-or-ip[:port]>` | POST | Start HTTP load generator (5 req/sec) to target |
@@ -69,7 +70,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/migrate \
 
 ## Building the Container
 
-From the repository root (the build context needs `deploy/` for `migrate.sh`):
+From the repository root:
 
 ```bash
 make dashboard
@@ -93,7 +94,7 @@ podman run -d --rm -p 8080:8080 \
 
 Then visit http://localhost:8080
 
-> **Note:** `--network host` is required so the dashboard can reach the Kubernetes API and migration targets. The kubeconfig mount is needed for `kubectl` commands used by `deploy/migrate.sh`.
+> **Note:** `--network host` is required so the dashboard can reach the Kubernetes API and migration targets. The kubeconfig mount is needed for the Native orchestrator's client-go calls when running outside the cluster; in-cluster pods use the mounted ServiceAccount instead.
 
 ## Running In-Cluster
 
@@ -118,10 +119,13 @@ Access the dashboard via `kubectl port-forward -n kube-system svc/katamaran-dash
                │ HTTP
 ┌──────────────▼──────────────────────────────┐
 │  Go HTTP server (internal/dashboard)        │
-│  - /api/migrate → exec deploy/migrate.sh    │
+│  - /api/migrate → Native orchestrator       │
+│       └─ client-go: submit src + dest Jobs  │
+│       └─ tail src pod log for KATAMARAN_*   │
 │  - /api/ping    → exec ping subprocess      │
 │  - /api/httpgen → HTTP GET loop             │
-│  - /api/status  → JSON {logs, pings, state} │
+│  - /api/status  → JSON {logs, pings,        │
+│                          progress, state}   │
 └─────────────────────────────────────────────┘
 ```
 
