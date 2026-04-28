@@ -313,6 +313,11 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	started := a.migrationsStarted
 	succeeded := a.migrationsSucceeded
 	failed := a.migrationsFailed
+	var progress *MigrationProgress
+	if a.latestProgress != nil {
+		p := *a.latestProgress // copy under lock so caller mutation is safe
+		progress = &p
+	}
 	a.migrationMutex.Unlock()
 
 	var elapsedSeconds int64
@@ -334,6 +339,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Migrating:               status,
 		MigrationID:             migrationID,
 		MigrationElapsedSeconds: elapsedSeconds,
+		MigrationProgress:       progress,
 		LastMigrationResult:     lastResult,
 		LastMigrationError:      lastError,
 		MigrationsStarted:       started,

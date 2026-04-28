@@ -12,21 +12,29 @@ type PingData struct {
 	Error   string  `json:"error,omitempty"`
 }
 
+type MigrationProgress struct {
+	Phase          string `json:"phase"`
+	RAMTransferred int64  `json:"ram_transferred"`
+	RAMTotal       int64  `json:"ram_total"`
+	DowntimeMS     int64  `json:"downtime_ms,omitempty"`
+}
+
 type StatusResponse struct {
-	Version                 string     `json:"version"`
-	UptimeSeconds           int64      `json:"uptime_seconds"`
-	Migrating               bool       `json:"migrating"`
-	MigrationID             string     `json:"migration_id,omitempty"`
-	MigrationElapsedSeconds int64      `json:"migration_elapsed_seconds,omitempty"`
-	LastMigrationResult     string     `json:"last_migration_result,omitempty"`
-	LastMigrationError      string     `json:"last_migration_error,omitempty"`
-	MigrationsStarted       int64      `json:"migrations_started"`
-	MigrationsSucceeded     int64      `json:"migrations_succeeded"`
-	MigrationsFailed        int64      `json:"migrations_failed"`
-	LoadgenRunning          bool       `json:"loadgen_running"`
-	LoadgenType             string     `json:"loadgen_type,omitempty"`
-	Logs                    []string   `json:"logs"`
-	Pings                   []PingData `json:"pings"`
+	Version                 string             `json:"version"`
+	UptimeSeconds           int64              `json:"uptime_seconds"`
+	Migrating               bool               `json:"migrating"`
+	MigrationID             string             `json:"migration_id,omitempty"`
+	MigrationElapsedSeconds int64              `json:"migration_elapsed_seconds,omitempty"`
+	MigrationProgress       *MigrationProgress `json:"migration_progress,omitempty"`
+	LastMigrationResult     string             `json:"last_migration_result,omitempty"`
+	LastMigrationError      string             `json:"last_migration_error,omitempty"`
+	MigrationsStarted       int64              `json:"migrations_started"`
+	MigrationsSucceeded     int64              `json:"migrations_succeeded"`
+	MigrationsFailed        int64              `json:"migrations_failed"`
+	LoadgenRunning          bool               `json:"loadgen_running"`
+	LoadgenType             string             `json:"loadgen_type,omitempty"`
+	Logs                    []string           `json:"logs"`
+	Pings                   []PingData         `json:"pings"`
 }
 
 type App struct {
@@ -50,6 +58,12 @@ type App struct {
 
 	lastMigrationResult string // "success", "error", or "" (no migration run yet)
 	lastMigrationError  string // error message from the last failed migration
+
+	// latestProgress is the most recent StatusUpdate's structured progress
+	// data, surfaced to /api/status so the UI can render a progress bar.
+	// Reset when a new migration starts; persists after completion so the
+	// final transferred / downtime values stay visible until next run.
+	latestProgress *MigrationProgress
 
 	// Lifetime counters for observability.
 	migrationsStarted   int64

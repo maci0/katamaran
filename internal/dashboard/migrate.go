@@ -185,6 +185,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.isMigrating = true
 	a.migrationOutput = nil
 	a.logBufferWrapped = false
+	a.latestProgress = nil
 	migrationID := generateID()
 	a.migrationID = migrationID
 	a.migrationStart = time.Now()
@@ -271,6 +272,16 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	var terminal orchestrator.StatusPhase
 	var terminalErr error
 	for u := range updates {
+		if u.RAMTotal > 0 || u.Phase == orchestrator.PhaseSucceeded {
+			a.migrationMutex.Lock()
+			a.latestProgress = &MigrationProgress{
+				Phase:          string(u.Phase),
+				RAMTransferred: u.RAMTransferred,
+				RAMTotal:       u.RAMTotal,
+				DowntimeMS:     u.DowntimeMS,
+			}
+			a.migrationMutex.Unlock()
+		}
 		line := ">>> " + string(u.Phase)
 		switch {
 		case u.Phase == orchestrator.PhaseSucceeded && u.RAMTotal > 0:

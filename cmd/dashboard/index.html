@@ -231,6 +231,22 @@
                     </div>
                 </div>
 
+                <div id="progress-card" class="hidden bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-slate-700/50 flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">RAM Transfer</h2>
+                        <span id="progress-meta" class="text-xs text-slate-400 font-mono"></span>
+                    </div>
+                    <div class="px-5 py-4">
+                        <div class="w-full bg-slate-900/70 rounded-full h-3 overflow-hidden">
+                            <div id="progress-bar" class="h-full bg-hull-500 transition-all duration-300" style="width:0%"></div>
+                        </div>
+                        <div class="flex justify-between text-xs text-slate-400 mt-2 font-mono">
+                            <span id="progress-phase">submitted</span>
+                            <span id="progress-pct">0%</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
                     <div class="px-5 py-3 border-b border-slate-700/50 flex items-center justify-between">
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider" id="log-heading">Migration Log</h2>
@@ -620,6 +636,37 @@
         showToast('Logs cleared', 'info');
     });
 
+    function humanBytes(n) {
+        if (n >= (1<<30)) return (n/(1<<30)).toFixed(2) + ' GB';
+        if (n >= (1<<20)) return (n/(1<<20)).toFixed(1) + ' MB';
+        if (n >= (1<<10)) return (n/(1<<10)).toFixed(1) + ' KB';
+        return n + ' B';
+    }
+    function renderProgress(p) {
+        var card = document.getElementById('progress-card');
+        if (!p || !p.ram_total) { card.classList.add('hidden'); return; }
+        card.classList.remove('hidden');
+        var bar = document.getElementById('progress-bar');
+        var meta;
+        if (p.phase === 'succeeded') {
+            bar.style.width = '100%';
+            bar.classList.add('bg-emerald-500');
+            bar.classList.remove('bg-hull-500');
+            document.getElementById('progress-pct').textContent = 'done';
+            meta = humanBytes(p.ram_total) + ' VM RAM';
+            if (p.downtime_ms) meta += ' · ' + p.downtime_ms + 'ms downtime';
+        } else {
+            var pct = Math.min(100, Math.max(0, Math.round((p.ram_transferred * 100) / p.ram_total)));
+            bar.style.width = pct + '%';
+            bar.classList.remove('bg-emerald-500');
+            bar.classList.add('bg-hull-500');
+            document.getElementById('progress-pct').textContent = pct + '%';
+            meta = humanBytes(p.ram_transferred) + ' / ' + humanBytes(p.ram_total);
+        }
+        document.getElementById('progress-phase').textContent = p.phase;
+        document.getElementById('progress-meta').textContent = meta;
+    }
+
     function classifyLog(line) {
         var l = line.toLowerCase();
         if (l.indexOf('error') !== -1 || l.indexOf('failed') !== -1 || l.indexOf('fatal') !== -1) return 'text-red-400';
@@ -682,6 +729,7 @@
             var httpBtn = document.getElementById('btn-http');
             var stopLoadBtn = document.getElementById('btn-stop-load');
             if (data.version && verEl.textContent !== data.version) verEl.textContent = 'v' + data.version;
+            renderProgress(data.migration_progress);
             var indicator = document.getElementById('loadgen-indicator');
             var hasPings = data.pings && data.pings.length > 0;
 
