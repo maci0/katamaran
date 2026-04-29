@@ -197,10 +197,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		slog.Warn("Kubernetes API unreachable: migration handlers will return 503 until in-cluster config or KUBECONFIG is available", "in_cluster_err", err, "kubeconfig_err", err2)
 	}
 
-	expvar.NewString("version").Set(buildinfo.Version)
-	expvar.Publish("migrations_started", expvar.Func(func() any { return app.getCounter("started") }))
-	expvar.Publish("migrations_succeeded", expvar.Func(func() any { return app.getCounter("succeeded") }))
-	expvar.Publish("migrations_failed", expvar.Func(func() any { return app.getCounter("failed") }))
+	publishExpvars(app)
 
 	mux := app.newMux(*enableDebug)
 

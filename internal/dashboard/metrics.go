@@ -1,11 +1,16 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"expvar"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/maci0/katamaran/internal/buildinfo"
 )
 
 var (
@@ -133,4 +138,84 @@ func writePromMapMetric(w http.ResponseWriter, name, help, kind, labelName strin
 	m.Do(func(kv expvar.KeyValue) {
 		fmt.Fprintf(w, "%s{%s=%q} %s\n", name, labelName, kv.Key, kv.Value.String())
 	})
+}
+
+// publishExpvars wires the dashboard's runtime counters into the
+// process-wide expvar registry. Run() can be invoked more than once
+// per process (the test suite does), so we use expvar.Get to detect
+// already-registered names and reuse them — expvar.NewString /
+// expvar.Publish panic on duplicate registration.
+//
+// The handler functions captured here are bound to the live App, so
+// re-running Run() with a fresh App means subsequent /debug/vars
+// scrapes report counters from the new instance. That matches the
+// "tests reuse Run with their own App" semantics; a stale closure
+// would be misleading otherwise.
+func publishExpvars(app *App) {
+	if v, ok := expvar.Get("version").(*expvar.String); ok {
+		v.Set(buildinfo.Version)
+	} else {
+		expvar.NewString("version").Set(buildinfo.Version)
+	}
+	publishExpvarFunc("migrations_started", func() any { return app.getCounter("started") })
+	publishExpvarFunc("migrations_succeeded", func() any { return app.getCounter("succeeded") })
+	publishExpvarFunc("migrations_failed", func() any { return app.getCounter("failed") })
+}
+
+// publishExpvarFunc registers fn under name, or replaces the existing
+// expvar.Func with the new closure when name is already registered.
+// The underlying expvar.Map exposes no Set on the registered Var, so
+// we shadow it via a stable wrapper variable per name and just swap
+// the pointed-at function on subsequent Run() invocations.
+func publishExpvarFunc(name string, fn func() any) {
+	if w, ok := expvar.Get(name).(*expvarFuncWrapper); ok {
+		w.set(fn)
+		return
+	}
+	w := &expvarFuncWrapper{}
+	w.set(fn)
+	expvar.Publish(name, w)
+}
+
+// expvarFuncWrapper is an expvar.Var whose underlying function can be
+// rebound. expvar.Func itself is a function value, not a struct, so
+// once published its closure is fixed for the lifetime of the process.
+// Wrapping it in a struct + atomic swap lets Run() be called again
+// (e.g. from a test) without panicking on duplicate registration and
+// without leaking the previous App's counter state into subsequent
+// scrapes.
+type expvarFuncWrapper struct {
+	mu sync.Mutex
+	fn func() any
+}
+
+func (w *expvarFuncWrapper) set(fn func() any) {
+	w.mu.Lock()
+	w.fn = fn
+	w.mu.Unlock()
+}
+
+func (w *expvarFuncWrapper) String() string {
+	w.mu.Lock()
+	fn := w.fn
+	w.mu.Unlock()
+	if fn == nil {
+		return "null"
+	}
+	v := fn()
+	b, err := json.Marshal(v)
+	if err != nil {
+		return strconv.Quote(fmt.Sprintf("%v", v))
+	}
+	return string(b)
+}
+
+func (w *expvarFuncWrapper) Value() any {
+	w.mu.Lock()
+	fn := w.fn
+	w.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
