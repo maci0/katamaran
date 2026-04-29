@@ -237,6 +237,7 @@ func serveDebug(ctx context.Context, addr string) {
 	mux.HandleFunc("GET /healthz", plainOK("ok"))
 	mux.HandleFunc("GET /readyz", plainOK("ready"))
 	mux.Handle("GET /debug/vars", expvar.Handler())
+	mux.HandleFunc("GET /metrics", servePrometheusMetrics)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -247,6 +248,45 @@ func serveDebug(ctx context.Context, addr string) {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fail(fmt.Errorf("debug server: %w", err))
 	}
+}
+
+// servePrometheusMetrics writes the controller's expvar counters in
+// Prometheus text-exposition format. We translate in-process instead of
+// pulling in the prometheus/client_golang dependency: every controller
+// metric is a plain int counter or gauge, the volume is fixed at compile
+// time, and Prometheus scrapers happily ingest the text format from any
+// HTTP endpoint.
+//
+// The metric names already follow Prometheus conventions
+// (`_total` suffix on counters), so the translation is mechanical:
+// emit one HELP + TYPE + value triple per int var.
+func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	type metricSpec struct {
+		help, kind string
+	}
+	specs := map[string]metricSpec{
+		"katamaran_migrations_dispatched_total":       {"Migrations the controller has dispatched (Apply succeeded).", "counter"},
+		"katamaran_migrations_succeeded_total":        {"Migrations that reached PhaseSucceeded.", "counter"},
+		"katamaran_migrations_failed_total":           {"Migrations that reached PhaseFailed.", "counter"},
+		"katamaran_migrations_recovered_total":        {"Migrations the controller resumed observing after a restart.", "counter"},
+		"katamaran_migrations_deleted_total":          {"Migration CRs the controller cleaned up via finalizer.", "counter"},
+		"katamaran_migrations_inflight":               {"Migrations currently in a non-terminal phase.", "gauge"},
+		"katamaran_migrations_reconcile_errors_total": {"Reconcile loop errors observed since startup.", "counter"},
+		"katamaran_migrations_watch_lost_total":       {"Watch channels that closed before reaching a terminal phase.", "counter"},
+	}
+	expvar.Do(func(kv expvar.KeyValue) {
+		spec, ok := specs[kv.Key]
+		if !ok {
+			return // skip non-katamaran expvars (cmdline, memstats, ...)
+		}
+		raw := kv.Value.String() // expvar.Int.String() is the decimal value
+		fmt.Fprintf(w, "# HELP %s %s\n", kv.Key, spec.help)
+		fmt.Fprintf(w, "# TYPE %s %s\n", kv.Key, spec.kind)
+		fmt.Fprintf(w, "%s %s\n", kv.Key, raw)
+	})
 }
 
 func loadConfig(kubeconfig string) (*rest.Config, error) {

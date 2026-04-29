@@ -389,22 +389,49 @@ The sequential approach — storage first, then RAM — minimizes total migratio
 
 This section explores which storage and networking stacks are compatible, what the ideal setup looks like, and the open integration points.
 
-### Current Deployment Flow (DaemonSet + Jobs)
+### Current Deployment Flow
+
+Production paths run through the in-cluster **Native orchestrator**
+(client-go) embedded in either the dashboard or the `katamaran-mgr`
+controller. Both consume the same `orchestrator.Request` type and submit
+identical Job manifests, so behaviour is identical between the
+operator-driven (CRD) and human-driven (UI) entry points. The legacy
+`deploy/migrate.sh` shell harness is kept for ad-hoc CLI runs and CI
+smoke only.
 
 ```mermaid
 flowchart LR
-    A[Build image localhost/katamaran:dev] --> B[Load image into cluster]
-    B --> C[Apply deploy/daemonset.yaml]
-    C --> D["katamaran binary present on Kata nodes"]
-    D --> E[Create destination VM pod]
-    E --> F[Detect QMP socket + tap iface]
-    F --> G[Run deploy/migrate.sh]
-    G --> H[Render job-dest.yaml via envsubst]
-    H --> I[Wait dest job ready]
-    I --> J[Render job-source.yaml via envsubst]
-    J --> K[Wait source job complete]
-    K --> L[Collect logs + migration result]
+    subgraph entry["Entry points"]
+      U1[kubectl apply Migration CR]
+      U2[Dashboard UI / curl /api/migrate]
+    end
+    subgraph control["Control plane"]
+      MGR[katamaran-mgr<br/>2 replicas, leader-elected]
+      DASH[Dashboard]
+    end
+    NATIVE[Native orchestrator<br/>internal/orchestrator/native.go]
+    JOBS[(source + dest Jobs<br/>katamaran-source-&lt;id&gt;<br/>katamaran-dest-&lt;id&gt;)]
+    SRC[Source pod<br/>--mode source]
+    DEST[Dest pod<br/>--mode dest, --replay-cmdline]
+    QEMU_SRC[(Source QEMU<br/>kata sandbox)]
+    QEMU_DST[(Dest QEMU<br/>spawned by katamaran)]
+
+    U1 --> MGR --> NATIVE
+    U2 --> DASH --> NATIVE
+    NATIVE --> JOBS
+    JOBS --> SRC
+    JOBS --> DEST
+    SRC -- migrate-set-parameters / migrate --> QEMU_SRC
+    DEST -- spawns + migrate-incoming --> QEMU_DST
+    QEMU_SRC -. tcp:&lt;dest&gt;:4444 multifd RAM stream .-> QEMU_DST
 ```
+
+Status flows back the other way: source emits structured
+`KATAMARAN_PROGRESS` / `KATAMARAN_RESULT` /
+`KATAMARAN_DOWNTIME_LIMIT` markers via stdout; the orchestrator tails
+those on the source pod's log and turns them into `StatusUpdate`
+events that the dashboard renders as a progress bar and `katamaran-mgr`
+patches onto `.status` of the Migration CR.
 
 ### Storage: CSI Driver Compatibility
 

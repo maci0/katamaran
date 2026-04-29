@@ -147,6 +147,20 @@ Inspect a migration's full state, including the assigned `migrationID`,
 kubectl get migration <name> -n <namespace> -o yaml | yq .status
 ```
 
+The controller exposes operational endpoints on port `8081`:
+
+| Path | Description |
+|------|-------------|
+| `/healthz`     | Kubelet liveness probe |
+| `/readyz`      | Kubelet readiness probe |
+| `/metrics`     | Prometheus text-format counters: `katamaran_migrations_dispatched_total`, `_succeeded_total`, `_failed_total`, `_recovered_total`, `_deleted_total`, `_inflight`, `_reconcile_errors_total`, `_watch_lost_total` |
+| `/debug/vars`  | Same counters via Go expvar JSON, plus runtime memstats |
+
+Point a Prometheus scrape at the `katamaran-mgr` pod's `:8081/metrics`
+to ingest the migration counters. No `prometheus/client_golang` runtime
+dependency — the handler walks the in-process expvar registry and emits
+text-format directly.
+
 ## Job-Based Migration Install (Optional)
 
 If you plan to run migrations through Kubernetes Jobs, these assets are included:
