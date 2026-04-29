@@ -124,6 +124,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tunnelMode := fs.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds")
 	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT")
+	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, "Lower bound + overhead for the auto-calculated downtime (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime")
 	multifdChannels := fs.Int("multifd-channels", migration.DefaultMultifdChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
@@ -320,9 +321,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			DriveID:         *driveID,
 			SharedStorage:   *sharedStorage,
 			TunnelMode:      tm,
-			DowntimeLimitMS: *downtimeLimit,
-			AutoDowntime:    *autoDowntime,
-			MultifdChannels: *multifdChannels,
+			DowntimeLimitMS:     *downtimeLimit,
+			AutoDowntime:        *autoDowntime,
+			AutoDowntimeFloorMS: *autoDowntimeFloor,
+			MultifdChannels:     *multifdChannels,
 			PodName:         *podName,
 			PodNamespace:    *podNS,
 			EmitCmdlineTo:   *emitCmdlineTo,

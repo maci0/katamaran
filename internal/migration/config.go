@@ -106,7 +106,11 @@ type SourceConfig struct {
 	TunnelMode      TunnelMode
 	DowntimeLimitMS int
 	AutoDowntime    bool
-	MultifdChannels int
+	// AutoDowntimeFloorMS overrides rttMinOverheadMS (and the implicit
+	// minimum on the auto-calculated downtime). Zero uses the package
+	// default. Ignored when AutoDowntime is false.
+	AutoDowntimeFloorMS int
+	MultifdChannels     int
 	// PodName and PodNamespace are an alternative to QMPSocket+VMIP: when set,
 	// the source binary resolves the pod's sandbox container at runtime to
 	// derive the QMP socket path and VM IP. Consumed by the migration package.

@@ -78,6 +78,12 @@ type Request struct {
 	// RTT instead of using the fixed DowntimeMS value.
 	AutoDowntime bool
 
+	// AutoDowntimeFloorMS is the lower bound (and additive overhead) for
+	// the auto-calculated downtime: applied = max(rtt*multiplier + floor,
+	// floor). Zero falls back to the source binary's compile-time default
+	// (currently 25ms). Only consulted when AutoDowntime is true.
+	AutoDowntimeFloorMS int
+
 	// MultifdChannels enables parallel RAM-migration TCP channels. Zero
 	// disables multifd. Both source and destination must agree on the count.
 	MultifdChannels int

@@ -241,13 +241,20 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 
 	var rttMS int64
 	if cfg.AutoDowntime {
+		floorMS := cfg.AutoDowntimeFloorMS
+		if floorMS <= 0 {
+			floorMS = rttMinOverheadMS
+		}
 		rtt, err := measureRTTFunc(cfg.DestIP)
 		if err != nil {
 			slog.Warn("Failed to measure RTT for auto-downtime, using fallback", "error", err, "fallback_ms", downtimeLimitMS)
 		} else {
 			rttMS = rtt.Milliseconds()
-			calculatedDowntime := int(rttMS*rttMultiplier) + rttMinOverheadMS
-			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS)
+			calculatedDowntime := int(rttMS*rttMultiplier) + floorMS
+			if calculatedDowntime < floorMS {
+				calculatedDowntime = floorMS
+			}
+			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS, "floor_ms", floorMS)
 			downtimeLimitMS = calculatedDowntime
 		}
 	}

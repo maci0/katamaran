@@ -182,6 +182,9 @@ func (s *Script) buildArgs(req Request) ([]string, error) {
 	}
 	if req.AutoDowntime {
 		args = append(args, "--auto-downtime")
+		if req.AutoDowntimeFloorMS > 0 {
+			args = append(args, "--auto-downtime-floor-ms", strconv.Itoa(req.AutoDowntimeFloorMS))
+		}
 	}
 	if req.MultifdChannels > 0 {
 		args = append(args, "--multifd-channels", strconv.Itoa(req.MultifdChannels))

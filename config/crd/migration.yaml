@@ -89,6 +89,17 @@ spec:
               autoDowntime:
                 type: boolean
                 default: false
+              autoDowntimeFloorMS:
+                description: |
+                  Optional override for the auto-downtime calculation's floor +
+                  per-call overhead, in milliseconds. The source binary
+                  computes max(rtt × 2 + autoDowntimeFloorMS, autoDowntimeFloorMS).
+                  Zero falls back to the source binary's compile-time default
+                  (25ms). Ignored when .spec.autoDowntime is false.
+                type: integer
+                minimum: 0
+                maximum: 60000
+                default: 0
               multifdChannels:
                 type: integer
                 minimum: 0
