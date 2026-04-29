@@ -206,7 +206,6 @@ func (r *Reconciler) updateTrack(key types.NamespacedName, id orchestrator.Migra
 }
 
 func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
-	mDispatched.Add(1)
 	mInflight.Add(1)
 	defer mInflight.Add(-1)
 	defer r.untrack(key)
@@ -215,13 +214,13 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	req, err := specToRequest(obj.Object)
 	if err != nil {
 		slog.Warn("Migration spec invalid", "migration", key, "error", err)
-		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", err.Error())
+		r.patchFailedStatus(ctx, key, "", "invalid spec", err.Error())
 		return
 	}
 	if req.SourcePod != nil {
 		if r.Discoverer == nil {
 			slog.Error("Migration cannot be resolved: discoverer unavailable", "migration", key)
-			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve migration", "discoverer unavailable")
+			r.patchFailedStatus(ctx, key, "", "resolve migration", "discoverer unavailable")
 			return
 		}
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -232,7 +231,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 				lerr = fmt.Errorf("source pod node is empty")
 			}
 			slog.Error("Resolve source pod node failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
-			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve source pod node", lerr.Error())
+			r.patchFailedStatus(ctx, key, "", "resolve source pod node", lerr.Error())
 			return
 		}
 		req.SourceNode = srcNode
@@ -243,13 +242,13 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 				lerr = fmt.Errorf("destination node InternalIP is empty")
 			}
 			slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
-			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "resolve dest node IP", lerr.Error())
+			r.patchFailedStatus(ctx, key, "", "resolve dest node IP", lerr.Error())
 			return
 		}
 		req.DestIP = destIP
 		if req.SourceNode == req.DestNode {
 			slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
-			_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "invalid spec", "source pod already runs on destNode")
+			r.patchFailedStatus(ctx, key, "", "invalid spec", "source pod already runs on destNode")
 			return
 		}
 	}
@@ -258,9 +257,10 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	id, err := r.Orchestrator.Apply(jobCtx, req)
 	if err != nil {
 		slog.Error("Apply failed", "migration", key, "error", err)
-		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "Apply failed", err.Error())
+		r.patchFailedStatus(ctx, key, "", "Apply failed", err.Error())
 		return
 	}
+	mDispatched.Add(1)
 	r.updateTrack(key, id, cancel)
 	slog.Info("Migration submitted", "migration", key, "migration_id", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
 	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
@@ -268,7 +268,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	updates, err := r.Orchestrator.Watch(jobCtx, id)
 	if err != nil {
 		slog.Error("Watch failed", "migration", key, "migration_id", id, "error", err)
-		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), "Watch failed", err.Error())
+		r.patchFailedStatus(ctx, key, string(id), "Watch failed", err.Error())
 		return
 	}
 	var lastPhase string
@@ -383,7 +383,6 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	if !hasFinalizer(obj) {
 		return // nothing to do; kube-apiserver already finished deleting
 	}
-	mDeleted.Add(1)
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
 	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migration_id", id)
 	if id != "" {
@@ -401,6 +400,8 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	r.mu.Unlock()
 	if err := r.removeFinalizer(ctx, obj); err != nil {
 		slog.Error("remove finalizer failed", "migration", key, "error", err)
+	} else {
+		mDeleted.Add(1)
 	}
 }
 
@@ -414,10 +415,9 @@ func hasFinalizer(obj *unstructured.Unstructured) bool {
 	return false
 }
 
-// addFinalizer patches the Migration to carry our finalizer.
-func (r *Reconciler) addFinalizer(ctx context.Context, obj *unstructured.Unstructured) error {
-	finalizers := append([]string{}, obj.GetFinalizers()...)
-	finalizers = append(finalizers, finalizerName)
+// patchFinalizers issues a merge-patch overwriting the Migration's
+// metadata.finalizers slice.
+func (r *Reconciler) patchFinalizers(ctx context.Context, obj *unstructured.Unstructured, finalizers []string) error {
 	patch := map[string]any{"metadata": map[string]any{"finalizers": finalizers}}
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
@@ -427,22 +427,21 @@ func (r *Reconciler) addFinalizer(ctx context.Context, obj *unstructured.Unstruc
 	return err
 }
 
+// addFinalizer patches the Migration to carry our finalizer.
+func (r *Reconciler) addFinalizer(ctx context.Context, obj *unstructured.Unstructured) error {
+	return r.patchFinalizers(ctx, obj, append(obj.GetFinalizers(), finalizerName))
+}
+
 // removeFinalizer patches the Migration to drop our finalizer. Other
 // finalizers (if any) are preserved.
 func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unstructured) error {
-	out := []string{}
+	out := make([]string, 0, len(obj.GetFinalizers()))
 	for _, f := range obj.GetFinalizers() {
 		if f != finalizerName {
 			out = append(out, f)
 		}
 	}
-	patch := map[string]any{"metadata": map[string]any{"finalizers": out}}
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		return err
-	}
-	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.MergePatchType, patchBytes, metav1.PatchOptions{})
-	return err
+	return r.patchFinalizers(ctx, obj, out)
 }
 
 // specToRequest extracts the .spec fields into an orchestrator.Request.
@@ -495,6 +494,12 @@ func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, 
 		u.ID = orchestrator.MigrationID(migrationID)
 	}
 	return r.patchStatusUpdate(ctx, key, u, errStr)
+}
+
+func (r *Reconciler) patchFailedStatus(ctx context.Context, key types.NamespacedName, migrationID, message, errStr string) {
+	if err := r.patchStatus(ctx, key, migrationID, string(orchestrator.PhaseFailed), message, errStr); err == nil {
+		mFailed.Add(1)
+	}
 }
 
 func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {

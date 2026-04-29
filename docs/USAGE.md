@@ -48,6 +48,7 @@ katamaran --mode <source|dest> [flags]
 | `--tunnel-mode` | no | `ipip` | `ipip`, `gre`, or `none` |
 | `--downtime` | no | `25` | Maximum allowed downtime during VM pause, 1-60000 (ms) |
 | `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |
+| `--auto-downtime-floor-ms` | no | `0` | Lower bound + overhead for auto downtime; 0 uses the built-in 25 ms floor |
 
 ### Destination mode flags
 
@@ -117,8 +118,9 @@ When `--auto-downtime` is set, the source binary measures network RTT to
 the destination node by sending three ICMP echo requests (the source
 pod runs privileged, so it can open a raw socket). The downtime limit
 programmed into QEMU is then `max(rtt × 2 + 25ms, 25ms)` — the floor
-exists so an idle kata-noble VM still converges. Both the chosen limit
-and the measured RTT are surfaced:
+exists so an idle kata-noble VM still converges. Override that floor with
+`--auto-downtime-floor-ms` when you need a larger minimum budget. Both the
+chosen limit and the measured RTT are surfaced:
 
 - in the source pod log via the structured marker
   `KATAMARAN_DOWNTIME_LIMIT applied_ms=N rtt_ms=R auto=true`,
@@ -212,7 +214,7 @@ deploy/migrate.sh --help
 
 ## Structured CLI: `katamaran-orchestrator`
 
-`bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin and emits newline-delimited JSON `StatusUpdate` events on stdout. By default it wraps `deploy/migrate.sh`; pass `--native` to submit Jobs directly through client-go like the dashboard and controller. Exit code: 0 on success, 1 on migration failure, 2 on input error.
+`bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin, submits Jobs through client-go, and emits newline-delimited JSON `StatusUpdate` events on stdout. Exit code: 0 on success, 1 on migration failure, 2 on input error.
 
 Useful for CI pipelines and local automation that need structured status instead of parsing `migrate.sh` output.
 
@@ -226,7 +228,7 @@ echo '{
   "DestPod":{"Namespace":"default","Name":"kata-dest-shell"},
   "SharedStorage":true,
   "ReplayCmdline":true
-}' | bin/katamaran-orchestrator --native
+}' | bin/katamaran-orchestrator
 ```
 
 Sample stdout:

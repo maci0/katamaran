@@ -2,6 +2,9 @@ package dashboard
 
 import (
 	"expvar"
+	"fmt"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -21,7 +24,7 @@ var (
 )
 
 func recordHTTPRequest(path string, status int, duration time.Duration) {
-	if path == "/healthz" || path == "/readyz" {
+	if isObservabilityPath(path) {
 		return
 	}
 	dashboardHTTPRequestsTotal.Add(1)
@@ -33,6 +36,15 @@ func recordHTTPRequest(path string, status int, duration time.Duration) {
 	}
 	if duration >= slowRequestThreshold {
 		dashboardHTTPSlowRequestsTotal.Add(1)
+	}
+}
+
+func isObservabilityPath(path string) bool {
+	switch path {
+	case "/healthz", "/readyz", "/metrics", "/debug/vars":
+		return true
+	default:
+		return strings.HasPrefix(path, "/debug/pprof/")
 	}
 }
 
@@ -90,4 +102,35 @@ func migrationDurationBucket(d time.Duration) string {
 	default:
 		return "gte_30m"
 	}
+}
+
+func serveDashboardMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	writePromMetric(w, "dashboard_http_requests_total", "Dashboard HTTP requests served, excluding health and metrics endpoints.", "counter", dashboardHTTPRequestsTotal.String())
+	writePromMetric(w, "dashboard_http_server_errors_total", "Dashboard HTTP responses with status code >= 500.", "counter", dashboardHTTPServerErrorsTotal.String())
+	writePromMetric(w, "dashboard_http_slow_requests_total", "Dashboard HTTP requests slower than the configured slow request threshold.", "counter", dashboardHTTPSlowRequestsTotal.String())
+	writePromMetric(w, "dashboard_http_request_duration_ms_total", "Sum of observed dashboard HTTP request durations in milliseconds.", "counter", dashboardHTTPRequestDurationMSTotal.String())
+	writePromMapMetric(w, "dashboard_http_responses_total", "Dashboard HTTP responses by status class.", "counter", "status_class", dashboardHTTPResponsesByStatusClass)
+	writePromMapMetric(w, "dashboard_http_request_duration_ms_bucket_total", "Dashboard HTTP request duration bucket counts.", "counter", "bucket", dashboardHTTPRequestDurationBuckets)
+	writePromMetric(w, "dashboard_readiness_failures_total", "Dashboard readiness checks that failed because the orchestrator was unavailable.", "counter", dashboardReadinessFailuresTotal.String())
+	writePromMetric(w, "dashboard_migrations_active", "Dashboard migrations currently running.", "gauge", dashboardMigrationsActive.String())
+	writePromMetric(w, "dashboard_migration_duration_ms_total", "Sum of completed dashboard migration durations in milliseconds.", "counter", dashboardMigrationDurationMSTotal.String())
+	writePromMapMetric(w, "dashboard_migration_duration_ms_bucket_total", "Completed dashboard migration duration bucket counts.", "counter", "bucket", dashboardMigrationDurationMSBuckets)
+	writePromMapMetric(w, "dashboard_migration_results_total", "Completed dashboard migrations by outcome.", "counter", "outcome", dashboardMigrationResultsByOutcome)
+}
+
+func writePromMetric(w http.ResponseWriter, name, help, kind, value string) {
+	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+	fmt.Fprintf(w, "# TYPE %s %s\n", name, kind)
+	fmt.Fprintf(w, "%s %s\n", name, value)
+}
+
+func writePromMapMetric(w http.ResponseWriter, name, help, kind, labelName string, m *expvar.Map) {
+	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+	fmt.Fprintf(w, "# TYPE %s %s\n", name, kind)
+	m.Do(func(kv expvar.KeyValue) {
+		fmt.Fprintf(w, "%s{%s=%q} %s\n", name, labelName, kv.Key, kv.Value.String())
+	})
 }

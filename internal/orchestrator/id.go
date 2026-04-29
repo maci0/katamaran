@@ -7,6 +7,8 @@ import (
 
 func newID() MigrationID {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand.Read failed: " + err.Error())
+	}
 	return MigrationID(hex.EncodeToString(b[:]))
 }

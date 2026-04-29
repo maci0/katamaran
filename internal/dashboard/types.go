@@ -18,7 +18,7 @@ type MigrationProgress struct {
 	Phase          string `json:"phase"`
 	RAMTransferred int64  `json:"ram_transferred"`
 	RAMTotal       int64  `json:"ram_total"`
-	DowntimeMS     int64  `json:"downtime_ms,omitempty"`
+	DowntimeMS     int64  `json:"downtime_ms"`
 }
 
 type StatusResponse struct {
@@ -36,11 +36,11 @@ type StatusResponse struct {
 	LoadgenRunning          bool               `json:"loadgen_running"`
 	LoadgenType             string             `json:"loadgen_type,omitempty"`
 	Logs                    []string           `json:"logs"`
-	LogsNext                int64              `json:"logs_next,omitempty"`
-	LogsReset               bool               `json:"logs_reset,omitempty"`
+	LogsNext                int64              `json:"logs_next"`
+	LogsReset               bool               `json:"logs_reset"`
 	Pings                   []PingData         `json:"pings"`
-	PingsNext               int64              `json:"pings_next,omitempty"`
-	PingsReset              bool               `json:"pings_reset,omitempty"`
+	PingsNext               int64              `json:"pings_next"`
+	PingsReset              bool               `json:"pings_reset"`
 }
 
 type App struct {

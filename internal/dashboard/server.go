@@ -239,6 +239,7 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
+	mux.HandleFunc("GET /metrics", serveDashboardMetrics)
 	mux.HandleFunc("GET /{$}", a.serveHome)
 	mux.HandleFunc("/api", handleAPIFallback)
 	mux.HandleFunc("/api/", handleAPIFallback)
@@ -275,7 +276,10 @@ var apiAllowedMethods = map[string]string{
 func handleAPIFallback(w http.ResponseWriter, r *http.Request) {
 	if allow, ok := apiAllowedMethods[r.URL.Path]; ok {
 		w.Header().Set("Allow", allow)
-		jsonError(w, fmt.Sprintf("Method %s not allowed", r.Method), http.StatusMethodNotAllowed)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": fmt.Sprintf("Method %s not allowed", r.Method),
+			"allow": allow,
+		})
 		return
 	}
 	jsonError(w, "Not found", http.StatusNotFound)
@@ -364,8 +368,18 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 // handleStatus returns the current state of the dashboard, including active migrations and loadgen logs.
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
-	logsAfter, logsDelta := parseStatusCursor(r.URL.Query().Get("logs_after"))
-	pingsAfter, pingsDelta := parseStatusCursor(r.URL.Query().Get("pings_after"))
+	rawLogs := r.URL.Query().Get("logs_after")
+	rawPings := r.URL.Query().Get("pings_after")
+	logsAfter, logsDelta := parseStatusCursor(rawLogs)
+	pingsAfter, pingsDelta := parseStatusCursor(rawPings)
+	// Surface malformed cursors so client bugs are diagnosable; behavior
+	// stays unchanged (a bad cursor falls back to the full snapshot).
+	if rawLogs != "" && !logsDelta {
+		slog.Debug("Ignoring malformed logs_after cursor", "logs_after", rawLogs, "request_id", requestIDFromContext(r.Context()))
+	}
+	if rawPings != "" && !pingsDelta {
+		slog.Debug("Ignoring malformed pings_after cursor", "pings_after", rawPings, "request_id", requestIDFromContext(r.Context()))
+	}
 
 	a.migrationMutex.Lock()
 	logStart := a.migrationLogSeq - int64(len(a.migrationOutput))

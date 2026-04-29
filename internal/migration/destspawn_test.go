@@ -43,6 +43,21 @@ func TestParseCmdlineBytes_DropsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestCaptureSourceCmdline_WritesPrivateFile(t *testing.T) {
+	t.Parallel()
+	out := filepath.Join(t.TempDir(), "cmdline.txt")
+	if err := captureSourceCmdline(os.Getpid(), out); err != nil {
+		t.Fatalf("captureSourceCmdline: %v", err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatalf("stat captured cmdline: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %v, want 0600", got)
+	}
+}
+
 func TestExtractNvdimmPath(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -251,6 +266,34 @@ func TestTransformCmdline_DropsBareIncoming(t *testing.T) {
 	}
 	if !slices.Contains(out, "-no-shutdown") {
 		t.Fatalf("expected -no-shutdown to survive, got: %v", out)
+	}
+}
+
+func TestTransformCmdline_StripsInheritedFDs(t *testing.T) {
+	t.Parallel()
+	args := []string{
+		"/opt/kata/bin/qemu-system-x86_64",
+		"-qmp", "unix:fd=3,server=on,wait=off",
+		"-qmp", "unix:/run/vc/vm/src/extra-monitor.sock,server=on,wait=off",
+		"-netdev", "tap,id=net0,fd=4,vhost=on,vhostfd=5",
+		"-device", "vhost-vsock-pci,id=vsock0,vhostfd=6",
+	}
+	_, out, err := transformCmdline(args, "", "", "", "", "", "")
+	if err != nil {
+		t.Fatalf("transformCmdline: %v", err)
+	}
+	joined := strings.Join(out, " ")
+	if strings.Contains(joined, "fd=3") || strings.Contains(joined, "fd=4") || strings.Contains(joined, "vhostfd=5") || strings.Contains(joined, "vhostfd=6") {
+		t.Fatalf("inherited fd reference survived: %v", out)
+	}
+	if strings.Contains(joined, "unix:fd=3") {
+		t.Fatalf("fd-backed qmp socket survived: %v", out)
+	}
+	if !strings.Contains(joined, "/run/vc/vm/src/extra-monitor.sock") {
+		t.Fatalf("path-backed qmp socket was stripped: %v", out)
+	}
+	if !strings.Contains(joined, "ifname=tap0_kata") || !strings.Contains(joined, "script=no,downscript=no") {
+		t.Fatalf("tap netdev defaults not added: %v", out)
 	}
 }
 

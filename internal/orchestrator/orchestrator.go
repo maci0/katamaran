@@ -24,6 +24,7 @@ import (
 	"errors"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // Orchestrator runs a single live migration to completion.
@@ -45,12 +46,21 @@ type Orchestrator interface {
 // TerminalJobCondition returns the most recent terminal condition (Complete or Failed)
 // on a Job, or "" if neither is set yet. Shared between orchestrator and controller.
 func TerminalJobCondition(job *batchv1.Job) batchv1.JobConditionType {
+	var latest batchv1.JobCondition
+	found := false
 	for _, c := range job.Status.Conditions {
-		if c.Status == "True" && (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) {
-			return c.Type
+		if c.Status != corev1.ConditionTrue || (c.Type != batchv1.JobComplete && c.Type != batchv1.JobFailed) {
+			continue
+		}
+		if !found || !c.LastTransitionTime.Time.Before(latest.LastTransitionTime.Time) {
+			latest = c
+			found = true
 		}
 	}
-	return ""
+	if !found {
+		return ""
+	}
+	return latest.Type
 }
 
 // DefaultJobNamespace is the namespace where the native orchestrator creates Jobs.

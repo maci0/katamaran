@@ -16,6 +16,7 @@
 #     [--tunnel-mode ipip|gre|none] \
 #     [--downtime <ms>] \
 #     [--auto-downtime] \
+#     [--auto-downtime-floor-ms <ms>] \
 #     [--multifd-channels <n>] \
 #     [--log-level debug|info|warn|error] \
 #     [--log-format text|json] \
@@ -30,6 +31,7 @@ SHARED_STORAGE=false
 TUNNEL_MODE="ipip"
 DOWNTIME="25"
 AUTO_DOWNTIME=false
+AUTO_DOWNTIME_FLOOR_MS=""
 MULTIFD_CHANNELS="0"
 DOWNTIME_SET=false
 KUBECTL_CONTEXT=""
@@ -73,15 +75,17 @@ usage() {
     {
         echo "Usage: $0 [options]"
         echo ""
-        echo "Required flags:"
+        echo "Required flags (all modes):"
         echo "  --source-node <name>    Name of the source K8s node"
         echo "  --dest-node <name>      Name of the destination K8s node"
+        echo "  --dest-ip <ip>          IP address of the destination (must be reachable from source QEMU)"
+        echo "  --image <image>         Katamaran container image to use"
+        echo ""
+        echo "Required flags (explicit source mode; omit when using --pod-name/--pod-namespace):"
         echo "  --tap <iface>           Destination tap interface for zero-drop buffering (use 'none' to skip)"
         echo "  --qmp-source <path>     Path to QMP socket on source node"
         echo "  --qmp-dest <path>       Path to QMP socket on destination node"
-        echo "  --dest-ip <ip>          IP address of the destination (must be reachable from source QEMU)"
         echo "  --vm-ip <ip>            IP address of the VM (pod IP)"
-        echo "  --image <image>         Katamaran container image to use"
         echo ""
         echo "Optional flags:"
         echo "  --tap-netns <path>      Network namespace path for tap interface (e.g. /proc/PID/ns/net)"
@@ -95,6 +99,8 @@ usage() {
         echo "  --tunnel-mode <mode>    Tunnel encapsulation: ipip, gre, or none (default: ipip)"
         echo "  --downtime <ms>         Max allowed downtime in milliseconds, 1-60000 (default: 25)"
         echo "  --auto-downtime         Auto-calculate downtime based on RTT (overrides --downtime)"
+        echo "  --auto-downtime-floor-ms <ms>"
+        echo "                          Lower bound + overhead for auto-downtime in ms (default: 25)"
         echo "  --multifd-channels <n>  Parallel TCP channels for RAM migration (default: 0, disabled)"
         echo "  --log-level <level>     Log level for katamaran: debug, info, warn, error"
         echo "  --log-format <fmt>      Log output format for katamaran: text or json"
@@ -118,7 +124,7 @@ usage() {
 }
 
 need_arg() {
-    if [[ $# -lt 2 || -z "$2" ]]; then
+    if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
         echo "Error: $1 requires a value" >&2
         usage 2
     fi
@@ -142,6 +148,7 @@ while [[ $# -gt 0 ]]; do
         --replay-cmdline) REPLAY_CMDLINE=true; shift ;;
         --shared-storage) SHARED_STORAGE=true; shift ;;
         --auto-downtime) AUTO_DOWNTIME=true; shift ;;
+        --auto-downtime-floor-ms) need_arg "$1" "${2:-}"; AUTO_DOWNTIME_FLOOR_MS="$2"; shift 2 ;;
         --tunnel-mode) need_arg "$1" "${2:-}"; TUNNEL_MODE="$2"; shift 2 ;;
         --downtime) need_arg "$1" "${2:-}"; DOWNTIME="$2"; DOWNTIME_SET=true; shift 2 ;;
         --multifd-channels) need_arg "$1" "${2:-}"; MULTIFD_CHANNELS="$2"; shift 2 ;;
@@ -212,6 +219,11 @@ fi
 
 if [[ "$DOWNTIME" -gt 60000 ]]; then
     echo "Error: --downtime must be between 1 and 60000, got '$DOWNTIME'" >&2
+    exit 2
+fi
+
+if [[ -n "$AUTO_DOWNTIME_FLOOR_MS" && ! "$AUTO_DOWNTIME_FLOOR_MS" =~ ^[0-9]+$ ]]; then
+    echo "Error: --auto-downtime-floor-ms must be a non-negative integer, got '$AUTO_DOWNTIME_FLOOR_MS'" >&2
     exit 2
 fi
 
@@ -287,6 +299,11 @@ if [[ "$DOWNTIME_SET" == "true" ]]; then
 fi
 if [[ "$AUTO_DOWNTIME" == "true" ]]; then
     SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime"
+    if [[ -n "$AUTO_DOWNTIME_FLOOR_MS" ]]; then
+        SRC_EXTRA_ARGS="$SRC_EXTRA_ARGS --auto-downtime-floor-ms $AUTO_DOWNTIME_FLOOR_MS"
+    fi
+elif [[ -n "$AUTO_DOWNTIME_FLOOR_MS" ]]; then
+    echo "Warning: --auto-downtime-floor-ms is ignored without --auto-downtime" >&2
 fi
 if [[ -n "$POD_NAME" ]]; then
     # Pod mode: source job's resolver derives qmp/vm-ip/tap from the pod spec.
@@ -311,7 +328,7 @@ fi
 if [[ "$REPLAY_CMDLINE" == "true" ]]; then
     if [[ -z "$POD_NAME" ]]; then
         echo "Error: --replay-cmdline requires --pod-name (the source QEMU PID is resolved from the pod)" >&2
-        exit 1
+        usage 2
     fi
     if [[ -z "${KATAMARAN_MIGRATION_ID:-}" ]]; then
         # Generate a stable filename per migration so concurrent runs don't
@@ -467,6 +484,13 @@ spec:
     image: ${IMAGE_REF}
     imagePullPolicy: IfNotPresent
     command: ["/bin/sh", "-c", "sleep 60"]
+    resources:
+      requests:
+        cpu: 1m
+        memory: 8Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
     securityContext:
       allowPrivilegeEscalation: false
       capabilities:

@@ -136,6 +136,23 @@ func TestRun_NegativeMultifd(t *testing.T) {
 	}
 }
 
+func TestRun_SourceNegativeAutoDowntimeFloor(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "source",
+		"--dest-ip", "10.0.0.1",
+		"--vm-ip", "10.0.0.2",
+		"--auto-downtime",
+		"--auto-downtime-floor-ms", "-1",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--auto-downtime-floor-ms") {
+		t.Fatalf("expected auto-downtime-floor-ms error, got: %s", stderr.String())
+	}
+}
+
 func TestRun_SourceMissingRequiredFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1"}, &stdout, &stderr)
@@ -376,6 +393,23 @@ func TestRun_AutoDowntimeOverridesDowntimeWarning(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--auto-downtime overrides --downtime") {
 		t.Fatalf("expected warning about --auto-downtime overriding --downtime, got stderr: %s", stderr.String())
+	}
+}
+
+func TestRun_AutoDowntimeFloorWithoutAutoWarning(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "source",
+		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
+		"--auto-downtime-floor-ms", "50",
+		"--qmp", "/nonexistent/qmp.sock",
+		"--tunnel-mode", "none",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit (bad QMP socket), got 0; stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--auto-downtime-floor-ms is ignored without --auto-downtime") {
+		t.Fatalf("expected warning about ignored auto-downtime floor, got stderr: %s", stderr.String())
 	}
 }
 

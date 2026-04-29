@@ -31,13 +31,22 @@ const (
 // in one mode, used to warn users when flags are provided for the wrong mode.
 var (
 	sourceOnlyFlags = map[string]bool{
-		"dest-ip": true, "vm-ip": true, "tunnel-mode": true,
-		"downtime": true, "auto-downtime": true,
-		"emit-cmdline-to": true, "pod-name": true, "pod-namespace": true,
+		"dest-ip":                true,
+		"vm-ip":                  true,
+		"tunnel-mode":            true,
+		"downtime":               true,
+		"auto-downtime":          true,
+		"auto-downtime-floor-ms": true,
+		"emit-cmdline-to":        true,
+		"pod-name":               true,
+		"pod-namespace":          true,
 	}
 	destOnlyFlags = map[string]bool{
-		"tap": true, "tap-netns": true,
-		"replay-cmdline": true, "dest-pod-name": true, "dest-pod-namespace": true,
+		"tap":                true,
+		"tap-netns":          true,
+		"replay-cmdline":     true,
+		"dest-pod-name":      true,
+		"dest-pod-namespace": true,
 	}
 )
 
@@ -66,6 +75,8 @@ Source mode flags:
   --tunnel-mode string     Tunnel mode: 'ipip', 'gre', or 'none' (default "ipip")
   --downtime int           Max allowed downtime in milliseconds, 1-60000 (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
+  --auto-downtime-floor-ms int
+                           Lower bound + overhead for auto-downtime in ms (default 0, uses 25ms)
   --emit-cmdline-to string Capture source QEMU /proc/<pid>/cmdline to this path before migration
 
 Destination mode flags:
@@ -160,6 +171,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+	seenFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { seenFlags[f.Name] = true })
 
 	// Normalize enum flags for case-insensitive matching.
 	*modeFlag = strings.ToLower(*modeFlag)
@@ -193,8 +206,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		slog.SetDefault(slog.Default().With("migration_id", mid))
 	}
 
+	if *multifdChannels < 0 {
+		_, _ = fmt.Fprintf(stderr, "Error: --multifd-channels must be non-negative, got %d\n\n", *multifdChannels)
+		printUsage(stderr)
+		return 2
+	}
+	if mode == roleSource && *autoDowntimeFloor < 0 {
+		_, _ = fmt.Fprintf(stderr, "Error: --auto-downtime-floor-ms must be non-negative, got %d\n\n", *autoDowntimeFloor)
+		printUsage(stderr)
+		return 2
+	}
+
 	// Warn about mode-irrelevant flags and conflicting flag combinations.
-	explicitDowntime := false
 	fs.Visit(func(f *flag.Flag) {
 		if mode == roleDest && sourceOnlyFlags[f.Name] {
 			slog.Warn("Flag ignored in dest mode", "flag", f.Name)
@@ -202,18 +225,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if mode == roleSource && destOnlyFlags[f.Name] {
 			slog.Warn("Flag ignored in source mode", "flag", f.Name)
 		}
-		if f.Name == "downtime" {
-			explicitDowntime = true
-		}
 	})
-	if *autoDowntime && explicitDowntime {
+	if *autoDowntime && seenFlags["downtime"] {
 		slog.Warn("--auto-downtime overrides --downtime; explicit --downtime value will be ignored")
 	}
-
-	if *multifdChannels < 0 {
-		_, _ = fmt.Fprintf(stderr, "Error: --multifd-channels must be non-negative, got %d\n\n", *multifdChannels)
-		printUsage(stderr)
-		return 2
+	if mode == roleSource && seenFlags["auto-downtime-floor-ms"] && !*autoDowntime {
+		slog.Warn("--auto-downtime-floor-ms is ignored without --auto-downtime")
 	}
 	slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
 
@@ -224,9 +241,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// Unlike source, no XOR check is needed: --qmp has a sensible default
 		// and the resolver overrides it (including the well-known migrate.sh
 		// placeholder) when a dest pod is supplied.
-		destSeen := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { destSeen[f.Name] = true })
-		if destSeen["dest-pod-name"] != destSeen["dest-pod-namespace"] {
+		if seenFlags["dest-pod-name"] != seenFlags["dest-pod-namespace"] {
 			_, _ = fmt.Fprintf(stderr, "Error: --dest-pod-name and --dest-pod-namespace must be supplied together\n\n")
 			printUsage(stderr)
 			return 2
@@ -251,17 +266,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// Mode selection: pod mode requires both pod flags; legacy mode requires
 		// --vm-ip (and uses --qmp's default if not explicitly set). Mixing the
 		// two pod flags with --vm-ip or an explicit --qmp is rejected.
-		seen := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
-		visitedPodName := seen["pod-name"]
-		visitedPodNS := seen["pod-namespace"]
+		visitedPodName := seenFlags["pod-name"]
+		visitedPodNS := seenFlags["pod-namespace"]
 		if visitedPodName != visitedPodNS {
 			_, _ = fmt.Fprintf(stderr, "Error: --pod-name and --pod-namespace must be supplied together\n\n")
 			printUsage(stderr)
 			return 2
 		}
 		hasPod := *podName != "" && *podNS != ""
-		if hasPod && (seen["vm-ip"] || seen["qmp"]) {
+		if hasPod && (seenFlags["vm-ip"] || seenFlags["qmp"]) {
 			_, _ = fmt.Fprintf(stderr, "Error: --pod-name/--pod-namespace cannot be combined with --qmp or --vm-ip\n\n")
 			printUsage(stderr)
 			return 2

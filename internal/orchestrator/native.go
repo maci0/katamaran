@@ -172,7 +172,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	}
 
 	id := newID()
-	cmdlinePath := fmt.Sprintf("/tmp/katamaran-cmdlines/cmdline-%s.txt", id)
+	cmdlinePath := cmdlinePathFor(id)
 	srcExtra := buildExtraArgs(req)
 	destExtra := srcExtra
 	if req.ReplayCmdline {
@@ -265,6 +265,8 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 	seen := map[string]bool{} // dedupe identical marker lines within the SinceSeconds window
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	// Reused scanner buffer: avoids allocating 64KB per tick over multi-hour migrations.
+	scanBuf := make([]byte, 0, 64*1024)
 	send := func(u StatusUpdate) bool {
 		select {
 		case <-ctx.Done():
@@ -303,7 +305,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		// window as a single string + slice; per-tick payload can be hundreds
 		// of KB on chatty migrations.
 		scanner := bufio.NewScanner(stream)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner.Buffer(scanBuf, 1024*1024)
 		done := false
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -497,7 +499,7 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 		run.cancel()
 		return
 	}
-	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode); err != nil {
+	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode, req.Image); err != nil {
 		slog.Error("Cmdline replay staging failed", "migration_id", id, "source_pod", srcPod, "dest_node", req.DestNode, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)})
 		run.cancel()

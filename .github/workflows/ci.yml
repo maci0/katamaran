@@ -8,24 +8,37 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Only cancel in-flight runs on PRs. On main pushes, let every commit's
+  # CI finish so we keep a per-commit signal (useful when tagging or when
+  # several merges land in quick succession).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      GOVULNCHECK_VERSION: v1.3.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
+          cache: true
       - name: Verify go modules
         run: go mod verify
       - name: Lint
         run: make vet
+      - name: Cache govulncheck binary
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/govulncheck
+          key: govulncheck-${{ runner.os }}-${{ env.GOVULNCHECK_VERSION }}
       - name: Vulnerability check
         # Install + run govulncheck directly. The previous
         # golang/govulncheck-action runs a nested actions/checkout that
@@ -34,46 +47,55 @@ jobs:
         # "Authorization"` HTTP 400. Direct invocation bypasses the
         # nested checkout entirely. No untrusted input is interpolated.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          if [ ! -x "$HOME/go/bin/govulncheck" ]; then
+            go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          fi
+          "$HOME/go/bin/govulncheck" ./...
       - name: Unit tests
         run: make test
       - name: Fuzz seeds
         run: make fuzz
 
   shellcheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Lint shell scripts
         run: shellcheck -x -e SC1091,SC2016,SC2155,SC2317,SC2329 scripts/*.sh deploy/migrate.sh
 
   template-sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Job templates in deploy/ match internal/orchestrator/templates/
         run: |
           diff -u deploy/job-source.yaml internal/orchestrator/templates/job-source.yaml
           diff -u deploy/job-dest.yaml internal/orchestrator/templates/job-dest.yaml
 
   build-and-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
+          cache: true
       - name: Build binaries
         run: make -j4 all
       - name: Smoke tests
         run: make smoke
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [lint-and-test, build-and-smoke, shellcheck, template-sync]
     strategy:
@@ -96,11 +118,24 @@ jobs:
       VERSION_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build ${{ matrix.name }} image
-        env:
-          IMAGE_FILE: ${{ matrix.file }}
-          IMAGE_TAG: ${{ matrix.tag }}
-        run: docker build --build-arg "VERSION=${VERSION_SHA}" -t "${IMAGE_TAG}" -f "${IMAGE_FILE}" .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          tags: ${{ matrix.tag }}
+          load: true
+          push: false
+          build-args: |
+            VERSION=${{ env.VERSION_SHA }}
+          # Per-Dockerfile gha cache scopes prevent the three matrix
+          # builds from invalidating each other's Go module layer.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Smoke-test ${{ matrix.name }} image
         env:
           IMAGE_TAG: ${{ matrix.tag }}

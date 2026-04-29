@@ -44,6 +44,15 @@ if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
 fi
 
 DOWNTIMES=("$@")
+for downtime in "${DOWNTIMES[@]}"; do
+    if [[ "$downtime" == "auto" ]]; then
+        continue
+    fi
+    if [[ ! "$downtime" =~ ^[1-9][0-9]*$ || "$downtime" -gt 60000 ]]; then
+        error "downtime values must be positive integers between 1 and 60000, or 'auto' (got '${downtime}')"
+        exit 2
+    fi
+done
 
 # Results directory for raw logs and TSV output
 RESULTS_DIR="${PROJECT_ROOT}/sweep-results"
@@ -83,6 +92,10 @@ else
     CTX="${PROFILE}"
 fi
 KUBECTL=(kubectl --context "${CTX}")
+export JOB_SUFFIX="${JOB_SUFFIX:-default}"
+SOURCE_JOB_NAME="katamaran-source-${JOB_SUFFIX}"
+DEST_JOB_NAME="katamaran-dest-${JOB_SUFFIX}"
+KATAMARAN_IMAGE="${KATAMARAN_IMAGE:-localhost/katamaran:dev}"
 
 get_pod_ip() {
     local pod="$1"
@@ -148,7 +161,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     # 1. Clean up from previous run if necessary
     log "Cleaning up previous pods..."
     "${KUBECTL[@]}" delete pod kata-src mig-helper --ignore-not-found --wait=true
-    "${KUBECTL[@]}" -n kube-system delete job katamaran-dest katamaran-source --ignore-not-found --wait=true
+    "${KUBECTL[@]}" -n kube-system delete job "${DEST_JOB_NAME}" "${SOURCE_JOB_NAME}" --ignore-not-found --wait=true
 
     # 2. Start the source pod
     log "Deploying source Kata pod..."
@@ -199,7 +212,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
         --qmp-dest "$DEST_QMP"
         --dest-ip "$DEST_NODE_IP"
         --vm-ip "$SRC_IP"
-        --image "localhost/katamaran:latest"
+        --image "${KATAMARAN_IMAGE}"
         --tap "none"
     )
 
@@ -217,8 +230,8 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     set -e
 
     # Save individual job logs
-    "${KUBECTL[@]}" -n kube-system logs job/katamaran-source > "${RUN_LOGDIR}/source.log" 2>/dev/null || true
-    "${KUBECTL[@]}" -n kube-system logs job/katamaran-dest > "${RUN_LOGDIR}/dest.log" 2>/dev/null || true
+    "${KUBECTL[@]}" -n kube-system logs "job/${SOURCE_JOB_NAME}" > "${RUN_LOGDIR}/source.log" 2>/dev/null || true
+    "${KUBECTL[@]}" -n kube-system logs "job/${DEST_JOB_NAME}" > "${RUN_LOGDIR}/dest.log" 2>/dev/null || true
 
     # Extract metrics from source logs
     METRICS=$(extract_metrics "${RUN_LOGDIR}/source.log")

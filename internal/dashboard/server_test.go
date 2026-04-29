@@ -522,8 +522,8 @@ func TestHandlePingStart_ValidTarget(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &pingResp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
-	if pingResp["message"] != "Ping started" {
-		t.Errorf("message = %q, want %q", pingResp["message"], "Ping started")
+	if pingResp["message"] != "Ping load generator started" {
+		t.Errorf("message = %q, want %q", pingResp["message"], "Ping load generator started")
 	}
 }
 
@@ -537,6 +537,13 @@ func TestHandlePingStart_StripsPort(t *testing.T) {
 	// Should accept host:port and start successfully (port is stripped for ping).
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 for target with port, got %v", w.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp["target"] != "192.0.2.1" {
+		t.Fatalf("target = %q, want %q", resp["target"], "192.0.2.1")
 	}
 }
 
@@ -647,7 +654,8 @@ func TestHandleHTTPStart_ValidTarget(t *testing.T) {
 
 func TestHandleMigrate_AcceptsValidRequest(t *testing.T) {
 	t.Parallel()
-	app := &App{orch: dummyOrchestrator(t)}
+	fake := dummyOrchestrator(t)
+	app := &App{orch: fake}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -662,6 +670,20 @@ func TestHandleMigrate_AcceptsValidRequest(t *testing.T) {
 	app.handleMigrate(w, req)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %v", w.Code)
+	}
+	waitMigrationDone(t, app, 5*time.Second)
+	got := fake.LastRequest()
+	if got.SourceNode != "node1" || got.DestNode != "node2" {
+		t.Fatalf("nodes = (%q, %q), want (node1, node2)", got.SourceNode, got.DestNode)
+	}
+	if got.SourceQMP != "/run/vc/vm/abc/qmp.sock" || got.DestQMP != "/run/vc/vm/def/qmp.sock" {
+		t.Fatalf("QMP sockets = (%q, %q), want form values", got.SourceQMP, got.DestQMP)
+	}
+	if got.DestIP != "10.0.0.2" || got.VMIP != "10.244.1.5" {
+		t.Fatalf("IPs = (%q, %q), want (10.0.0.2, 10.244.1.5)", got.DestIP, got.VMIP)
+	}
+	if got.TapIface != "tap0_kata" || got.Image != "katamaran:dev" {
+		t.Fatalf("tap/image = (%q, %q), want (tap0_kata, katamaran:dev)", got.TapIface, got.Image)
 	}
 }
 
@@ -905,6 +927,32 @@ func TestHandleHealthz_HEAD(t *testing.T) {
 	}
 }
 
+func TestServeDashboardMetrics(t *testing.T) {
+	app := &App{}
+	recordHTTPRequest("/api/test", http.StatusServiceUnavailable, 6*time.Second)
+	recordMigrationDuration(45*time.Second, "success")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	app.newMux(false).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %v", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("expected text/plain Content-Type, got %q", ct)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"# TYPE dashboard_http_requests_total counter",
+		`dashboard_http_responses_total{status_class="5xx"}`,
+		`dashboard_migration_results_total{outcome="success"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics output missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestHandleStatus_HEAD(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1100,7 +1148,8 @@ func TestPingRegex(t *testing.T) {
 
 func TestHandleMigrate_SharedStorageFlag(t *testing.T) {
 	t.Parallel()
-	app := &App{orch: dummyOrchestrator(t)}
+	fake := dummyOrchestrator(t)
+	app := &App{orch: fake}
 	t.Cleanup(func() {
 		app.migrationMutex.Lock()
 		if app.migrationCancel != nil {
@@ -1116,6 +1165,10 @@ func TestHandleMigrate_SharedStorageFlag(t *testing.T) {
 	app.handleMigrate(w, req)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 with shared_storage=true, got %v", w.Code)
+	}
+	waitMigrationDone(t, app, 5*time.Second)
+	if got := fake.LastRequest(); !got.SharedStorage {
+		t.Fatalf("SharedStorage = false, want true")
 	}
 }
 
@@ -1470,6 +1523,16 @@ func TestPodsAndNodesEndpoints(t *testing.T) {
 			}
 			if len(arr) == 0 {
 				t.Fatalf("expected non-empty array, got %v", arr)
+			}
+			switch tt.path {
+			case "/api/pods":
+				if arr[0]["namespace"] != "default" || arr[0]["name"] != "vm-a" || arr[0]["node"] != "n1" || arr[0]["pod_ip"] != "10.0.0.5" {
+					t.Fatalf("pod payload = %v, want default/vm-a on n1 with pod_ip 10.0.0.5", arr[0])
+				}
+			case "/api/nodes":
+				if arr[0]["name"] != "n1" || arr[0]["internal_ip"] != "192.168.1.10" {
+					t.Fatalf("node payload = %v, want n1 with internal_ip 192.168.1.10", arr[0])
+				}
 			}
 		})
 	}

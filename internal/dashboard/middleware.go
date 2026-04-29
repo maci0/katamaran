@@ -107,8 +107,8 @@ func requestLogger(next http.Handler) http.Handler {
 		next.ServeHTTP(rw, r)
 		duration := time.Since(start)
 		recordHTTPRequest(r.URL.Path, rw.status, duration)
-		// Skip logging health/readiness checks to avoid noise.
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		// Skip logging health, readiness, metrics, and debug scrape paths.
+		if isObservabilityPath(r.URL.Path) {
 			return
 		}
 		slow := duration >= slowRequestThreshold
@@ -216,7 +216,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js; "+
+				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js; "+
 				"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "+
 				"img-src 'self' data:; "+
 				"connect-src 'self'; "+

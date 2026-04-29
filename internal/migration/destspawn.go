@@ -74,10 +74,10 @@ var readonlyRegex = regexp.MustCompile(`,readonly=(?:on|true)`)
 // the writable-copy step).
 func extractNvdimmPath(args []string) string {
 	for _, a := range args {
+		if !strings.Contains(a, "mem-path=") {
+			continue
+		}
 		for _, m := range memPathRegex.FindAllStringSubmatch(a, -1) {
-			if len(m) < 2 {
-				continue
-			}
 			p := m[1]
 			if strings.HasPrefix(p, "/dev/shm") {
 				continue
@@ -178,16 +178,18 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 			continue
 		}
 
-		if srcSandboxDir != "" && dstSandboxDir != "" {
+		if srcSandboxDir != "" && dstSandboxDir != "" && strings.Contains(a, srcSandboxDir) {
 			a = strings.ReplaceAll(a, srcSandboxDir, dstSandboxDir)
 		}
-		if srcSandboxKey != "" {
+		if srcSandboxKey != "" && strings.Contains(a, srcSandboxKey) {
 			a = strings.ReplaceAll(a, srcSandboxKey, dstSandboxKey)
 		}
-		if srcNvdimmPath != "" && dstNvdimmPath != "" {
+		if srcNvdimmPath != "" && dstNvdimmPath != "" && strings.Contains(a, srcNvdimmPath) {
 			a = strings.ReplaceAll(a, srcNvdimmPath, dstNvdimmPath)
 		}
-		a = readonlyRegex.ReplaceAllString(a, "")
+		if strings.Contains(a, "readonly=") {
+			a = readonlyRegex.ReplaceAllString(a, "")
+		}
 		out = append(out, a)
 	}
 
@@ -203,6 +205,9 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 // fd= references point at file descriptors inherited from the kata-shim
 // parent and are invalid in a fresh exec.
 func stripFDKeys(v string) string {
+	if !strings.Contains(v, "fd=") && !strings.Contains(v, "fds=") {
+		return v
+	}
 	parts := strings.Split(v, ",")
 	out := parts[:0]
 	for _, p := range parts {
@@ -278,7 +283,7 @@ func captureSourceCmdline(qemuPID int, outPath string) error {
 		}
 	}
 	body := strings.Join(args, "\n") + "\n"
-	if err := os.WriteFile(outPath, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(outPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	return nil
@@ -498,8 +503,25 @@ type logWriter struct {
 	stream  string
 }
 
+const maxChildProcessLogLine = 4096
+
 func (w logWriter) Write(p []byte) (n int, err error) {
-	slog.Warn("child process output", "process", w.process, "stream", w.stream, "output", string(p))
+	level := slog.LevelInfo
+	if w.stream == "stderr" {
+		level = slog.LevelWarn
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\r\n"), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		truncated := false
+		if len(line) > maxChildProcessLogLine {
+			line = line[:maxChildProcessLogLine]
+			truncated = true
+		}
+		slog.Log(context.Background(), level, "child process output", "process", w.process, "stream", w.stream, "output", line, "truncated", truncated)
+	}
 	return len(p), nil
 }
 

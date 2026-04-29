@@ -2,10 +2,8 @@ package dashboard
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"mime"
 	"net/http"
 	"slices"
 	"strconv"
@@ -13,6 +11,15 @@ import (
 
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
+
+// migrateFormKeys is the set of /api/migrate form fields scrubbed for shell
+// metacharacters before any value is forwarded to the orchestrator.
+var migrateFormKeys = []string{
+	"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns",
+	"dest_ip", "vm_ip", "image", "shared_storage", "downtime",
+	"source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace",
+	"replay_cmdline", "tunnel_mode", "auto_downtime",
+}
 
 // formToOrchestratorRequest reads the (already-validated) form fields and
 // builds an orchestrator.Request. resolvedSrcNode and resolvedDestIP are the
@@ -62,34 +69,15 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 
 // handleMigrate processes a form POST to start a new migration.
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
-	// Reject non-form content types early. Without this check, ParseForm
-	// silently ignores non-form bodies (e.g. JSON), and all fields appear
-	// empty — producing confusing "Missing required field" errors.
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		mediaType, _, err := mime.ParseMediaType(ct)
-		if err != nil || mediaType != "application/x-www-form-urlencoded" {
-			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
-			return
-		}
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	if err := r.ParseForm(); err != nil {
-		reqID := requestIDFromContext(r.Context())
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			slog.Warn("Request body too large", "request_id", reqID)
-			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			slog.Warn("Failed to parse form body", "error", err, "request_id", reqID)
-			jsonError(w, "Invalid request body", http.StatusBadRequest)
-		}
+	// parseFormPOST rejects non-form content types early. Without that check,
+	// ParseForm silently ignores non-form bodies (e.g. JSON), and all fields
+	// appear empty — producing confusing "Missing required field" errors.
+	if !parseFormPOST(w, r, "Migration request") {
 		return
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline", "tunnel_mode", "auto_downtime"}
-	for _, key := range formKeys {
+	for _, key := range migrateFormKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, fmt.Sprintf("Invalid value for %s", key), http.StatusBadRequest)
@@ -97,21 +85,13 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Validate shared_storage as a boolean if present.
-	if v := r.PostFormValue("shared_storage"); v != "" && v != "true" && v != "false" {
-		slog.Warn("Rejected invalid shared_storage value", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for shared_storage (must be 'true' or 'false')", http.StatusBadRequest)
-		return
-	}
-	if v := r.PostFormValue("replay_cmdline"); v != "" && v != "true" && v != "false" {
-		slog.Warn("Rejected invalid replay_cmdline value", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for replay_cmdline (must be 'true' or 'false')", http.StatusBadRequest)
-		return
-	}
-	if v := r.PostFormValue("auto_downtime"); v != "" && v != "true" && v != "false" {
-		slog.Warn("Rejected invalid auto_downtime value", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for auto_downtime (must be 'true' or 'false')", http.StatusBadRequest)
-		return
+	// Validate boolean form fields if present.
+	for _, key := range []string{"shared_storage", "replay_cmdline", "auto_downtime"} {
+		if v := r.PostFormValue(key); v != "" && v != "true" && v != "false" {
+			slog.Warn("Rejected invalid boolean form value", "field", key, "request_id", requestIDFromContext(r.Context()))
+			jsonError(w, fmt.Sprintf("Invalid value for %s (must be 'true' or 'false')", key), http.StatusBadRequest)
+			return
+		}
 	}
 
 	if a.allowedImage != "" && r.PostFormValue("image") != a.allowedImage {
@@ -136,6 +116,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, key := range required {
 		if r.PostFormValue(key) == "" {
+			slog.Warn("Migration request rejected: missing required field", "field", key, "pod_mode", podMode, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, fmt.Sprintf("Missing required field: %s", key), http.StatusBadRequest)
 			return
 		}
@@ -147,6 +128,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if dt := r.PostFormValue("downtime"); dt != "" {
 		d, err := strconv.Atoi(dt)
 		if err != nil || d < 1 || d > 60000 {
+			slog.Warn("Migration request rejected: invalid downtime value", "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, "Invalid downtime value (must be between 1 and 60000)", http.StatusBadRequest)
 			return
 		}
@@ -200,7 +182,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.orch == nil {
 		slog.Error("Migration request rejected: orchestrator not configured", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Service unavailable", http.StatusServiceUnavailable)
+		jsonError(w, "Orchestrator not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -231,8 +213,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationCancel = cancel
 	a.migrationMutex.Unlock()
 
-	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr, "source_node", req.SourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", req.DestIP, "vm_ip", req.VMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
-	go a.runOrchestrator(ctx, a.orch, req, migrationID)
+	reqID := requestIDFromContext(r.Context())
+	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", reqID, "remote_addr", r.RemoteAddr, "source_node", req.SourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", req.DestIP, "vm_ip", req.VMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
+	go a.runOrchestrator(ctx, a.orch, req, migrationID, reqID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
@@ -241,7 +224,11 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 // dashboard log buffer, and finalises migration counters when the watch
 // channel closes, so /api/status behaves identically regardless of which
 // orchestrator backs the migration.
-func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID string) {
+func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID, requestID string) {
+	logger := slog.Default().With("migration_id", migrationID)
+	if requestID != "" {
+		logger = logger.With("request_id", requestID)
+	}
 	start := time.Now()
 	defer func() {
 		a.migrationMutex.Lock()
@@ -256,7 +243,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	a.appendLog(">>> Submitting migration via Native orchestrator…")
 	id, err := orch.Apply(ctx, req)
 	if err != nil {
-		slog.Error("Migration apply failed", "migration_id", migrationID, "error", err)
+		logger.Error("Migration apply failed", "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
 		return
@@ -264,7 +251,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	a.appendLog(">>> Migration submitted, id=" + string(id))
 	updates, err := orch.Watch(ctx, id)
 	if err != nil {
-		slog.Error("Migration watch failed", "migration_id", migrationID, "orchestrator_id", string(id), "error", err)
+		logger.Error("Migration watch failed", "orchestrator_id", string(id), "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
 		return
@@ -278,7 +265,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 			phaseAt[u.Phase] = u.When
 		}
 		if u.Phase != lastLoggedPhase || u.Phase.IsTerminal() || u.RAMTotal > 0 || u.Error != nil {
-			attrs := []any{"migration_id", migrationID, "orchestrator_id", string(id), "phase", u.Phase}
+			attrs := []any{"orchestrator_id", string(id), "phase", u.Phase}
 			if u.Message != "" {
 				attrs = append(attrs, "message", u.Message)
 			}
@@ -290,9 +277,9 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 			}
 			if u.Error != nil {
 				attrs = append(attrs, "error", u.Error)
-				slog.Warn("Migration phase update", attrs...)
+				logger.Warn("Migration phase update", attrs...)
 			} else {
-				slog.Info("Migration phase update", attrs...)
+				logger.Info("Migration phase update", attrs...)
 			}
 			lastLoggedPhase = u.Phase
 		}
@@ -353,18 +340,18 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	switch terminal {
 	case orchestrator.PhaseSucceeded:
 		a.setMigrationResult("success", "")
-		slog.Info("Migration finished", "migration_id", migrationID, "outcome", "success", "elapsed", elapsed)
+		logger.Info("Migration finished", "outcome", "success", "elapsed", elapsed)
 	case orchestrator.PhaseFailed:
 		msg := "migration failed"
 		if terminalErr != nil {
 			msg = terminalErr.Error()
 		}
 		a.setMigrationResult("error", msg)
-		slog.Error("Migration finished", "migration_id", migrationID, "outcome", "error", "elapsed", elapsed, "error", msg)
+		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	default:
 		msg := "watch closed without terminal status"
 		a.setMigrationResult("error", msg)
-		slog.Error("Migration finished", "migration_id", migrationID, "outcome", "error", "elapsed", elapsed, "error", msg)
+		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	}
 }
 

@@ -3,10 +3,8 @@ package dashboard
 import (
 	"bufio"
 	"context"
-	"errors"
 	"io"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	"os/exec"
@@ -58,7 +56,6 @@ func (a *App) tryStartLoadgen(w http.ResponseWriter, r *http.Request, loadgenTyp
 		runningType := a.loadgenType
 		a.loadgenMutex.Unlock()
 		slog.Warn("Load generator request rejected: already running", "running_type", runningType, "requested_type", loadgenType, "request_id", requestIDFromContext(r.Context()))
-		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":        "Load generator already running",
 			"loadgen_type": runningType,
@@ -99,32 +96,18 @@ func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 
 // handlePingStart processes a request to start the ping load generator.
 func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		mediaType, _, err := mime.ParseMediaType(ct)
-		if err != nil || mediaType != "application/x-www-form-urlencoded" {
-			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
-			return
-		}
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	if err := r.ParseForm(); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			jsonError(w, "Invalid request body", http.StatusBadRequest)
-		}
+	if !parseFormPOST(w, r, "Ping load generator request") {
 		return
 	}
 	target := r.FormValue("target")
 	if target == "" {
-		jsonError(w, "Target required", http.StatusBadRequest)
+		slog.Warn("Ping load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Missing required field: target", http.StatusBadRequest)
 		return
 	}
 	if !validTarget(target) {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid target", http.StatusBadRequest)
+		jsonError(w, "Invalid value for target", http.StatusBadRequest)
 		return
 	}
 
@@ -133,7 +116,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	pingTarget, ok := resolvedTargetIP(target)
 	if !ok {
 		slog.Warn("Failed to resolve safe ping target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid target", http.StatusBadRequest)
+		jsonError(w, "Invalid value for target", http.StatusBadRequest)
 		return
 	}
 
@@ -187,7 +170,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Ping started", "target": pingTarget})
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Ping load generator started", "target": pingTarget})
 }
 
 // addPing records a ping latency sample or error to the loadgen log buffer.
@@ -207,32 +190,18 @@ func (a *App) addPing(lat float64, errStr string) {
 
 // handleHTTPStart processes a request to start the HTTP load generator.
 func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		mediaType, _, err := mime.ParseMediaType(ct)
-		if err != nil || mediaType != "application/x-www-form-urlencoded" {
-			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
-			return
-		}
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	if err := r.ParseForm(); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			jsonError(w, "Invalid request body", http.StatusBadRequest)
-		}
+	if !parseFormPOST(w, r, "HTTP load generator request") {
 		return
 	}
 	target := r.FormValue("target")
 	if target == "" {
-		jsonError(w, "Target required", http.StatusBadRequest)
+		slog.Warn("HTTP load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Missing required field: target", http.StatusBadRequest)
 		return
 	}
 	if !validTarget(target) {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid target", http.StatusBadRequest)
+		jsonError(w, "Invalid value for target", http.StatusBadRequest)
 		return
 	}
 

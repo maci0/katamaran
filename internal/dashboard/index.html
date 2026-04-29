@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
     <script>
     tailwind.config = {
         theme: {
@@ -31,6 +31,7 @@
         .log-line{animation:fadein .15s ease-out}
         input:focus,select:focus{outline:2px solid rgba(43,142,255,.6);outline-offset:0;box-shadow:0 0 0 2px rgba(43,142,255,.4)}
         button:focus-visible{outline:2px solid #2b8eff;outline-offset:2px}
+        summary:focus-visible{outline:2px solid #2b8eff;outline-offset:2px;border-radius:0.375rem}
         #logs:focus{outline:2px solid #2b8eff;outline-offset:-2px;border-radius:0.5rem}
         .toast-close{background:none;border:none;color:inherit;opacity:.6;cursor:pointer;min-width:44px;min-height:44px;margin-left:4px;font-size:1rem;line-height:1;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center}
         .toast-close:hover,.toast-close:focus-visible{opacity:1}
@@ -47,9 +48,10 @@
         .toast-exit{animation:toast-out .2s ease-in forwards}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
         input:disabled,select:disabled{opacity:.5;cursor:not-allowed}
-        #migration-form input[type="text"],#migration-form input[type="number"]{min-height:44px}
+        #migration-form input[type="text"],#migration-form input[type="number"],#migration-form select{min-height:44px}
         #migration-form input[type="checkbox"]{min-width:20px;min-height:20px}
         #migration-form label.flex{min-height:44px}
+        #migration-form summary{min-height:44px;display:flex;align-items:center}
     </style>
 </head>
 <body class="bg-hull-950 text-slate-200 font-sans min-h-screen">
@@ -58,7 +60,7 @@
 
     <noscript><div class="bg-red-900 text-white text-center py-4 px-6 text-sm">JavaScript is required for the Katamaran Dashboard to function.</div></noscript>
 
-    <div id="toast-container" role="status" aria-label="Notifications" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+    <div id="toast-container" aria-live="polite" aria-atomic="false" aria-relevant="additions text" aria-label="Notifications" class="fixed top-4 left-4 right-4 sm:left-auto sm:w-96 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <div id="confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
         <div class="bg-slate-800 border border-slate-600/50 rounded-xl shadow-2xl max-w-sm w-full mx-4 p-6">
@@ -187,9 +189,9 @@
                                 </div>
                             </div>
                         </details>
-                        <div class="flex gap-2 mt-2">
-                            <button type="submit" id="btn-migrate" aria-label="Start Migration" class="flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9654; Start Migration</button>
-                            <button type="button" id="btn-stop-mig" disabled aria-label="Stop migration" class="bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop Migration</button>
+                        <div class="flex flex-col sm:flex-row gap-2 mt-2">
+                            <button type="submit" id="btn-migrate" aria-label="Start Migration" class="w-full sm:flex-1 bg-hull-600 hover:bg-hull-500 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9654; Start Migration</button>
+                            <button type="button" id="btn-stop-mig" disabled aria-label="Stop migration" class="w-full sm:w-auto bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2.5 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop Migration</button>
                         </div>
                     </form>
                 </div>
@@ -241,11 +243,11 @@
 
                 <div id="progress-card" class="hidden bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
                     <div class="px-5 py-3 border-b border-slate-700/50 flex items-center justify-between">
-                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">RAM Transfer</h2>
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider" id="progress-heading">RAM Transfer</h2>
                         <span id="progress-meta" class="text-xs text-slate-400 font-mono"></span>
                     </div>
                     <div class="px-5 py-4">
-                        <div class="w-full bg-slate-900/70 rounded-full h-3 overflow-hidden">
+                        <div id="progress-track" class="w-full bg-slate-900/70 rounded-full h-3 overflow-hidden" role="progressbar" aria-labelledby="progress-heading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="No RAM transfer progress">
                             <div id="progress-bar" class="h-full bg-hull-500 transition-all duration-300" style="width:0%"></div>
                         </div>
                         <div class="flex justify-between text-xs text-slate-400 mt-2 font-mono">
@@ -330,7 +332,7 @@
         var container = document.getElementById('toast-container');
         var toast = document.createElement('div');
         var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : type === 'info' ? 'bg-hull-600/90' : 'bg-slate-700/90';
-        toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur max-w-sm flex items-center ' + bgColor + ' toast-enter';
+        toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur w-full flex items-center ' + bgColor + ' toast-enter';
         toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
         var textSpan = document.createElement('span');
         textSpan.className = 'flex-1';
@@ -487,6 +489,7 @@
         }
         var btn = document.getElementById('btn-migrate');
         migrationForm.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', 'Starting migration');
         btn.disabled = true;
         btn.textContent = 'Starting\u2026';
         btn.setAttribute('aria-busy', 'true');
@@ -496,6 +499,7 @@
                     showToast('Migration started', 'success');
                 } else {
                     migrationForm.removeAttribute('aria-busy');
+                    btn.setAttribute('aria-label', 'Start migration');
                     btn.disabled = false;
                     btn.textContent = '\u25B6 Start Migration';
                     btn.removeAttribute('aria-busy');
@@ -519,6 +523,7 @@
         btn.disabled = true;
         btn.textContent = 'Starting\u2026';
         btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', 'Starting ICMP ping load generator');
         loadgenType = 'ICMP';
         loadgenTarget = vmIp;
         apiCall('/api/ping?target=' + encodeURIComponent(vmIp))
@@ -529,6 +534,8 @@
                     btn.disabled = false;
                     btn.textContent = '\u25C9 ICMP Ping';
                     btn.removeAttribute('aria-busy');
+                    loadgenType = '';
+                    loadgenTarget = '';
                 }
             });
     });
@@ -544,6 +551,7 @@
         btn.disabled = true;
         btn.textContent = 'Starting\u2026';
         btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', 'Starting HTTP load generator');
         loadgenType = 'HTTP';
         loadgenTarget = vmIp;
         apiCall('/api/httpgen?target=' + encodeURIComponent(vmIp))
@@ -554,6 +562,8 @@
                     btn.disabled = false;
                     btn.textContent = '\u21C5 HTTP Load';
                     btn.removeAttribute('aria-busy');
+                    loadgenType = '';
+                    loadgenTarget = '';
                 }
             });
     });
@@ -562,6 +572,7 @@
         btn.disabled = true;
         btn.textContent = 'Stopping\u2026';
         btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', 'Stopping load generator');
         var endpoint = loadgenType === 'HTTP' ? '/api/httpgen/stop' : '/api/ping/stop';
         apiCall(endpoint).then(function(r) {
             if (r) {
@@ -608,6 +619,7 @@
         btn.disabled = true;
         btn.textContent = 'Stopping\u2026';
         btn.setAttribute('aria-busy', 'true');
+        btn.setAttribute('aria-label', 'Stopping migration');
         apiCall('/api/migrate/stop').then(function(r) {
             if (r) {
                 showToast('Migration stop requested', 'success');
@@ -659,7 +671,13 @@
     }
     function renderProgress(p) {
         var card = document.getElementById('progress-card');
-        if (!p || !p.ram_total) { card.classList.add('hidden'); return; }
+        var track = document.getElementById('progress-track');
+        if (!p || !p.ram_total) {
+            card.classList.add('hidden');
+            track.setAttribute('aria-valuenow', '0');
+            track.setAttribute('aria-valuetext', 'No RAM transfer progress');
+            return;
+        }
         card.classList.remove('hidden');
         var bar = document.getElementById('progress-bar');
         var meta;
@@ -668,6 +686,8 @@
             bar.classList.add('bg-emerald-500');
             bar.classList.remove('bg-hull-500');
             document.getElementById('progress-pct').textContent = 'done';
+            track.setAttribute('aria-valuenow', '100');
+            track.setAttribute('aria-valuetext', 'RAM transfer complete');
             meta = humanBytes(p.ram_total) + ' VM RAM';
             if (p.downtime_ms) meta += ' · ' + p.downtime_ms + 'ms downtime';
         } else {
@@ -677,6 +697,8 @@
             bar.classList.add('bg-hull-500');
             document.getElementById('progress-pct').textContent = pct + '%';
             meta = humanBytes(p.ram_transferred) + ' / ' + humanBytes(p.ram_total);
+            track.setAttribute('aria-valuenow', String(pct));
+            track.setAttribute('aria-valuetext', pct + '% complete, ' + meta);
         }
         document.getElementById('progress-phase').textContent = p.phase;
         document.getElementById('progress-meta').textContent = meta;
@@ -694,11 +716,13 @@
     var wasMigrating = false;
 
     document.querySelectorAll('#migration-form [required]').forEach(function(field) {
-        field.addEventListener('input', function() {
+        var clearIfFilled = function() {
             if (field.value.trim()) {
                 clearFieldState(field);
             }
-        });
+        };
+        field.addEventListener('input', clearIfFilled);
+        field.addEventListener('change', clearIfFilled);
     });
     document.getElementById('downtime').addEventListener('input', function() {
         clearFieldState(this);
@@ -709,8 +733,8 @@
     // value that won't take effect.
     var autoDowntimeChk = document.getElementById('auto_downtime');
     var downtimeInput = document.getElementById('downtime');
-    function syncDowntimeEnabled() {
-        var disabled = autoDowntimeChk.checked;
+    function syncDowntimeEnabled(forceDisabled) {
+        var disabled = autoDowntimeChk.checked || !!forceDisabled;
         downtimeInput.disabled = disabled;
         downtimeInput.classList.toggle('opacity-50', disabled);
         downtimeInput.classList.toggle('cursor-not-allowed', disabled);
@@ -808,12 +832,15 @@
             httpBtn.disabled = data.loadgen_running;
             stopLoadBtn.disabled = !data.loadgen_running;
             document.querySelectorAll('#migration-form input, #migration-form select').forEach(function(f) { f.disabled = data.migrating; });
+            syncDowntimeEnabled(data.migrating);
             migrateBtn.textContent = data.migrating ? 'Migration in progress…' : '\u25B6 Start Migration';
             migrateBtn.setAttribute('aria-label', data.migrating ? 'Migration in progress' : 'Start migration');
             stopMigBtn.textContent = '\u25A0 Stop Migration';
             stopMigBtn.removeAttribute('aria-busy');
+            stopMigBtn.setAttribute('aria-label', 'Stop migration');
             stopLoadBtn.textContent = '\u25A0 Stop Load';
             stopLoadBtn.removeAttribute('aria-busy');
+            stopLoadBtn.setAttribute('aria-label', 'Stop load generator');
             migrateBtn.removeAttribute('aria-busy');
 
             // Restore loadgen type from server state and indicate active button.
@@ -1052,11 +1079,19 @@
                 document.getElementById('source_pod_name').value = (o && o.dataset.name) || '';
                 document.getElementById('source_pod_namespace').value = (o && o.dataset.namespace) || '';
                 document.getElementById('vm_ip').value = (o && o.dataset.podIp) || '';
+                if (o && o.dataset.podIp) clearFieldState(document.getElementById('vm_ip'));
                 var destSel = document.getElementById('dest_node_select');
                 for (var j = 0; j < destSel.options.length; j++) {
                     var dOpt = destSel.options[j];
                     dOpt.hidden = o && dOpt.value === o.dataset.node;
                 }
+                if (o && destSel.value === o.dataset.node) {
+                    destSel.value = '';
+                    document.getElementById('dest_ip').value = '';
+                    clearFieldState(document.getElementById('dest_ip'));
+                    markFieldInvalid(destSel, 'Choose a destination node different from the source pod node');
+                }
+                refreshDestPods();
             });
 
             var nodeSel = document.getElementById('dest_node_select');
@@ -1074,15 +1109,19 @@
             var destPodSel = document.getElementById('dest_pod_select');
             function refreshDestPods() {
                 var selectedNode = nodeSel.value;
+                document.getElementById('dest_pod_name').value = '';
+                document.getElementById('dest_pod_namespace').value = '';
                 while (destPodSel.firstChild) destPodSel.removeChild(destPodSel.firstChild);
                 var placeholder = document.createElement('option');
                 placeholder.value = '';
                 placeholder.textContent = selectedNode ? '— optional: pick a dest pod —' : '— pick a node first —';
                 destPodSel.appendChild(placeholder);
                 if (!selectedNode) return;
+                var matches = 0;
                 for (var m = 0; m < pods.length; m++) {
                     var dp = pods[m];
                     if (dp.node !== selectedNode) continue;
+                    matches++;
                     var dpOpt = document.createElement('option');
                     dpOpt.value = dp.namespace + '/' + dp.name;
                     dpOpt.textContent = dp.namespace + '/' + dp.name + ' (' + (dp.pod_ip || 'no ip') + ')';
@@ -1090,9 +1129,12 @@
                     dpOpt.dataset.name = dp.name;
                     destPodSel.appendChild(dpOpt);
                 }
+                if (matches === 0) placeholder.textContent = '— no kata pods on this node —';
             }
             nodeSel.addEventListener('change', function() {
                 document.getElementById('dest_ip').value = nodesByName[nodeSel.value] || '';
+                if (nodeSel.value) clearFieldState(nodeSel);
+                if (nodesByName[nodeSel.value]) clearFieldState(document.getElementById('dest_ip'));
                 // Reset hidden dest-pod inputs whenever the node changes; the user
                 // must re-pick a pod (or leave it blank) for the new node.
                 document.getElementById('dest_pod_name').value = '';

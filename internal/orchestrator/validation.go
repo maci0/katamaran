@@ -43,6 +43,9 @@ func Validate(req Request) error {
 	if req.MultifdChannels < 0 {
 		return fmt.Errorf("multifdChannels must be non-negative, got %d", req.MultifdChannels)
 	}
+	if req.AutoDowntimeFloorMS < 0 {
+		return fmt.Errorf("autoDowntimeFloorMS must be non-negative, got %d", req.AutoDowntimeFloorMS)
+	}
 	logLevel := strings.ToLower(req.LogLevel)
 	if logLevel != "" && logLevel != "debug" && logLevel != "info" && logLevel != "warn" && logLevel != "error" {
 		return fmt.Errorf("logLevel must be one of debug, info, warn, or error, got %q", req.LogLevel)

@@ -41,10 +41,11 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `auto_downtime`, `shared_storage`, `replay_cmdline`, `tunnel_mode`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`, `auto_downtime`, `tunnel_mode`. |
 | `/api/migrate/stop` | POST | Cancel running migration |
 | `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, migration_progress, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}`. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
-| `/api/ping?target=<host-or-ip>` | POST | Start continuous ping (5/sec) to target |
+| `/api/ping` | POST | Start continuous ping (5/sec) to target. Accepts `target=<host-or-ip>` via form body or query string. |
 | `/api/ping/stop` | POST | Stop active ping/loadgen |
-| `/api/httpgen?target=<host-or-ip[:port]>` | POST | Start HTTP load generator (5 req/sec) to target |
+| `/api/httpgen` | POST | Start HTTP load generator (5 req/sec) to target. Accepts `target=<host-or-ip[:port]>` via form body or query string. |
 | `/api/httpgen/stop` | POST | Stop active ping/loadgen |
+| `/metrics` | GET | Prometheus text-format operational metrics |
 | `/debug/pprof/` | GET | Runtime profiling (requires `--enable-debug`) |
 | `/debug/vars` | GET | Runtime metrics via expvar (requires `--enable-debug`) |
 

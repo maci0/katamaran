@@ -142,15 +142,17 @@ type fakeOrchCall struct {
 type fakeOrch struct {
 	mu       sync.Mutex
 	calls    []fakeOrchCall
+	lastReq  orchestrator.Request
 	applyID  orchestrator.MigrationID
 	applyErr error
 	stopErr  error
 	updates  chan orchestrator.StatusUpdate
 }
 
-func (f *fakeOrch) Apply(_ context.Context, _ orchestrator.Request) (orchestrator.MigrationID, error) {
+func (f *fakeOrch) Apply(_ context.Context, req orchestrator.Request) (orchestrator.MigrationID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastReq = req
 	f.calls = append(f.calls, fakeOrchCall{op: "Apply", id: string(f.applyID)})
 	return f.applyID, f.applyErr
 }
@@ -181,6 +183,39 @@ func (f *fakeOrch) callsFor(op string) []fakeOrchCall {
 		}
 	}
 	return out
+}
+
+func (f *fakeOrch) lastRequest() orchestrator.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq
+}
+
+type fakeDiscoverer struct {
+	podNode string
+	nodeIP  string
+	podNS   string
+	podName string
+	node    string
+}
+
+func (f *fakeDiscoverer) ListKataPods(context.Context) ([]orchestrator.PodInfo, error) {
+	return nil, nil
+}
+
+func (f *fakeDiscoverer) ListKataNodes(context.Context) ([]orchestrator.NodeInfo, error) {
+	return nil, nil
+}
+
+func (f *fakeDiscoverer) LookupPodNode(_ context.Context, namespace, name string) (string, error) {
+	f.podNS = namespace
+	f.podName = name
+	return f.podNode, nil
+}
+
+func (f *fakeDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (string, error) {
+	f.node = name
+	return f.nodeIP, nil
 }
 
 func newMigrationCR(name string, finalizers []string, withDeletion bool, status map[string]any) *unstructured.Unstructured {
@@ -241,6 +276,40 @@ func TestReconciler_AddsFinalizerOnNewCR(t *testing.T) {
 	got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m1", metav1.GetOptions{})
 	if !hasFinalizer(got) {
 		t.Fatalf("finalizer missing: %v", got.GetFinalizers())
+	}
+}
+
+func TestReconciler_DispatchResolvesPodRequest(t *testing.T) {
+	cr := newMigrationCR("m-resolve", []string{finalizerName}, false, nil)
+	updates := make(chan orchestrator.StatusUpdate, 1)
+	updates <- orchestrator.StatusUpdate{ID: "id-resolve", Phase: orchestrator.PhaseSucceeded}
+	close(updates)
+	orch := &fakeOrch{applyID: "id-resolve", updates: updates}
+	rec, _, _ := newReconcilerWithCR(t, orch, cr)
+	disc := &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+	rec.Discoverer = disc
+
+	key := types.NamespacedName{Namespace: "default", Name: "m-resolve"}
+	rec.dispatch(context.Background(), key, cr)
+
+	if disc.podNS != "default" || disc.podName != "kata-demo" {
+		t.Fatalf("LookupPodNode called with %s/%s, want default/kata-demo", disc.podNS, disc.podName)
+	}
+	if disc.node != "worker-b" {
+		t.Fatalf("LookupNodeInternalIP called with %q, want worker-b", disc.node)
+	}
+	got := orch.lastRequest()
+	if got.SourcePod == nil || got.SourcePod.Namespace != "default" || got.SourcePod.Name != "kata-demo" {
+		t.Fatalf("SourcePod = %+v, want default/kata-demo", got.SourcePod)
+	}
+	if got.SourceNode != "worker-a" {
+		t.Fatalf("SourceNode = %q, want worker-a", got.SourceNode)
+	}
+	if got.DestNode != "worker-b" {
+		t.Fatalf("DestNode = %q, want worker-b", got.DestNode)
+	}
+	if got.DestIP != "10.0.0.20" {
+		t.Fatalf("DestIP = %q, want 10.0.0.20", got.DestIP)
 	}
 }
 

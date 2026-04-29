@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +35,52 @@ func TestNative_Apply_RejectsReplayCmdline(t *testing.T) {
 	req.ReplayCmdline = true
 	if _, err := n.Apply(context.Background(), req); !errors.Is(err, ErrReplayCmdlineNotSupported) {
 		t.Fatalf("want ErrReplayCmdlineNotSupported, got %v", err)
+	}
+}
+
+func TestNative_CreateStagerPod_Hardened(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := newFromClient(cs)
+
+	const image = "localhost/katamaran:dev"
+	if err := n.createStagerPod(context.Background(), "katamaran-cmdline-stager-test", "node-a", image); err != nil {
+		t.Fatalf("createStagerPod: %v", err)
+	}
+	pod, err := cs.CoreV1().Pods("kube-system").Get(context.Background(), "katamaran-cmdline-stager-test", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get stager pod: %v", err)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatalf("AutomountServiceAccountToken = %v, want false", pod.Spec.AutomountServiceAccountToken)
+	}
+	if got := pod.Spec.NodeName; got != "node-a" {
+		t.Fatalf("NodeName = %q, want node-a", got)
+	}
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(pod.Spec.Containers))
+	}
+	c := pod.Spec.Containers[0]
+	if c.Image != image {
+		t.Fatalf("stager image = %q, want %q", c.Image, image)
+	}
+	if c.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("ImagePullPolicy = %q, want %q", c.ImagePullPolicy, corev1.PullIfNotPresent)
+	}
+	if c.SecurityContext == nil {
+		t.Fatal("stager SecurityContext is nil")
+	}
+	if c.SecurityContext.Privileged != nil && *c.SecurityContext.Privileged {
+		t.Fatal("stager should not be privileged")
+	}
+	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Fatalf("AllowPrivilegeEscalation = %v, want false", c.SecurityContext.AllowPrivilegeEscalation)
+	}
+	if c.SecurityContext.Capabilities == nil || !slices.Contains(c.SecurityContext.Capabilities.Drop, corev1.Capability("ALL")) {
+		t.Fatalf("capability drops = %+v, want ALL", c.SecurityContext.Capabilities)
+	}
+	if c.SecurityContext.SeccompProfile == nil || c.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("SeccompProfile = %+v, want RuntimeDefault", c.SecurityContext.SeccompProfile)
 	}
 }
 
@@ -125,6 +173,16 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
+	}
+	srcJob := "katamaran-source-" + string(id)
+	if _, err := cs.CoreV1().Pods(DefaultJobNamespace).Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      srcJob + "-pod",
+			Namespace: DefaultJobNamespace,
+			Labels:    map[string]string{"batch.kubernetes.io/job-name": srcJob},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create source pod for log scrape fallback: %v", err)
 	}
 	updates, err := n.Watch(context.Background(), id)
 	if err != nil {
@@ -277,20 +335,17 @@ func TestParseProgressFields(t *testing.T) {
 		},
 		{
 			in:   "  multiple   spaces=ok ",
-			want: map[string]string{"multiple": "", "spaces": "ok"},
+			want: map[string]string{"spaces": "ok"},
+		},
+		{
+			in:   "message=value=with=equals status=running",
+			want: map[string]string{"message": "value=with=equals", "status": "running"},
 		},
 	}
 	for _, tc := range cases {
 		got := parseProgressFields(tc.in)
-		// "multiple" with no `=` should be filtered out by the
-		// `eq <= 0` guard, so don't assert on it.
-		for k, v := range tc.want {
-			if k == "multiple" {
-				continue
-			}
-			if got[k] != v {
-				t.Errorf("parseProgressFields(%q)[%q] = %q, want %q", tc.in, k, got[k], v)
-			}
+		if !maps.Equal(got, tc.want) {
+			t.Errorf("parseProgressFields(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }

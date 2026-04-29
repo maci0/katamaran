@@ -53,7 +53,7 @@ fi
 
 if [[ $# -lt 1 ]]; then
     usage >&2
-    exit 1
+    exit 2
 fi
 
 PROFILE="$1"
@@ -61,7 +61,16 @@ shift
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf "${BUILD_DIR}"' EXIT
 
-CE="${CE:-$(command -v podman 2>/dev/null || command -v docker)}"
+if [[ -z "${CE:-}" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+        CE="podman"
+    elif command -v docker >/dev/null 2>&1; then
+        CE="docker"
+    else
+        echo "ERROR: podman or docker is required" >&2
+        exit 1
+    fi
+fi
 
 # Default to sch_plug if no module groups specified.
 MODULE_GROUPS=("${@:-sch_plug}")
@@ -122,7 +131,7 @@ for group in "${MODULE_GROUPS[@]}"; do
             ;;
         *)
             echo "ERROR: Unknown module group '${group}'. Valid: sch_plug, nfs" >&2
-            exit 1
+            exit 2
             ;;
     esac
 done

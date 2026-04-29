@@ -35,7 +35,7 @@ rules:
 # cmdline before submitting the dest Job (replayCmdline mode).
 - apiGroups: [""]
   resources: ["pods/exec"]
-  verbs: ["create", "get"]
+  verbs: ["create"]
 # Jobs the Native orchestrator submits.
 - apiGroups: ["batch"]
   resources: ["jobs"]
