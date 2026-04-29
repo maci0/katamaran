@@ -329,9 +329,13 @@ internal/
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
   daemonset.yaml                # DaemonSet for node setup (binary, kernel modules, QMP config when present)
-  job-dest.yaml                 # Job template for destination-side migration
-  job-source.yaml               # Job template for source-side migration
-  migrate.sh                    # Orchestration wrapper for Job-based migration
+  migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
+  migrate.sh                    # Manual-testing shell wrapper around the Job templates
+                                #   under internal/orchestrator/templates/. Production paths
+                                #   submit those templates through the Native orchestrator.
+config/crd/
+  migration.yaml                # Migration CRD definition + status subresource
+  manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB
 docs/
   INSTALL.md                    # Installation guide (binary, container, DaemonSet)
   USAGE.md                      # Usage guide (CLI and Kubernetes Jobs)
