@@ -59,13 +59,38 @@ roleRef:
   name: katamaran-mgr
   apiGroup: rbac.authorization.k8s.io
 ---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: katamaran-mgr
+  namespace: kube-system
+spec:
+  # Keep at least one mgr alive during voluntary disruptions (node drain,
+  # cluster autoscaler eviction, kubectl drain). The reconciler is
+  # leader-elected so the surviving replica continues to dispatch the
+  # in-flight Migration CR while the evicted pod is rescheduled.
+  minAvailable: 1
+  selector:
+    matchLabels: { app: katamaran-mgr }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: katamaran-mgr
   namespace: kube-system
 spec:
-  replicas: 1
+  # Two replicas exercise the leader-election Lease the controller
+  # already wires (see katamaran-mgr's leaderelection.RunOrDie call).
+  # Only the lease holder reconciles; the standby is hot and takes
+  # over within ~LeaseDuration (15s) on a primary failure.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Allow one pod down during rollouts so the lease holder can
+      # gracefully step down before the new image takes leadership.
+      maxUnavailable: 1
+      maxSurge: 1
   selector:
     matchLabels: { app: katamaran-mgr }
   template:
@@ -73,6 +98,18 @@ spec:
       labels: { app: katamaran-mgr }
     spec:
       serviceAccountName: katamaran-mgr
+      # Spread the two replicas across nodes when the cluster has more
+      # than one. Soft preference (preferredDuringScheduling) so a
+      # single-node cluster still schedules both — they just both run
+      # there, lease-elect normally, and only one reconciles.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: { app: katamaran-mgr }
       containers:
       - name: mgr
         image: localhost/katamaran-mgr:dev

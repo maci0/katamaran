@@ -141,7 +141,7 @@
                         </div>
                         <label class="flex items-center gap-2 cursor-pointer py-1">
                             <input type="checkbox" name="auto_downtime" id="auto_downtime" value="true" aria-describedby="auto-downtime-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
-                            <span class="text-xs text-slate-300">Auto-downtime <span class="text-slate-400">(measure RTT, set limit = RTT × 2 + 5ms)</span></span>
+                            <span class="text-xs text-slate-300">Auto-downtime <span class="text-slate-400">(measure RTT, set limit = max(RTT × 2 + 25ms, 25ms))</span></span>
                             <span id="auto-downtime-help" class="sr-only">Auto-calculate downtime limit from measured round-trip time to dest node.</span>
                         </label>
                         <label class="flex items-center gap-2 cursor-pointer py-1">
@@ -703,6 +703,20 @@
     document.getElementById('downtime').addEventListener('input', function() {
         clearFieldState(this);
     });
+    // Auto-downtime checkbox toggles the manual downtime field's enabled
+    // state. The server-side ignores `downtime` when `auto_downtime=true`,
+    // but reflecting that in the UI prevents the user from filling in a
+    // value that won't take effect.
+    var autoDowntimeChk = document.getElementById('auto_downtime');
+    var downtimeInput = document.getElementById('downtime');
+    function syncDowntimeEnabled() {
+        var disabled = autoDowntimeChk.checked;
+        downtimeInput.disabled = disabled;
+        downtimeInput.classList.toggle('opacity-50', disabled);
+        downtimeInput.classList.toggle('cursor-not-allowed', disabled);
+    }
+    autoDowntimeChk.addEventListener('change', syncDowntimeEnabled);
+    syncDowntimeEnabled();
     ['dest_ip', 'vm_ip'].forEach(function(id) {
         var field = document.getElementById(id);
         field.addEventListener('input', function() {
