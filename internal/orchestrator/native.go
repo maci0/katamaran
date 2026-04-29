@@ -73,6 +73,14 @@ type nativeRun struct {
 	resultDowntime int64
 	resultRAMXfer  int64
 	resultRAMTotal int64
+
+	// Downtime-limit marker captured from the source pod log before the
+	// cutover. Populated by tailProgress when it sees
+	// KATAMARAN_DOWNTIME_LIMIT, surfaced by succeededUpdate too.
+	downtimeCaptured bool
+	appliedDowntime  int64
+	rttMS            int64
+	autoDowntime     bool
 }
 
 // ErrReplayCmdlineNotSupported is returned by Apply when the request has
@@ -244,8 +252,9 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		return // source pod never appeared; poll will surface the failure
 	}
 	const (
-		progressMarker = "KATAMARAN_PROGRESS "
-		resultMarker   = "KATAMARAN_RESULT "
+		progressMarker      = "KATAMARAN_PROGRESS "
+		resultMarker        = "KATAMARAN_RESULT "
+		downtimeLimitMarker = "KATAMARAN_DOWNTIME_LIMIT "
 		// logFetchOverlapSec bounds how much of the source pod's log we
 		// re-fetch per tick. The ticker fires every 2s; a 30s window gives
 		// generous slack for transient apiserver hiccups while keeping the
@@ -313,6 +322,36 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				done = true
 				break
 			}
+			if i := strings.Index(line, downtimeLimitMarker); i >= 0 {
+				seen[line] = true
+				fields := parseProgressFields(line[i+len(downtimeLimitMarker):])
+				applied := parseInt64(fields["applied_ms"])
+				rttMS := parseInt64(fields["rtt_ms"])
+				autoFlag := fields["auto"] == "true"
+				run.resultMu.Lock()
+				run.appliedDowntime = applied
+				run.rttMS = rttMS
+				run.autoDowntime = autoFlag
+				run.downtimeCaptured = true
+				run.resultMu.Unlock()
+				msg := fmt.Sprintf("downtime limit applied: %dms", applied)
+				if autoFlag {
+					msg += fmt.Sprintf(" (auto from %dms RTT)", rttMS)
+				}
+				if !send(StatusUpdate{
+					ID:                id,
+					Phase:             PhaseTransferring,
+					When:              time.Now(),
+					Message:           msg,
+					AppliedDowntimeMS: applied,
+					RTTMS:             rttMS,
+					AutoDowntime:      autoFlag,
+				}) {
+					done = true
+					break
+				}
+				continue
+			}
 			i := strings.Index(line, progressMarker)
 			if i < 0 {
 				continue
@@ -374,6 +413,11 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 		u.DowntimeMS = run.resultDowntime
 		u.RAMTransferred = run.resultRAMXfer
 		u.RAMTotal = run.resultRAMTotal
+	}
+	if run.downtimeCaptured {
+		u.AppliedDowntimeMS = run.appliedDowntime
+		u.RTTMS = run.rttMS
+		u.AutoDowntime = run.autoDowntime
 	}
 	run.resultMu.Unlock()
 	if captured {

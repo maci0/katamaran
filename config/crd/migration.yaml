@@ -125,9 +125,35 @@ spec:
                 format: int64
                 minimum: 0
               actualDowntimeMS:
+                description: |
+                  Actual VM pause duration measured by QEMU's query-migrate
+                  after the cutover completes.
                 type: integer
                 format: int64
                 minimum: 0
+              appliedDowntimeMS:
+                description: |
+                  The downtime limit the source binary programmed into QEMU
+                  before starting RAM migration. Equals .spec.downtimeMS when
+                  .spec.autoDowntime is false, or the auto-calculated
+                  rtt*multiplier+overhead value when true.
+                type: integer
+                format: int64
+                minimum: 0
+              rttMS:
+                description: |
+                  Round-trip-time measurement that fed the auto-downtime
+                  calculation. Zero when .spec.autoDowntime is false or RTT
+                  measurement failed (and the source fell back to
+                  .spec.downtimeMS).
+                type: integer
+                format: int64
+                minimum: 0
+              autoDowntime:
+                description: |
+                  True when appliedDowntimeMS came from the source binary's
+                  RTT-based auto-calculation instead of .spec.downtimeMS.
+                type: boolean
     subresources:
       status: {}
     additionalPrinterColumns:
@@ -140,6 +166,11 @@ spec:
     - name: Phase
       type: string
       jsonPath: .status.phase
+    - name: Downtime
+      type: integer
+      format: int64
+      jsonPath: .status.actualDowntimeMS
+      priority: 1
     - name: Age
       type: date
       jsonPath: .metadata.creationTimestamp

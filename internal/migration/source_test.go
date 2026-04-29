@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/icmp"
+
 	"github.com/maci0/katamaran/internal/qmp"
 	"github.com/maci0/katamaran/internal/qmptest"
 )
@@ -758,35 +760,21 @@ func TestMigrationTerminalError(t *testing.T) {
 }
 
 func TestMeasureRTT(t *testing.T) {
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", ramMigrationPort))
-	if err != nil {
-		t.Skipf("cannot bind RTT test listener on %s: %v", ramMigrationPort, err)
+	// measureRTT uses raw ICMP which needs CAP_NET_RAW (or
+	// net.ipv4.ping_group_range covering this uid). Skip when we can't
+	// open the listener instead of failing — production source pods run
+	// privileged and always have the capability.
+	if c, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0"); err != nil {
+		t.Skipf("ICMP socket not available in this test env: %v", err)
+	} else {
+		_ = c.Close()
 	}
-	defer l.Close()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 3; i++ {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			conn.Close()
-		}
-	}()
-
 	rtt, err := measureRTT(netip.MustParseAddr("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("measureRTT: %v", err)
 	}
 	if rtt <= 0 {
 		t.Fatalf("measureRTT returned non-positive duration: %v", rtt)
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("measureRTT did not complete all RTT samples")
 	}
 }
 

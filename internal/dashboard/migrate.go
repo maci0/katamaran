@@ -24,6 +24,7 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 		Image:         r.PostFormValue("image"),
 		SharedStorage: r.PostFormValue("shared_storage") == "true",
 		ReplayCmdline: r.PostFormValue("replay_cmdline") == "true",
+		AutoDowntime:  r.PostFormValue("auto_downtime") == "true",
 		TapNetns:      r.PostFormValue("tap_netns"),
 		TunnelMode:    r.PostFormValue("tunnel_mode"),
 	}
@@ -87,7 +88,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate all form values against shell metacharacters.
-	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline", "tunnel_mode"}
+	formKeys := []string{"source_node", "dest_node", "qmp_source", "qmp_dest", "tap", "tap_netns", "dest_ip", "vm_ip", "image", "shared_storage", "downtime", "source_pod_name", "source_pod_namespace", "dest_pod_name", "dest_pod_namespace", "replay_cmdline", "tunnel_mode", "auto_downtime"}
 	for _, key := range formKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
@@ -105,6 +106,11 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	if v := r.PostFormValue("replay_cmdline"); v != "" && v != "true" && v != "false" {
 		slog.Warn("Rejected invalid replay_cmdline value", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid value for replay_cmdline (must be 'true' or 'false')", http.StatusBadRequest)
+		return
+	}
+	if v := r.PostFormValue("auto_downtime"); v != "" && v != "true" && v != "false" {
+		slog.Warn("Rejected invalid auto_downtime value", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Invalid value for auto_downtime (must be 'true' or 'false')", http.StatusBadRequest)
 		return
 	}
 
@@ -302,10 +308,28 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		}
 		line := ">>> " + string(u.Phase)
 		switch {
+		case u.AppliedDowntimeMS > 0 && u.RAMTotal == 0:
+			// Pre-cutover downtime-limit announcement (separate
+			// StatusUpdate emitted by tailProgress when it sees the
+			// KATAMARAN_DOWNTIME_LIMIT marker). Shows up between
+			// "submitted" and the first transferring%.
+			line += fmt.Sprintf(": downtime limit %dms", u.AppliedDowntimeMS)
+			if u.AutoDowntime {
+				line += fmt.Sprintf(" (auto from %dms RTT)", u.RTTMS)
+			} else {
+				line += " (manual)"
+			}
 		case u.Phase == orchestrator.PhaseSucceeded && u.RAMTotal > 0:
 			line += fmt.Sprintf(": %s transferred", humanBytes(u.RAMTotal))
 			if u.DowntimeMS > 0 {
 				line += fmt.Sprintf(", %dms downtime", u.DowntimeMS)
+			}
+			if u.AppliedDowntimeMS > 0 {
+				if u.AutoDowntime {
+					line += fmt.Sprintf(" (limit %dms, auto)", u.AppliedDowntimeMS)
+				} else {
+					line += fmt.Sprintf(" (limit %dms)", u.AppliedDowntimeMS)
+				}
 			}
 			if breakdown := phaseBreakdown(start, phaseAt, u.When); breakdown != "" {
 				line += ", " + breakdown

@@ -8,9 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 
 	"github.com/maci0/katamaran/internal/qmp"
 )
@@ -234,16 +239,28 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		return fmt.Errorf("setting migration capabilities: %w", err)
 	}
 
+	var rttMS int64
 	if cfg.AutoDowntime {
 		rtt, err := measureRTTFunc(cfg.DestIP)
 		if err != nil {
 			slog.Warn("Failed to measure RTT for auto-downtime, using fallback", "error", err, "fallback_ms", downtimeLimitMS)
 		} else {
-			calculatedDowntime := int(rtt.Milliseconds()*rttMultiplier) + rttMinOverheadMS
-			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rtt.Milliseconds())
+			rttMS = rtt.Milliseconds()
+			calculatedDowntime := int(rttMS*rttMultiplier) + rttMinOverheadMS
+			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS)
 			downtimeLimitMS = calculatedDowntime
 		}
 	}
+	// Stable, parser-friendly marker: surfaces the downtime limit the
+	// source actually programmed into QEMU (post auto-calc, post fallback)
+	// so the orchestrator can stamp it on the StatusUpdate / Migration CR
+	// before the cutover even starts.
+	autoFlag := false
+	if cfg.AutoDowntime {
+		autoFlag = true
+	}
+	fmt.Printf("KATAMARAN_DOWNTIME_LIMIT applied_ms=%d rtt_ms=%d auto=%t\n",
+		downtimeLimitMS, rttMS, autoFlag)
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
@@ -412,24 +429,75 @@ stopLoop:
 
 var measureRTTFunc = measureRTT
 
-// measureRTT estimates network round-trip time to the destination by performing
-// TCP handshake timing against the RAM migration port, used for auto-downtime
-// calculation. Returns the best (lowest) of three successful samples; any
-// failed sample aborts the measurement so callers can fall back explicitly.
+// measureRTT estimates network round-trip time to the destination by sending
+// ICMP echo requests, used for auto-downtime calculation. Returns the best
+// (lowest) of three successful samples; any failed sample aborts the
+// measurement so callers can fall back explicitly.
+//
+// We previously TCP-probed dest:4444 but that's the same port the destination
+// QEMU's migrate-incoming listener accepts on — every probe consumed a
+// connection and poisoned the listener, surfacing as "Failed to peek at
+// channel" once the real migration handshake arrived. ICMP is non-disruptive.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	const samples = 3
-	addr := net.JoinHostPort(destIP.String(), ramMigrationPort)
-	var best time.Duration
+	network := "ip4:icmp"
+	listenAddr := "0.0.0.0"
+	var icmpType icmp.Type = ipv4.ICMPTypeEcho
+	if destIP.Is6() {
+		network = "ip6:ipv6-icmp"
+		listenAddr = "::"
+		icmpType = ipv6.ICMPTypeEchoRequest
+	}
+	conn, err := icmp.ListenPacket(network, listenAddr)
+	if err != nil {
+		return 0, fmt.Errorf("opening ICMP socket (does the pod have CAP_NET_RAW?): %w", err)
+	}
+	defer func() { _ = conn.Close() }()
 
+	dst := &net.IPAddr{IP: net.IP(destIP.AsSlice())}
+	id := os.Getpid() & 0xffff
+	var best time.Duration
 	for i := 0; i < samples; i++ {
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, rttDialTimeout)
+		msg := icmp.Message{
+			Type: icmpType,
+			Code: 0,
+			Body: &icmp.Echo{
+				ID:   id,
+				Seq:  i + 1,
+				Data: []byte("katamaran-rtt"),
+			},
+		}
+		buf, err := msg.Marshal(nil)
 		if err != nil {
-			return 0, fmt.Errorf("RTT sample %d/%d failed: %w", i+1, samples, err)
+			return 0, fmt.Errorf("marshalling ICMP echo %d/%d: %w", i+1, samples, err)
+		}
+		start := time.Now()
+		if _, err := conn.WriteTo(buf, dst); err != nil {
+			return 0, fmt.Errorf("RTT sample %d/%d send failed: %w", i+1, samples, err)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(rttDialTimeout)); err != nil {
+			return 0, fmt.Errorf("RTT sample %d/%d set deadline: %w", i+1, samples, err)
+		}
+		reply := make([]byte, 1500)
+		n, _, err := conn.ReadFrom(reply)
+		if err != nil {
+			return 0, fmt.Errorf("RTT sample %d/%d recv failed: %w", i+1, samples, err)
 		}
 		rtt := time.Since(start)
-		if cerr := conn.Close(); cerr != nil {
-			slog.Debug("RTT probe connection close error", "sample", i+1, "error", cerr)
+		// Sanity-check the reply: ignore unrelated ICMP traffic and require an
+		// echo-reply matching our id+seq before counting the sample.
+		proto := 1 // ICMPv4
+		if destIP.Is6() {
+			proto = 58 // ICMPv6
+		}
+		parsed, perr := icmp.ParseMessage(proto, reply[:n])
+		if perr != nil {
+			return 0, fmt.Errorf("RTT sample %d/%d parse failed: %w", i+1, samples, perr)
+		}
+		echo, ok := parsed.Body.(*icmp.Echo)
+		if !ok || echo.ID != id || echo.Seq != i+1 {
+			i-- // not our reply, retry this sample
+			continue
 		}
 		slog.Debug("RTT sample", "sample", i+1, "of", samples, "rtt", rtt)
 		if i == 0 || rtt < best {

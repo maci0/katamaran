@@ -137,8 +137,13 @@
                         <div>
                             <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
                             <input type="number" name="downtime" id="downtime" value="25" min="1" max="60000" inputmode="numeric" aria-describedby="downtime-help" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-sm text-slate-200">
-                            <p id="downtime-help" class="text-xs text-slate-400 -mt-1">Range: 1–60,000</p>
+                            <p id="downtime-help" class="text-xs text-slate-400 -mt-1">Range: 1–60,000. Ignored when Auto-downtime is on.</p>
                         </div>
+                        <label class="flex items-center gap-2 cursor-pointer py-1">
+                            <input type="checkbox" name="auto_downtime" id="auto_downtime" value="true" aria-describedby="auto-downtime-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
+                            <span class="text-xs text-slate-300">Auto-downtime <span class="text-slate-400">(measure RTT, set limit = RTT × 2 + 5ms)</span></span>
+                            <span id="auto-downtime-help" class="sr-only">Auto-calculate downtime limit from measured round-trip time to dest node.</span>
+                        </label>
                         <label class="flex items-center gap-2 cursor-pointer py-1">
                             <input type="checkbox" name="shared_storage" id="shared_storage" value="true" aria-describedby="shared-storage-help" class="w-4 h-4 rounded bg-slate-900 border-slate-600 text-hull-500 focus:ring-hull-500">
                             <span class="text-xs text-slate-300">Shared Storage <span class="text-slate-400">(skip disk copy)</span></span>

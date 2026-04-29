@@ -516,6 +516,15 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 	if u.DowntimeMS > 0 {
 		status["actualDowntimeMS"] = u.DowntimeMS
 	}
+	if u.AppliedDowntimeMS > 0 {
+		status["appliedDowntimeMS"] = u.AppliedDowntimeMS
+	}
+	if u.RTTMS > 0 {
+		status["rttMS"] = u.RTTMS
+	}
+	if u.AutoDowntime {
+		status["autoDowntime"] = true
+	}
 	if u.Phase == orchestrator.PhaseSubmitted {
 		status["startedAt"] = time.Now().UTC().Format(time.RFC3339)
 	}

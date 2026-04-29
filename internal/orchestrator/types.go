@@ -149,4 +149,22 @@ type StatusUpdate struct {
 	// DowntimeMS is set in the final PhaseSucceeded update — the actual VM
 	// pause duration measured by QEMU's query-migrate.
 	DowntimeMS int64
+
+	// AppliedDowntimeMS is the downtime limit the source binary
+	// programmed into QEMU before starting RAM migration. Equal to the
+	// caller-supplied value when AutoDowntime is false, or to the
+	// auto-calculated rtt*multiplier+overhead value when true. Emitted
+	// once at the start of the run via a separate StatusUpdate so the
+	// dashboard / CR controller can surface the chosen number before
+	// the cutover happens.
+	AppliedDowntimeMS int64
+
+	// RTTMS is the round-trip-time measurement that fed the auto-downtime
+	// calculation. Zero when AutoDowntime is off or RTT measurement
+	// failed.
+	RTTMS int64
+
+	// AutoDowntime mirrors Request.AutoDowntime so consumers know
+	// whether AppliedDowntimeMS came from the auto-calc path.
+	AutoDowntime bool
 }

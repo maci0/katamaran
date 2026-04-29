@@ -86,8 +86,10 @@ const (
 
 	// rttMinOverheadMS is the minimum overhead in milliseconds added to the
 	// RTT-based downtime estimate. Accounts for QEMU processing latency
-	// that is independent of network RTT.
-	rttMinOverheadMS = 10
+	// that is independent of network RTT, plus enough headroom for
+	// kata-agent / kernel page-dirtying so an idle VM still converges.
+	// 25ms matches the manual --downtime default (1 frame at 40Hz).
+	rttMinOverheadMS = 25
 
 	// rttDialTimeout is the maximum time to wait for each TCP handshake
 	// when measuring round-trip time to the destination.
