@@ -130,7 +130,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := drain(updates, 10*time.Second)
+	got := drainUpdates(updates, 10*time.Second)
 	if len(got) < 2 {
 		t.Fatalf("want >=2 updates, got %d: %+v", len(got), got)
 	}
@@ -315,4 +315,24 @@ func TestNativeRunSend_AfterClose(t *testing.T) {
 		}
 	}()
 	run.send(StatusUpdate{Phase: PhaseTransferring})
+}
+
+// drainUpdates collects every value from c until it closes or deadline
+// fires. Used by tests that exercise the full Apply -> Watch -> close
+// lifecycle without caring about per-event timing.
+func drainUpdates(c <-chan StatusUpdate, timeout time.Duration) []StatusUpdate {
+	var out []StatusUpdate
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case u, ok := <-c:
+			if !ok {
+				return out
+			}
+			out = append(out, u)
+		case <-deadline.C:
+			return out
+		}
+	}
 }

@@ -3,18 +3,16 @@
 // them via the Kubernetes API, and reports Status back. It is the layer that
 // the dashboard's HTTP handlers and the Migration CRD controller both consume.
 //
-// Two implementations exist:
+// One implementation exists: the in-cluster client-go path
+// (native.go). It renders the Jobs in-process, submits them via the
+// apiserver, and reconciles status by polling Job conditions.
+// Constructed via New / NewFromKubeconfig / NewFromClient and consumed
+// by the dashboard, the Migration CRD controller, and the
+// katamaran-orchestrator CLI.
 //
-//   - Native (native.go): renders the Jobs in-process via client-go and
-//     reconciles status by polling Job conditions. Constructed via New /
-//     NewFromKubeconfig / NewFromClient. Used by the dashboard and the
-//     Migration CRD controller, and selected via --native in the
-//     katamaran-orchestrator CLI.
-//
-//   - Script (script.go): wraps deploy/migrate.sh for ad-hoc CLI runs and
-//     CI smoke. Constructed via NewScript. Default in
-//     katamaran-orchestrator unless --native is passed; not used by the
-//     dashboard or the CRD controller.
+// A previous Script wrapper around deploy/migrate.sh was removed —
+// migrate.sh stays in deploy/ for manual shell-driven testing only and
+// is not exercised through this package.
 //
 // The Request type is mode-agnostic: callers can specify either an explicit
 // QMP socket path (legacy) or a pod identity (modern, lets the source job

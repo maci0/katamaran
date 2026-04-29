@@ -315,19 +315,19 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 
 		err = migration.RunSource(ctx, migration.SourceConfig{
-			QMPSocket:       *qmpSocket,
-			DestIP:          parsedDest,
-			VMIP:            parsedVM,
-			DriveID:         *driveID,
-			SharedStorage:   *sharedStorage,
-			TunnelMode:      tm,
+			QMPSocket:           *qmpSocket,
+			DestIP:              parsedDest,
+			VMIP:                parsedVM,
+			DriveID:             *driveID,
+			SharedStorage:       *sharedStorage,
+			TunnelMode:          tm,
 			DowntimeLimitMS:     *downtimeLimit,
 			AutoDowntime:        *autoDowntime,
 			AutoDowntimeFloorMS: *autoDowntimeFloor,
 			MultifdChannels:     *multifdChannels,
-			PodName:         *podName,
-			PodNamespace:    *podNS,
-			EmitCmdlineTo:   *emitCmdlineTo,
+			PodName:             *podName,
+			PodNamespace:        *podNS,
+			EmitCmdlineTo:       *emitCmdlineTo,
 		})
 	}
 

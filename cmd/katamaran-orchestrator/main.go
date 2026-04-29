@@ -45,10 +45,7 @@ Usage:
   katamaran-orchestrator --help
 
 Flags:
-  --native               Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh
-  --script string        Path to deploy/migrate.sh (default "deploy/migrate.sh").
-                         Mutually exclusive with --native.
-  --kubeconfig string    Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)
+  --kubeconfig string    Path to kubeconfig (only used out-of-cluster; ignored when running inside a pod)
 
 Other:
   -v, --version          Show version and exit
@@ -66,16 +63,14 @@ Example:
     "SourcePod":{"Namespace":"default","Name":"kata-demo"},
     "DestPod":{"Namespace":"default","Name":"kata-dest-shell"},
     "SharedStorage":true,"ReplayCmdline":true
-  }' | katamaran-orchestrator --native
+  }' | katamaran-orchestrator
 `)
 }
 
 func main() {
 	fs := flag.NewFlagSet("katamaran-orchestrator", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	scriptPath := fs.String("script", "", `Path to deploy/migrate.sh (default "deploy/migrate.sh")`)
-	native := fs.Bool("native", false, "Use the in-cluster Native orchestrator (client-go) instead of shelling out to migrate.sh")
-	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored with --native when running inside a pod)")
+	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored when running inside a pod)")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -98,13 +93,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Detect mutually exclusive flags so users do not silently get one mode
-	// while believing they configured the other.
-	if *native && *scriptPath != "" {
-		fmt.Fprintln(os.Stderr, "Error: --native and --script are mutually exclusive")
-		os.Exit(2)
-	}
-
 	req, err := readRequest(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -119,19 +107,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var o orchestrator.Orchestrator
-	if *native {
-		nat, err := orchestrator.New()
-		if err != nil {
-			nat, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: native orchestrator init: %v\n", err)
-			os.Exit(2)
-		}
-		o = nat
-	} else {
-		o = orchestrator.NewScript(*scriptPath)
+	o, err := orchestrator.New()
+	if err != nil {
+		o, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: orchestrator init: %v\n", err)
+		os.Exit(2)
 	}
 	id, err := o.Apply(ctx, req)
 	if err != nil {

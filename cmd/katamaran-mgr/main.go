@@ -142,18 +142,17 @@ func main() {
 		fail(fmt.Errorf("kubernetes client: %w", err))
 	}
 
-	var orch orchestrator.Orchestrator
-	nat, err := orchestrator.New()
+	// The controller has no migration to drive without a Kubernetes API
+	// (it submits Jobs through the apiserver), so refuse to start when
+	// neither in-cluster config nor the supplied kubeconfig works. The
+	// previous Script fallback covered a "developer laptop" scenario
+	// that's better served by `katamaran-orchestrator --script` directly.
+	orch, err := orchestrator.New()
 	if err != nil {
-		nat, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
+		orch, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
 	}
 	if err != nil {
-		// Fall back to NewScript if not running in-cluster — mostly useful
-		// during local development.
-		slog.Warn("Orchestrator unavailable, falling back to Script", "error", err)
-		orch = orchestrator.NewScript("")
-	} else {
-		orch = nat
+		fail(fmt.Errorf("orchestrator unavailable: %w", err))
 	}
 
 	disc, derr := orchestrator.NewDiscoverer()
