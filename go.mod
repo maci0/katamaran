@@ -1,6 +1,6 @@
 module github.com/maci0/katamaran
 
-go 1.26.0
+go 1.26.2
 
 require (
 	golang.org/x/net v0.49.0
