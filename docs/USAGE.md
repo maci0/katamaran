@@ -113,6 +113,21 @@ sudo /usr/local/bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.
   --dest-ip <destination-node-ip> --vm-ip <vm-pod-ip> --auto-downtime
 ```
 
+When `--auto-downtime` is set, the source binary measures network RTT to
+the destination node by sending three ICMP echo requests (the source
+pod runs privileged, so it can open a raw socket). The downtime limit
+programmed into QEMU is then `max(rtt × 2 + 25ms, 25ms)` — the floor
+exists so an idle kata-noble VM still converges. Both the chosen limit
+and the measured RTT are surfaced:
+
+- in the source pod log via the structured marker
+  `KATAMARAN_DOWNTIME_LIMIT applied_ms=N rtt_ms=R auto=true`,
+- on the dashboard log line as
+  `>>> transferring: downtime limit Nms (auto from Rms RTT)` plus a
+  recap on the final succeeded line, and
+- on the Migration CR as `.status.appliedDowntimeMS`,
+  `.status.rttMS`, and `.status.autoDowntime`.
+
 ## Kubernetes Job-Based Usage
 
 The repository includes:

@@ -11,6 +11,7 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 - **Advanced override pane** — every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
 - **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); it no longer shells out to `deploy/migrate.sh`.
 - **RAM transfer progress bar** — live `submitted → transferring → succeeded` widget driven by `KATAMARAN_PROGRESS` markers tailed from the source pod. Shows percent, transferred/total bytes, then collapses to a green "done" bar with the actual VM downtime once the dest job completes.
+- **Auto-downtime** — checkbox in the migration form. When set, the source binary measures network RTT to the destination via ICMP echo and programs the QEMU downtime limit as `max(rtt × 2 + 25ms, 25ms)`. The chosen limit is logged before the cutover (`>>> transferring: downtime limit 25ms (auto from 0ms RTT)`) and recapped on the success line.
 - **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
 - **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data.
 - **Live stats** — packets transmitted, dropped, average latency, max latency (computed from ping data).
@@ -37,7 +38,7 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/` | GET | Dashboard frontend |
 | `/api/pods` | GET | List of `kata-qemu` pods cluster-wide: `[{namespace, name, node, pod_ip}]`. Backs the Source Pod and Dest Pod dropdowns. |
 | `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
-| `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `shared_storage`, `replay_cmdline`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`. |
+| `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `auto_downtime`, `shared_storage`, `replay_cmdline`, `tunnel_mode`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`, `auto_downtime`, `tunnel_mode`. |
 | `/api/migrate/stop` | POST | Cancel running migration |
 | `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, migration_progress, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}`. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
 | `/api/ping?target=<host-or-ip>` | POST | Start continuous ping (5/sec) to target |
