@@ -360,16 +360,75 @@ func parseProgressFields(s string) map[string]string {
 
 // succeededUpdate builds the final PhaseSucceeded StatusUpdate, attaching
 // captured downtime / RAM totals from tailProgress when available.
-func (n *native) succeededUpdate(id MigrationID, run *nativeRun) StatusUpdate {
+//
+// poll fires PhaseSucceeded as soon as it sees the dest Job reach
+// Complete; that can race with tailProgress's 2s ticker, leaving the
+// KATAMARAN_RESULT marker unscraped even though it's already in the
+// source pod's log. To close that gap we do one synchronous final scrape
+// here when the result hasn't been captured yet.
+func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativeRun) StatusUpdate {
 	u := StatusUpdate{ID: id, Phase: PhaseSucceeded, When: time.Now()}
 	run.resultMu.Lock()
-	if run.resultCaptured {
+	captured := run.resultCaptured
+	if captured {
 		u.DowntimeMS = run.resultDowntime
 		u.RAMTransferred = run.resultRAMXfer
 		u.RAMTotal = run.resultRAMTotal
 	}
 	run.resultMu.Unlock()
+	if captured {
+		return u
+	}
+	// Final synchronous scrape, bounded so a wedged apiserver never holds
+	// up the terminal status update.
+	scrapeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if down, xfer, total, ok := n.scrapeResultMarker(scrapeCtx, run.srcJob); ok {
+		run.resultMu.Lock()
+		run.resultCaptured = true
+		run.resultDowntime = down
+		run.resultRAMXfer = xfer
+		run.resultRAMTotal = total
+		run.resultMu.Unlock()
+		u.DowntimeMS = down
+		u.RAMTransferred = xfer
+		u.RAMTotal = total
+	}
 	return u
+}
+
+// scrapeResultMarker does a one-shot fetch of the source pod's full log
+// and returns the latest KATAMARAN_RESULT marker's downtime / transferred
+// / total fields. Returns ok=false if no source pod exists, the log
+// stream fails, or no marker is present in the captured log window.
+func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtimeMS, ramXfer, ramTotal int64, ok bool) {
+	pod, err := n.firstSourcePod(ctx, srcJob)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	stream, err := n.client.CoreV1().Pods(n.namespace).GetLogs(pod, &corev1.PodLogOptions{Container: "katamaran"}).Stream(ctx)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	defer func() { _ = stream.Close() }()
+	const marker = "KATAMARAN_RESULT "
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		i := strings.Index(line, marker)
+		if i < 0 {
+			continue
+		}
+		fields := parseProgressFields(line[i+len(marker):])
+		downtimeMS = parseInt64(fields["downtime_ms"])
+		ramXfer = parseInt64(fields["ram_transferred"])
+		ramTotal = parseInt64(fields["ram_total"])
+		ok = true
+		// Don't break — take the LAST marker, which is what tailProgress
+		// would have picked up too.
+	}
+	return downtimeMS, ramXfer, ramTotal, ok
 }
 
 func parseInt64(s string) int64 {
@@ -533,7 +592,7 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			if destErr == nil {
 				if cond := TerminalJobCondition(destJob); cond == batchv1.JobComplete {
 					slog.Info("Migration destination job completed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
-					run.updates <- n.succeededUpdate(id, run)
+					run.updates <- n.succeededUpdate(ctx, id, run)
 					return
 				} else if cond == batchv1.JobFailed {
 					slog.Error("Migration destination job failed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
