@@ -210,13 +210,13 @@ func TestValidFormValue(t *testing.T) {
 		}
 	}
 	rejected := []string{
-		"tap0;ls",                              // semicolon
-		"val|cat",                              // pipe
-		"val&bg",                               // ampersand
-		"val$(cmd)",                            // dollar
-		"val`cmd`",                             // backtick
-		"val with space",                       // space
-		"val\nnewline",                         // newline
+		"tap0;ls",        // semicolon
+		"val|cat",        // pipe
+		"val&bg",         // ampersand
+		"val$(cmd)",      // dollar
+		"val`cmd`",       // backtick
+		"val with space", // space
+		"val\nnewline",   // newline
 		strings.Repeat("a", orchestrator.MaxSafeArgValueLen+1), // exceeds length limit
 	}
 	for _, v := range rejected {
