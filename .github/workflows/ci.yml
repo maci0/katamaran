@@ -27,9 +27,15 @@ jobs:
       - name: Lint
         run: make vet
       - name: Vulnerability check
-        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1
-        with:
-          go-version-file: go.mod
+        # Install + run govulncheck directly. The previous
+        # golang/govulncheck-action runs a nested actions/checkout that
+        # conflicts with the outer actions/checkout v6's persistent
+        # credentials, producing a `remote: Duplicate header:
+        # "Authorization"` HTTP 400. Direct invocation bypasses the
+        # nested checkout entirely. No untrusted input is interpolated.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
       - name: Unit tests
         run: make test
       - name: Fuzz seeds
