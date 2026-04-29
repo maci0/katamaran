@@ -189,8 +189,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		slog.Info("Migration: orchestrator using kubeconfig", "in_cluster_err", err)
 	} else {
-		fmt.Fprintf(stderr, "Error: cannot reach Kubernetes API: %v / %v\n", err, err2)
-		return 1
+		// No Kubernetes API reachable. Keep the dashboard up so /healthz,
+		// the static UI, and the loadgen endpoints still work; migration
+		// + discovery handlers return 503 until app.orch is wired. Real
+		// deployments will hit one of the branches above; this is the
+		// fallback for unit tests + a developer-laptop dry run.
+		slog.Warn("Kubernetes API unreachable: migration handlers will return 503 until in-cluster config or KUBECONFIG is available", "in_cluster_err", err, "kubeconfig_err", err2)
 	}
 
 	expvar.NewString("version").Set(buildinfo.Version)
