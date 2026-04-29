@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-29
+
+### Added
+
+- Release workflow (`.github/workflows/release.yml`): on every `v*`
+  tag push, build multi-arch images (linux/amd64 + linux/arm64) for
+  `katamaran`, `katamaran-dashboard`, and `katamaran-mgr`; push to
+  `ghcr.io/<owner>/<image>:<vN.M.P>` and `:latest`; create a GitHub
+  Release whose body is the CHANGELOG section for the tag. v0.1.0
+  was tagged before this workflow existed; v0.1.1 is the first run.
+
+[0.1.1]: https://github.com/maci0/katamaran/releases/tag/v0.1.1
+
 ## [0.1.0] - 2026-04-29
 
 First tagged release. Zero-packet-drop live migration of Kata Containers
@@ -122,5 +135,5 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.1.1...HEAD
 [0.1.0]: https://github.com/maci0/katamaran/releases/tag/v0.1.0
