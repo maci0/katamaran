@@ -66,18 +66,6 @@ jobs:
       - name: Lint shell scripts
         run: shellcheck -x -e SC1091,SC2016,SC2155,SC2317,SC2329 scripts/*.sh deploy/migrate.sh
 
-  template-sync:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Job templates in deploy/ match internal/orchestrator/templates/
-        run: |
-          diff -u deploy/job-source.yaml internal/orchestrator/templates/job-source.yaml
-          diff -u deploy/job-dest.yaml internal/orchestrator/templates/job-dest.yaml
-
   build-and-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -97,7 +85,7 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [lint-and-test, build-and-smoke, shellcheck, template-sync]
+    needs: [lint-and-test, build-and-smoke, shellcheck]
     strategy:
       fail-fast: false
       matrix:

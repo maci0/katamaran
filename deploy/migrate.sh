@@ -393,7 +393,7 @@ deploy_dest_job() {
     export QMP_SOCKET="$QMP_DEST"
     export IMAGE="$IMAGE_REF"
     export EXTRA_ARGS="$DEST_EXTRA_ARGS_FULL"
-    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/../internal/orchestrator/templates/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
     echo ">>> Waiting for destination pod to appear..."
     for _ in $(seq 1 30); do
@@ -429,7 +429,7 @@ deploy_source_job() {
     export DEST_IP="$DEST_IP"
     export VM_IP="$VM_IP"
     export EXTRA_ARGS="$SRC_EXTRA_ARGS"
-    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/job-source.yaml" | "${KUBECTL[@]}" apply -f -
+    envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/../internal/orchestrator/templates/job-source.yaml" | "${KUBECTL[@]}" apply -f -
 }
 
 # ship_cmdline_to_dest copies the captured QEMU cmdline file from the source

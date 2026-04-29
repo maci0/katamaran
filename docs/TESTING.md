@@ -232,6 +232,95 @@ synchronization loop (`waitForStorageSync`, `nbd-server-start/add/stop`, `drive-
 (`CONFIG_NFS_FS`, `CONFIG_SUNRPC`). If using a custom minikube ISO, enable these in the
 kernel config alongside `CONFIG_NET_SCH_PLUG`.
 
+## 4b. CRD Path E2E (`--method=crd`)
+
+The same harness can drive migrations through the Migration CRD +
+`katamaran-mgr` controller instead of the legacy `deploy/migrate.sh`
+shell wrapper. This validates the operator-grade entry point that
+GitOps / Argo workflows would use in production.
+
+### Run
+
+```bash
+./scripts/e2e.sh --provider minikube --method crd --storage none --ping-proof
+```
+
+The harness will:
+
+1. Provision the cluster (or reuse an existing profile) and install
+   Kata.
+2. Build + load `katamaran-mgr.tar` into the cluster.
+3. Apply `config/crd/migration.yaml` and `config/crd/manager.yaml`,
+   wait for the controller Deployment to roll out.
+4. Submit a `Migration` CR derived from the discovered source pod and
+   destination node:
+
+   ```yaml
+   apiVersion: katamaran.io/v1alpha1
+   kind: Migration
+   metadata:
+     name: e2e-<timestamp>
+     namespace: default
+   spec:
+     sourcePod: { namespace: default, name: kata-src }
+     destNode: <NODE2>
+     image: localhost/katamaran:dev
+     sharedStorage: <true|false depending on --storage>
+     replayCmdline: true
+     tunnelMode: none
+   ```
+
+5. Poll `.status.phase` to a terminal value (deadline 600 s).
+6. Dump the CR yaml and `katamaran-mgr` logs on failure.
+7. Delete the CR on success (the finalizer triggers job cleanup).
+
+### What This Validates
+
+In addition to everything `--method=job` covers:
+
+- The Migration CRD's OpenAPI schema accepts the spec the harness
+  submits.
+- The `katamaran.io/finalizer` is added by the reconciler before
+  dispatch and removed during deletion.
+- The reconciler's discoverer resolves `spec.sourcePod` to a node and
+  `spec.destNode` to an InternalIP so `orchestrator.Request` validation
+  passes.
+- Per-migration Job names (`katamaran-source-<id>` /
+  `katamaran-dest-<id>`) plus the `katamaran.io/migration-id` label
+  flow correctly all the way to `kubectl get migration` printer
+  columns.
+- The structured KATAMARAN_PROGRESS / RESULT / DOWNTIME_LIMIT markers
+  surface as `.status.ramTransferred`, `.status.actualDowntimeMS`,
+  `.status.appliedDowntimeMS`, `.status.rttMS`, `.status.autoDowntime`.
+
+### Auto-downtime Variant
+
+Set `autoDowntime: true` and (optionally) `autoDowntimeFloorMS: <n>` in
+the spec to exercise the ICMP RTT measurement and the configurable
+floor. After completion, inspect the CR:
+
+```bash
+kubectl get migration <name> -o yaml | yq .status
+# .status.autoDowntime: true
+# .status.appliedDowntimeMS: 25     # or whatever floor was set
+# .status.rttMS:             0      # measured by ICMP echo
+# .status.actualDowntimeMS: 14      # what QEMU actually paused for
+```
+
+### Operational Endpoints
+
+While the harness runs, the controller exposes (on each `katamaran-mgr`
+pod, port 8081):
+
+- `/healthz`, `/readyz` — kubelet probes.
+- `/metrics` — Prometheus text-format counters.
+- `/debug/vars` — same counters as expvar JSON, plus runtime memstats.
+
+```bash
+POD=$(kubectl -n kube-system get pod -l app=katamaran-mgr -o jsonpath='{.items[0].metadata.name}')
+kubectl -n kube-system exec "$POD" -- wget -qO- http://localhost:8081/metrics | grep katamaran_
+```
+
 ## 5. Zero-Packet-Drop Proof — Full Worked Example
 
 This section documents a complete end-to-end live migration with continuous traffic, proving that **zero packets are dropped** during the VM cutover. Every command, its expected output, and the verification steps are shown.
