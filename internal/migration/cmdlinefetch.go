@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -75,21 +76,25 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 	defer cancel()
 
 	const marker = "KATAMARAN_CMDLINE_B64="
-	for {
+	slog.Info("Fetching source QEMU cmdline from pod log", "endpoint", endpoint, "marker", marker)
+	for attempt := 1; ; attempt++ {
 		select {
 		case <-deadline.Done():
 			return "", fmt.Errorf("source pod %s/%s did not emit %s within timeout", ns, pod, marker)
 		default:
 		}
 		body, err := getPodLog(deadline, client, endpoint, token)
-		if err == nil {
-			if b64 := scanMarker(body, marker); b64 != "" {
-				decoded, derr := base64.StdEncoding.DecodeString(b64)
-				if derr != nil {
-					return "", fmt.Errorf("decode KATAMARAN_CMDLINE_B64: %w", derr)
-				}
-				return writeCmdlineTempFile(decoded)
+		if err != nil {
+			slog.Warn("pod-log fetch attempt failed", "attempt", attempt, "error", err)
+		} else if b64 := scanMarker(body, marker); b64 != "" {
+			decoded, derr := base64.StdEncoding.DecodeString(b64)
+			if derr != nil {
+				return "", fmt.Errorf("decode KATAMARAN_CMDLINE_B64: %w", derr)
 			}
+			slog.Info("Decoded source QEMU cmdline from pod log", "attempt", attempt, "bytes", len(decoded))
+			return writeCmdlineTempFile(decoded)
+		} else {
+			slog.Warn("pod-log fetch returned no marker yet", "attempt", attempt, "bytes", len(body))
 		}
 		// Retry every 2s. Either the pod isn't up yet (404), the
 		// cmdline marker hasn't been emitted (apiserver returns the
@@ -119,7 +124,9 @@ func getPodLog(ctx context.Context, client *http.Client, endpoint, token string)
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "text/plain")
+	// apiserver's pod-log endpoint returns 406 for `Accept: text/plain`;
+	// it picks the encoding itself, so leave the header off (Go's
+	// default `*/*` works for both wget and our client).
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
