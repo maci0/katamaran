@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-01
+
+Architectural refactor: cmdline replay no longer needs a stager pod
+or SPDY exec. The source binary stamps the captured QEMU cmdline as
+a `KATAMARAN_CMDLINE_B64=<base64>` marker on its own pod log; the
+dest binary fetches that line via the in-cluster apiserver and
+replays normally. Existing `--replay-cmdline=<file>` flag still
+works for manual `deploy/migrate.sh` runs.
+
+### Added
+
+- `katamaran --replay-cmdline-from-pod <namespace>/<pod>` (dest mode):
+  the dest binary fetches the source pod's log via the apiserver,
+  scans for `KATAMARAN_CMDLINE_B64=`, decodes, and replays.
+  Implemented in `internal/migration/cmdlinefetch.go`.
+- `KATAMARAN_CMDLINE_B64` marker emitted by the source binary
+  alongside the existing `KATAMARAN_CMDLINE_AT` path marker.
+- New unit tests `TestInjectReplayFromPod_AppendsFlag` and
+  `TestInjectReplayFromPod_NoKatamaranContainer` cover the Native
+  orchestrator's argv-patch helper.
+
+### Changed
+
+- `internal/orchestrator/native_replay.go` shrunk from ~290 lines to
+  ~17. The whole SPDY/stager/hostPath pipeline (`stageCmdline`,
+  `podCat`, `podWrite`, `podStream`, `createStagerPod`,
+  `waitPodReady`, `limitWriter`, `dirOf`, `hostPathType`,
+  `int64ptr`, `boolptr`) is gone.
+- `katamaran-mgr` RBAC: dropped `pods/exec` create + `pods` create /
+  delete. Only `pods get/list/watch` and `pods/log get` remain on
+  the controller's SA. **Note for upgraders:** apply the new
+  `config/crd/manager.yaml` to align RBAC; the controller will not
+  attempt the removed verbs but stale grants are harmless.
+- `katamaran-source` SA gains `pods/log get` so the dest job's
+  binary can read the source pod's log over the apiserver. Apply
+  the updated `deploy/dashboard.yaml` when upgrading.
+- `internal/orchestrator/native.go` Apply path no longer adds
+  `--replay-cmdline=<file>` to the dest job's args. Dest gets
+  `--replay-cmdline-from-pod=<ns>/<pod>` patched in by
+  `injectReplayFromPod` once the source pod's name is known.
+
+### Fixed
+
+- The dest binary's pod-log GET originally set
+  `Accept: text/plain`, which the apiserver's pod-log subresource
+  rejects with HTTP 406. Drop the header; Go's default `*/*` works.
+  Surfaced + fixed live during the v0.2.0 verification run.
+
+[0.2.0]: https://github.com/maci0/katamaran/releases/tag/v0.2.0
+
 ## [0.1.2] - 2026-04-30
 
 ### Added
@@ -169,5 +219,5 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.2.0...HEAD
 [0.1.0]: https://github.com/maci0/katamaran/releases/tag/v0.1.0
