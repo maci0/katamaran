@@ -518,13 +518,18 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 // already closed updates (e.g. after Stop) the send is dropped silently.
 // Callers that need to know whether the send succeeded should select on
 // run.finished themselves; this helper exists to make late sends safe.
+//
+// Go channels have no non-panicking "send unless closed" primitive: the
+// finished signal can fire between the select branches and poll's
+// close(run.updates) here, so the send below races with that close.
+// The deferred recover absorbs that specific panic; any other runtime
+// panic in this goroutine still propagates.
 func (run *nativeRun) send(u StatusUpdate) {
-	select {
-	case <-run.finished:
-		// Channel is being / has been closed by poll. Drop.
-	default:
-	}
-	defer func() { recover() }() // closeOnce + finished signal can race with another send
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Debug("send to closed run.updates absorbed", "panic", r)
+		}
+	}()
 	select {
 	case <-run.finished:
 	case run.updates <- u:
