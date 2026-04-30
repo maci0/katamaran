@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-30
+
+### Added
+
+- `Request.CNIConvergenceDelaySeconds` /
+  `.spec.cniConvergenceDelaySeconds` (and source CLI flag
+  `--cni-convergence-delay`) — per-migration override for how long
+  the source keeps the IP tunnel alive after the cutover so the
+  cluster's CNI can propagate the pod's new node binding. Zero
+  falls back to the compile-time default (5s). Cilium /
+  OVN-Kubernetes converge sub-second; Calico / Flannel often want
+  5-10s. Surfaced when a live HTTP loadgen test against a
+  kata-nginx pod showed connection-refused traffic for ~58s after
+  cutover with the previous fixed 5s delay.
+
+### Fixed
+
+- `dashboard.Run()` panicked on second invocation in the test
+  process: `expvar.NewString("version")` rejects duplicate
+  registration. Replaced with an idempotent `publishExpvars`
+  helper that reuses already-registered vars and rebinds the
+  underlying counter functions on subsequent calls. Surfaced by
+  `go test -count=3 -race ./...`.
+
+### Changed
+
+- `nativeRun.send`: dropped a dead first `select` that had empty
+  case bodies and always exited via the `default`. The actual
+  short-circuit on a closed run lives in the second select. The
+  recovered-panic path now logs at Debug instead of being
+  silently swallowed.
+
+[0.1.2]: https://github.com/maci0/katamaran/releases/tag/v0.1.2
+
 ## [0.1.1] - 2026-04-29
 
 ### Added
@@ -135,5 +169,5 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.1.2...HEAD
 [0.1.0]: https://github.com/maci0/katamaran/releases/tag/v0.1.0
