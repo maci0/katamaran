@@ -19,23 +19,20 @@ rules:
   resources: ["migrations/status"]
   verbs: ["get", "patch", "update"]
 # Pods/nodes for the orchestrator's discoverer + resolver lookups.
-# Pod create/delete is needed because replayCmdline mode spawns a
-# transient stager pod on the dest node to receive the cmdline file.
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "watch", "create", "delete"]
-# Tail source pod logs for KATAMARAN_PROGRESS / KATAMARAN_RESULT markers.
+  verbs: ["get", "list", "watch"]
+# Tail source pod logs for KATAMARAN_PROGRESS / KATAMARAN_RESULT
+# markers and (for the dest binary in replayCmdline mode) read the
+# source pod's KATAMARAN_CMDLINE_B64 marker. Replaces the previous
+# pods/exec + Pod create/delete RBAC that the SPDY/stager-pod flow
+# needed.
 - apiGroups: [""]
   resources: ["pods/log"]
   verbs: ["get"]
-# SPDY exec into the source/stager pod to stage the captured QEMU
-# cmdline before submitting the dest Job (replayCmdline mode).
-- apiGroups: [""]
-  resources: ["pods/exec"]
-  verbs: ["create"]
 # Jobs the Native orchestrator submits.
 - apiGroups: ["batch"]
   resources: ["jobs"]

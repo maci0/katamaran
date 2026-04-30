@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -38,49 +37,46 @@ func TestNative_Apply_RejectsReplayCmdline(t *testing.T) {
 	}
 }
 
-func TestNative_CreateStagerPod_Hardened(t *testing.T) {
+func TestInjectReplayFromPod_AppendsFlag(t *testing.T) {
 	t.Parallel()
-	cs := fake.NewSimpleClientset()
-	n := newFromClient(cs)
-
-	const image = "localhost/katamaran:dev"
-	if err := n.createStagerPod(context.Background(), "katamaran-cmdline-stager-test", "node-a", image); err != nil {
-		t.Fatalf("createStagerPod: %v", err)
+	job := &batchv1.Job{
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:    "katamaran",
+						Command: []string{"/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp /run/vc/vm/x/qmp.sock"},
+					}},
+				},
+			},
+		},
 	}
-	pod, err := cs.CoreV1().Pods("kube-system").Get(context.Background(), "katamaran-cmdline-stager-test", metav1.GetOptions{})
+	patched, err := injectReplayFromPod(job, "default", "vm-a-pod-xyz")
 	if err != nil {
-		t.Fatalf("get stager pod: %v", err)
+		t.Fatalf("injectReplayFromPod: %v", err)
 	}
-	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
-		t.Fatalf("AutomountServiceAccountToken = %v, want false", pod.Spec.AutomountServiceAccountToken)
+	got := patched.Spec.Template.Spec.Containers[0].Command
+	if !strings.Contains(got[len(got)-1], "--replay-cmdline-from-pod default/vm-a-pod-xyz") {
+		t.Fatalf("flag not appended: %q", got[len(got)-1])
 	}
-	if got := pod.Spec.NodeName; got != "node-a" {
-		t.Fatalf("NodeName = %q, want node-a", got)
+	if &patched.Spec.Template.Spec.Containers[0] == &job.Spec.Template.Spec.Containers[0] {
+		t.Fatal("expected DeepCopy, got same container address")
 	}
-	if len(pod.Spec.Containers) != 1 {
-		t.Fatalf("containers = %d, want 1", len(pod.Spec.Containers))
+}
+
+func TestInjectReplayFromPod_NoKatamaranContainer(t *testing.T) {
+	t.Parallel()
+	job := &batchv1.Job{
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "other", Command: []string{"x"}}},
+				},
+			},
+		},
 	}
-	c := pod.Spec.Containers[0]
-	if c.Image != image {
-		t.Fatalf("stager image = %q, want %q", c.Image, image)
-	}
-	if c.ImagePullPolicy != corev1.PullIfNotPresent {
-		t.Fatalf("ImagePullPolicy = %q, want %q", c.ImagePullPolicy, corev1.PullIfNotPresent)
-	}
-	if c.SecurityContext == nil {
-		t.Fatal("stager SecurityContext is nil")
-	}
-	if c.SecurityContext.Privileged != nil && *c.SecurityContext.Privileged {
-		t.Fatal("stager should not be privileged")
-	}
-	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
-		t.Fatalf("AllowPrivilegeEscalation = %v, want false", c.SecurityContext.AllowPrivilegeEscalation)
-	}
-	if c.SecurityContext.Capabilities == nil || !slices.Contains(c.SecurityContext.Capabilities.Drop, corev1.Capability("ALL")) {
-		t.Fatalf("capability drops = %+v, want ALL", c.SecurityContext.Capabilities)
-	}
-	if c.SecurityContext.SeccompProfile == nil || c.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Fatalf("SeccompProfile = %+v, want RuntimeDefault", c.SecurityContext.SeccompProfile)
+	if _, err := injectReplayFromPod(job, "default", "vm-a-pod"); err == nil {
+		t.Fatal("expected error when no katamaran container exists")
 	}
 }
 

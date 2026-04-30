@@ -76,6 +76,12 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get"]
+# Dest job in --replay-cmdline-from-pod mode reads the source pod's
+# log to scrape its KATAMARAN_CMDLINE_B64 marker. Both source and
+# dest jobs share this SA, so the read-only get suffices for both.
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get"]

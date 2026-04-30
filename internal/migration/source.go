@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,6 +104,15 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		// Marker line consumed by deploy/migrate.sh — print on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
 		fmt.Printf("KATAMARAN_CMDLINE_AT=%s\n", cfg.EmitCmdlineTo)
+		// Also emit the cmdline file's contents as a single base64 line on
+		// stdout. The dest binary scrapes the source pod's log via the
+		// apiserver (--replay-cmdline-from-pod) so we no longer need a
+		// stager pod + SPDY exec to ship the file across nodes.
+		if cmdlineBytes, err := os.ReadFile(cfg.EmitCmdlineTo); err != nil {
+			slog.Warn("Failed to read captured cmdline for KATAMARAN_CMDLINE_B64; in-pod-log replay will fail", "error", err, "path", cfg.EmitCmdlineTo)
+		} else {
+			fmt.Printf("KATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdlineBytes))
+		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
 	}
 

@@ -146,6 +146,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	destPodNS := fs.String("dest-pod-namespace", "", "destination pod namespace")
 	emitCmdlineTo := fs.String("emit-cmdline-to", "", "source mode: capture /proc/<qemu_pid>/cmdline to this path before migration")
 	replayCmdline := fs.String("replay-cmdline", "", "dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
+	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -248,15 +249,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		err = migration.RunDestination(ctx, migration.DestConfig{
-			QMPSocket:         *qmpSocket,
-			TapIface:          *tapIface,
-			TapNetns:          *tapNetns,
-			DriveID:           *driveID,
-			SharedStorage:     *sharedStorage,
-			MultifdChannels:   *multifdChannels,
-			DestPodName:       *destPodName,
-			DestPodNamespace:  *destPodNS,
-			ReplayCmdlineFile: *replayCmdline,
+			QMPSocket:            *qmpSocket,
+			TapIface:             *tapIface,
+			TapNetns:             *tapNetns,
+			DriveID:              *driveID,
+			SharedStorage:        *sharedStorage,
+			MultifdChannels:      *multifdChannels,
+			DestPodName:          *destPodName,
+			DestPodNamespace:     *destPodNS,
+			ReplayCmdlineFile:    *replayCmdline,
+			ReplayCmdlineFromPod: *replayCmdlineFromPod,
 		})
 	case roleSource:
 		if *destIP == "" {

@@ -64,6 +64,25 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// connect via vsock within dial_timeout — incompatible with -incoming).
 	// spawnReplayedQEMU mutates cfg.QMPSocket to point at the spawned QEMU's
 	// monitor; pod-resolver overrides above are intentionally superseded.
+	//
+	// Two delivery modes for the cmdline:
+	//
+	//   --replay-cmdline-from-pod <ns>/<pod>: dest binary fetches the
+	//   source pod's log via the in-cluster apiserver, scans for the
+	//   KATAMARAN_CMDLINE_B64 marker, decodes it, writes to a local
+	//   tmp file, and falls through to the file-based replay path
+	//   below. No stager pod, no SPDY exec, no hostPath shuffling.
+	//
+	//   --replay-cmdline <path>: legacy file-based mode, kept for
+	//   manual testing where the file is staged out-of-band (e.g.
+	//   deploy/migrate.sh's kubectl-cp shuffle).
+	if cfg.ReplayCmdlineFromPod != "" {
+		path, err := fetchCmdlineFromPodLog(ctx, cfg.ReplayCmdlineFromPod)
+		if err != nil {
+			return fmt.Errorf("replay-cmdline-from-pod: %w", err)
+		}
+		cfg.ReplayCmdlineFile = path
+	}
 	if cfg.ReplayCmdlineFile != "" {
 		if err := spawnReplayedQEMU(ctx, &cfg); err != nil {
 			return fmt.Errorf("replay source QEMU cmdline: %w", err)

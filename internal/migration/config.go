@@ -153,6 +153,14 @@ type DestConfig struct {
 	// migration via QMP as usual. Used because Kata 3.27 cannot start QEMU
 	// with -incoming defer (kata-shim kills VMs that fail the vsock dial).
 	ReplayCmdlineFile string
+	// ReplayCmdlineFromPod, when non-empty, names the source pod
+	// (`<namespace>/<name>`) whose log carries the KATAMARAN_CMDLINE_B64
+	// marker. The dest binary fetches the pod's log via the in-cluster
+	// apiserver, decodes the marker, writes a local tmp file, and falls
+	// through to the file-based replay path. Mutually compatible with
+	// ReplayCmdlineFile (which one wins is determined by which arrived
+	// first); orchestrators set exactly one.
+	ReplayCmdlineFromPod string
 	// QEMUBinary, when non-empty, overrides the QEMU binary path used for
 	// cmdline replay. Defaults to the source's argv[0] (typically
 	// /opt/kata/bin/qemu-system-x86_64). Mostly a test seam.

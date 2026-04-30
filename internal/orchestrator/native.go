@@ -176,8 +176,13 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	srcExtra := buildExtraArgs(req)
 	destExtra := srcExtra
 	if req.ReplayCmdline {
+		// Source captures /proc/<qemu>/cmdline locally so it can compute
+		// the KATAMARAN_CMDLINE_B64 marker on the way out. The dest then
+		// scrapes that marker from the source pod log via apiserver —
+		// stageThenStartDest patches `--replay-cmdline-from-pod
+		// <ns>/<podname>` onto the dest job's command once the source pod
+		// is up. No --replay-cmdline file flag here on the dest extra.
 		srcExtra = strings.TrimSpace(srcExtra + " --emit-cmdline-to " + cmdlinePath)
-		destExtra = strings.TrimSpace(destExtra + " --replay-cmdline " + cmdlinePath)
 	}
 	srcJob, err := renderSourceJob(req, id, srcExtra)
 	if err != nil {
@@ -488,9 +493,16 @@ func parseInt64(s string) int64 {
 	return v
 }
 
-// stageThenStartDest runs the cmdline-staging flow for ReplayCmdline mode:
-// finds the source pod, copies the cmdline off it, stages on the dest node,
-// then submits the dest Job. Failures abort the run with PhaseFailed.
+// stageThenStartDest resolves the source pod's name (so the dest binary
+// can fetch the source's cmdline directly from its pod log) and submits
+// the dest Job with --replay-cmdline-from-pod=<ns>/<podname> appended
+// to its EXTRA_ARGS.
+//
+// Previously this function did SPDY exec + stager-pod + hostPath
+// shuffling to land the cmdline file on the dest node. The dest binary
+// now reads the source pod's log via the in-cluster apiserver instead,
+// so the only thing that has to happen between source-job creation and
+// dest-job creation is "wait for the source pod to exist".
 func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
 	if err != nil {
@@ -499,19 +511,50 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 		run.cancel()
 		return
 	}
-	if _, err := n.stageCmdline(ctx, id, srcPod, n.namespace, req.DestNode, req.Image); err != nil {
-		slog.Error("Cmdline replay staging failed", "migration_id", id, "source_pod", srcPod, "dest_node", req.DestNode, "error", err)
-		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("stage cmdline: %w", err)})
+	patched, err := injectReplayFromPod(destJob, n.namespace, srcPod)
+	if err != nil {
+		slog.Error("Cmdline replay failed: patching dest job command", "migration_id", id, "dest_job", destJob.Name, "error", err)
+		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("inject --replay-cmdline-from-pod: %w", err)})
 		run.cancel()
 		return
 	}
-	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, patched, metav1.CreateOptions{}); err != nil {
 		slog.Error("Cmdline replay destination job create failed", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)})
 		run.cancel()
 		return
 	}
-	slog.Info("Cmdline replay staged; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
+	slog.Info("Replay-from-pod wired; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
+}
+
+// injectReplayFromPod returns a copy of destJob with
+// `--replay-cmdline-from-pod <ns>/<pod>` appended to the dest container's
+// command. The render path doesn't know the source pod name (it's only
+// resolved after the source Job creates its pod), so this final argv
+// patch happens here.
+func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job, error) {
+	if destJob == nil || len(destJob.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("dest job has no containers")
+	}
+	out := destJob.DeepCopy()
+	cs := out.Spec.Template.Spec.Containers
+	for i := range cs {
+		if cs[i].Name != "katamaran" {
+			continue
+		}
+		// The dest job template invokes /bin/sh -c "<full command>"; the
+		// last element of cs[i].Command is that command string. We append
+		// the new flag to it so the source binary's flag.Parse picks it
+		// up alongside the existing --mode dest --qmp ... etc.
+		if len(cs[i].Command) == 0 {
+			return nil, fmt.Errorf("katamaran container has empty command")
+		}
+		last := len(cs[i].Command) - 1
+		cs[i].Command[last] = cs[i].Command[last] + fmt.Sprintf(" --replay-cmdline-from-pod %s/%s", ns, srcPod)
+		out.Spec.Template.Spec.Containers = cs
+		return out, nil
+	}
+	return nil, fmt.Errorf("no katamaran container in dest job")
 }
 
 // send pushes u onto run.updates if the run is still live. If poll has
