@@ -110,6 +110,11 @@ type SourceConfig struct {
 	// minimum on the auto-calculated downtime). Zero uses the package
 	// default. Ignored when AutoDowntime is false.
 	AutoDowntimeFloorMS int
+	// CNIConvergenceDelay overrides the post-cutover wait that keeps the
+	// IP tunnel alive while the cluster's CNI propagates the pod's new
+	// node assignment. Zero uses the package default (5s). Cilium /
+	// OVN-Kubernetes converge in <1s; Calico/Flannel may need 5-10s.
+	CNIConvergenceDelay time.Duration
 	MultifdChannels     int
 	// PodName and PodNamespace are an alternative to QMPSocket+VMIP: when set,
 	// the source binary resolves the pod's sandbox container at runtime to

@@ -136,6 +136,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds")
 	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT")
 	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, "Lower bound + overhead for the auto-calculated downtime (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime")
+	cniConvergenceDelay := fs.Duration("cni-convergence-delay", 0, "Post-cutover wait that keeps the IP tunnel alive while the CNI propagates the pod's new node binding (0 uses the compiled-in default of 5s)")
 	multifdChannels := fs.Int("multifd-channels", migration.DefaultMultifdChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
@@ -337,6 +338,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			DowntimeLimitMS:     *downtimeLimit,
 			AutoDowntime:        *autoDowntime,
 			AutoDowntimeFloorMS: *autoDowntimeFloor,
+			CNIConvergenceDelay: *cniConvergenceDelay,
 			MultifdChannels:     *multifdChannels,
 			PodName:             *podName,
 			PodNamespace:        *podNS,

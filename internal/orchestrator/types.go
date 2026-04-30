@@ -84,6 +84,13 @@ type Request struct {
 	// (currently 25ms). Only consulted when AutoDowntime is true.
 	AutoDowntimeFloorMS int
 
+	// CNIConvergenceDelaySeconds is how long the source keeps the IP
+	// tunnel alive after the cutover so the cluster's CNI can propagate
+	// the pod's new node binding. Zero falls back to the source binary's
+	// compile-time default (5s). Cilium / OVN-Kubernetes converge
+	// sub-second; Calico / Flannel often want 5-10s.
+	CNIConvergenceDelaySeconds int
+
 	// MultifdChannels enables parallel RAM-migration TCP channels. Zero
 	// disables multifd. Both source and destination must agree on the count.
 	MultifdChannels int

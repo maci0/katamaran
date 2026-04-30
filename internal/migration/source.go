@@ -410,8 +410,12 @@ stopLoop:
 
 	if tunnelCreated {
 		if migrationErr == nil {
-			slog.Info("Waiting for CNI convergence", "delay", postMigrationTunnelDelay)
-			timer := time.NewTimer(postMigrationTunnelDelay)
+			delay := cfg.CNIConvergenceDelay
+			if delay <= 0 {
+				delay = postMigrationTunnelDelay
+			}
+			slog.Info("Waiting for CNI convergence", "delay", delay)
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				if !timer.Stop() {

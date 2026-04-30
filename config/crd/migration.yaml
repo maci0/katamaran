@@ -100,6 +100,18 @@ spec:
                 minimum: 0
                 maximum: 60000
                 default: 0
+              cniConvergenceDelaySeconds:
+                description: |
+                  Seconds to keep the IP tunnel alive after the cutover so the
+                  cluster's CNI can propagate the pod's new node binding to all
+                  peers. Zero falls back to the source binary's compile-time
+                  default (5s). Cilium / OVN-Kubernetes typically converge
+                  sub-second; Calico / Flannel may need 5–10s for BGP / VXLAN
+                  FDB updates to settle.
+                type: integer
+                minimum: 0
+                maximum: 600
+                default: 0
               multifdChannels:
                 type: integer
                 minimum: 0

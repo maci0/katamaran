@@ -474,6 +474,9 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 	if floor, found, _ := unstructured.NestedInt64(obj, "spec", "autoDowntimeFloorMS"); found {
 		req.AutoDowntimeFloorMS = int(floor)
 	}
+	if cni, found, _ := unstructured.NestedInt64(obj, "spec", "cniConvergenceDelaySeconds"); found {
+		req.CNIConvergenceDelaySeconds = int(cni)
+	}
 	if mc, found, _ := unstructured.NestedInt64(obj, "spec", "multifdChannels"); found {
 		req.MultifdChannels = int(mc)
 	}

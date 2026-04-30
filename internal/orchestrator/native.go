@@ -713,6 +713,9 @@ func buildExtraArgs(req Request) string {
 			args = append(args, "--auto-downtime-floor-ms", strconv.Itoa(req.AutoDowntimeFloorMS))
 		}
 	}
+	if req.CNIConvergenceDelaySeconds > 0 {
+		args = append(args, "--cni-convergence-delay", fmt.Sprintf("%ds", req.CNIConvergenceDelaySeconds))
+	}
 	// Always pass --multifd-channels (including 0) so the source binary
 	// does not fall back to its own non-zero default and create a multifd
 	// mismatch with the dest (which sets multifd from this same value).
