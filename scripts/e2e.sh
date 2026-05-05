@@ -606,7 +606,7 @@ DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
     | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
     | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
     | sed "s|sandboxes/${SRC_SANDBOX_ID}|sandboxes/${DST_SANDBOX}|g" \
-    | sed "s|,readonly=on||g; s|,readonly=true||g" \
+    | if [[ "${TCG}" == "true" ]]; then cat; else sed "s|,readonly=on||g; s|,readonly=true||g"; fi \
     | sed "s|unix:fd=[0-9]*,server=on,wait=off|unix:${DST_VM_DIR}/qmp.sock,server=on,wait=off|g" \
 )
 [[ -n "${SRC_NVDIMM_PATH}" ]] && \
@@ -652,6 +652,7 @@ while IFS= read -r arg; do
     case "${arg}" in
         -daemonize) continue ;;
         -incoming)  skip_next=true; continue ;;
+        --no-reboot) [[ "${TCG}" == "true" ]] && continue ;;
         -qmp)
             # Read the next arg to check if it's fd-based.
             read -r next_arg || true
@@ -665,9 +666,13 @@ while IFS= read -r arg; do
     esac
     DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
 done <<< "${DST_CMDLINE}"
-DST_QEMU_CMD+=" -incoming defer -daemonize"
-
-node_exec "${NODE2}" "${SUDO} ${DST_QEMU_CMD}"
+DST_QEMU_CMD+=" -incoming defer"
+if [[ "${TCG}" == "true" ]]; then
+    node_exec "${NODE2}" "${SUDO} bash -c 'nohup ${DST_QEMU_CMD} -D /tmp/dest-qemu-debug.log > /tmp/dest-qemu-stdout.log 2>&1 &'"
+else
+    DST_QEMU_CMD+=" -daemonize"
+    node_exec "${NODE2}" "${SUDO} ${DST_QEMU_CMD}"
+fi
 
 # Wait for QMP socket to appear
 for _ in $(seq 1 15); do
