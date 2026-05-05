@@ -13,6 +13,9 @@
 # --kata-version <v> Kata Containers chart version (default: '3.24.0').
 # --method <name>    Orchestration method: 'job' (default) or 'crd'. 'direct' is
 #                    accepted for compatibility but exits as not implemented.
+# --tcg              Use QEMU TCG (software emulation) instead of KVM. Enables
+#                    running on hosts without nested virtualisation (e.g. macOS
+#                    Apple Silicon). Implies --provider kind.
 # --ping-proof       Verify zero-drop sch_plug buffering from migration logs.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
 # --teardown         Tear down the cluster and exit.
@@ -32,6 +35,7 @@ CNI="auto"
 STORAGE="none"
 METHOD="job"
 SUDO="sudo"
+TCG=false
 PING_PROOF=false
 ENV_ONLY=false
 TEARDOWN=false
@@ -44,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --storage) need_arg "$1" "${2:-}"; STORAGE="$2"; shift 2 ;;
         --kata-version) need_arg "$1" "${2:-}"; KATA_VERSION="$2"; shift 2 ;;
         --method) need_arg "$1" "${2:-}"; METHOD="$2"; shift 2 ;;
+        --tcg) TCG=true; shift ;;
         --ping-proof) PING_PROOF=true; shift ;;
         --env-only) ENV_ONLY=true; shift ;;
         --help|-h) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
@@ -59,6 +64,13 @@ fi
 if [[ "${PROVIDER}" != "minikube" && "${PROVIDER}" != "kind" ]]; then
     error "--provider must be 'minikube' or 'kind' (got '${PROVIDER}')"
     exit 2
+fi
+
+if [[ "${TCG}" == "true" ]]; then
+    if [[ "${PROVIDER}" == "minikube" ]]; then
+        PROVIDER="kind"
+        log "TCG mode: switching provider to 'kind' (minikube kvm2 driver requires KVM)."
+    fi
 fi
 
 if [[ "${METHOD}" != "job" && "${METHOD}" != "crd" && "${METHOD}" != "direct" ]]; then
@@ -149,7 +161,11 @@ cleanup() {
     if [[ "${PROVIDER}" == "minikube" ]]; then
         minikube delete -p "${PROFILE}" 2>/dev/null || true
     else
-        kind delete cluster --name "${PROFILE}" 2>/dev/null || true
+        if [[ "${CE}" == "podman" ]]; then
+            KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name "${PROFILE}" 2>/dev/null || true
+        else
+            kind delete cluster --name "${PROFILE}" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -194,9 +210,17 @@ if [[ "${PROVIDER}" == "minikube" ]]; then
     CTX="${PROFILE}"
 else
     if [[ "${CNI}" == "cilium" || "${CNI}" == "flannel" ]]; then
-        KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config-nocni.yaml"
+        if [[ "${TCG}" == "true" ]]; then
+            KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config-nocni-tcg.yaml"
+        else
+            KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config-nocni.yaml"
+        fi
     else
-        KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config.yaml"
+        if [[ "${TCG}" == "true" ]]; then
+            KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config-tcg.yaml"
+        else
+            KIND_CONFIG="${SCRIPT_DIR}/manifests/kind-config.yaml"
+        fi
     fi
     if [[ "${CE}" == "podman" ]]; then
         KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name "${PROFILE}" --config "${KIND_CONFIG}" --wait 120s
@@ -327,6 +351,35 @@ for node in "${NODE1}" "${NODE2}"; do
     node_exec "$node" "${SUDO} sed -i 's|^#*create_container_timeout = .*|create_container_timeout = 600|' '${KATA_CFG}'"
 done
 
+if [[ "${TCG}" == "true" ]]; then
+    log "Applying TCG (no-KVM) patches for software emulation..."
+    QEMU_BIN=$(node_exec "${NODE1}" "grep '^path = ' '${KATA_CFG}'" | sed 's|path = "\(.*\)"|\1|')
+    TCG_WRAPPER=$(mktemp)
+    cat > "${TCG_WRAPPER}" <<'EOF'
+#!/bin/bash
+args=()
+for arg in "$@"; do
+    arg="${arg//accel=kvm/accel=tcg}"
+    arg="${arg//gic-version=host/gic-version=max}"
+    if [ "$arg" = "host," ] || [ "$arg" = "host" ]; then
+        arg="${arg//host/max}"
+    fi
+    args+=("$arg")
+done
+exec "${0}.real" "${args[@]}"
+EOF
+    for node in "${NODE1}" "${NODE2}"; do
+        node_exec "${node}" "${SUDO} cp '${QEMU_BIN}' '${QEMU_BIN}.real'"
+        node_cp_to "${node}" "${TCG_WRAPPER}" "${QEMU_BIN}"
+        node_exec "${node}" "${SUDO} chmod +x '${QEMU_BIN}'"
+        node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
+        node_exec "${node}" "${SUDO} sed -i 's|^disable_image_nvdimm = false|disable_image_nvdimm = true|' '${KATA_CFG}'"
+        node_exec "${node}" "${SUDO} sed -i 's|^shared_fs = \"virtio-fs\"|shared_fs = \"virtio-9p\"|' '${KATA_CFG}'"
+        node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 300|' '${KATA_CFG}'"
+    done
+    rm -f "${TCG_WRAPPER}"
+fi
+
 kubectl --context "${CTX}" label node "${NODE1}" katamaran-role=source --overwrite
 kubectl --context "${CTX}" label node "${NODE2}" katamaran-role=dest --overwrite
 
@@ -338,7 +391,11 @@ ${CE} save localhost/katamaran:dev -o katamaran.tar
 if [[ "${PROVIDER}" == "minikube" ]]; then
     minikube -p "${PROFILE}" image load katamaran.tar
 else
-    kind load image-archive katamaran.tar --name "${PROFILE}"
+    if [[ "${CE}" == "podman" ]]; then
+        KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive katamaran.tar --name "${PROFILE}"
+    else
+        kind load image-archive katamaran.tar --name "${PROFILE}"
+    fi
 fi
 
 kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/daemonset.yaml"
@@ -649,7 +706,11 @@ elif [[ "${METHOD}" == "crd" ]]; then
     if [[ "${PROVIDER}" == "minikube" ]]; then
         minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
     else
-        kind load image-archive "${PROJECT_ROOT}/mgr.tar" --name "${PROFILE}" >/dev/null
+        if [[ "${CE}" == "podman" ]]; then
+            KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "${PROJECT_ROOT}/mgr.tar" --name "${PROFILE}" >/dev/null
+        else
+            kind load image-archive "${PROJECT_ROOT}/mgr.tar" --name "${PROFILE}" >/dev/null
+        fi
     fi
     log "Installing Migration CRD + katamaran-mgr controller..."
     kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/migration.yaml" >/dev/null
