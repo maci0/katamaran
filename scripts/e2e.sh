@@ -508,7 +508,7 @@ log "Capturing source QEMU command line for replay..."
 SRC_QEMU_PID=$(node_exec "${NODE1}" "${SUDO} cat ${SRC_SANDBOX_DIR}/pid")
 SRC_CMDLINE=$(node_exec "${NODE1}" "${SUDO} cat /proc/${SRC_QEMU_PID}/cmdline | tr '\0' '\n'")
 # Extract the nvdimm image path from source (needed for writable copy on dest).
-SRC_NVDIMM_PATH=$(echo "${SRC_CMDLINE}" | grep -oP 'mem-path=\K[^,]+' | grep -v '/dev/shm' | head -1)
+SRC_NVDIMM_PATH=$(echo "${SRC_CMDLINE}" | sed -n 's/.*mem-path=\([^,]*\).*/\1/p' | grep -v '/dev/shm' | head -1 || true)
 success "Source QEMU PID: ${SRC_QEMU_PID} — cmdline captured ($(echo "${SRC_CMDLINE}" | wc -l) args)"
 
 log "Removing tc mirred redirect on source pod's eth0..."
@@ -575,15 +575,19 @@ node_exec "${NODE2}" "${SUDO} mkdir -p ${DST_VM_DIR}"
 node_exec "${NODE2}" "${SUDO} mkdir -p /run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared"
 
 # Create a writable copy of the nvdimm image (path extracted from source cmdline).
-node_exec "${NODE2}" "${SUDO} cp ${SRC_NVDIMM_PATH} /tmp/kata-dst-nvdimm-$$.img"
+if [[ -n "${SRC_NVDIMM_PATH}" ]]; then
+    node_exec "${NODE2}" "${SUDO} cp ${SRC_NVDIMM_PATH} /tmp/kata-dst-nvdimm-$$.img"
+fi
 
-# Start virtiofsd for the vhost-user-fs device.
-# Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
-node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
-sleep 2
-if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
-    error "virtiofsd socket not found."
-    exit 1
+# Start virtiofsd for the vhost-user-fs device (not needed with 9p / TCG mode).
+if [[ "${TCG}" != "true" ]]; then
+    # Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
+    node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
+    sleep 2
+    if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
+        error "virtiofsd socket not found."
+        exit 1
+    fi
 fi
 
 # Create tap interface in the helper pod's network namespace.
@@ -597,26 +601,67 @@ DST_NVDIMM_IMG="/tmp/kata-dst-nvdimm-$$.img"
 
 # Substitute paths: source sandbox → destination sandbox, nvdimm → writable
 # copy, and strip readonly from the nvdimm backend (migration writes to it).
+# Replace fd-based QMP socket arg with path-based (fd passing is Kata-shim only).
 DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
     | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
     | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
+    | sed "s|sandboxes/${SRC_SANDBOX_ID}|sandboxes/${DST_SANDBOX}|g" \
     | sed "s|,readonly=on||g; s|,readonly=true||g" \
+    | sed "s|unix:fd=[0-9]*,server=on,wait=off|unix:${DST_VM_DIR}/qmp.sock,server=on,wait=off|g" \
 )
 [[ -n "${SRC_NVDIMM_PATH}" ]] && \
     DST_CMDLINE="${DST_CMDLINE//${SRC_NVDIMM_PATH}/${DST_NVDIMM_IMG}}"
 
 # Reconstruct the command: skip the QEMU binary (first arg), strip any
-# existing -incoming/-daemonize from source, then quote each argument for
-# remote execution via node_exec.
-DST_QEMU_CMD="nsenter --net=/proc/${MIG_HELPER_PID}/ns/net /opt/kata/bin/qemu-system-x86_64"
+# existing -incoming/-daemonize from source, rewrite fd-based args to
+# path-based equivalents (fd=N comes from kata-shim and can't be replayed).
+# This mirrors the logic in internal/migration/destspawn.go.
+DST_QEMU_BIN=$(echo "${SRC_CMDLINE}" | head -1)
+DST_QEMU_CMD="nsenter --net=/proc/${MIG_HELPER_PID}/ns/net ${DST_QEMU_BIN}"
 first=true
 skip_next=false
+strip_qmp=false
+rewrite_netdev=false
+rewrite_device=false
 while IFS= read -r arg; do
     if $first; then first=false; continue; fi
     if $skip_next; then skip_next=false; continue; fi
+    if $strip_qmp; then strip_qmp=false; continue; fi
+    if $rewrite_netdev; then
+        rewrite_netdev=false
+        # Strip fd=/fds=/vhostfd=/vhostfds= keys, add script=no for tap.
+        arg=$(echo "$arg" | tr ',' '\n' | grep -v '^\(vhostfds\|vhostfd\|fds\|fd\)=' | paste -sd ',' -)
+        if echo "$arg" | grep -q '^tap,'; then
+            echo "$arg" | grep -q 'ifname=' || arg="${arg},ifname=tap0_kata"
+            echo "$arg" | grep -q 'script=' || arg="${arg},script=no,downscript=no"
+        fi
+        DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
+        continue
+    fi
+    if $rewrite_device; then
+        rewrite_device=false
+        # Strip vhostfd=/fds= from device args (e.g. vhost-vsock-pci).
+        arg=$(echo "$arg" | tr ',' '\n' | grep -v '^\(vhostfds\|vhostfd\|fds\|fd\)=' | paste -sd ',' -)
+        # Assign a new guest-cid for dest vsock (source still holds the original).
+        if echo "$arg" | grep -q 'vhost-vsock-pci'; then
+            arg=$(echo "$arg" | sed 's/guest-cid=[0-9]*/guest-cid='"$RANDOM"'/')
+        fi
+        DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
+        continue
+    fi
     case "${arg}" in
         -daemonize) continue ;;
         -incoming)  skip_next=true; continue ;;
+        -qmp)
+            # Read the next arg to check if it's fd-based.
+            read -r next_arg || true
+            if echo "${next_arg}" | grep -q 'fd='; then
+                continue  # skip both -qmp and its fd= value
+            fi
+            DST_QEMU_CMD+=" $(printf '%q' "${arg}") $(printf '%q' "${next_arg}")"
+            continue ;;
+        -netdev) DST_QEMU_CMD+=" $(printf '%q' "${arg}")"; rewrite_netdev=true; continue ;;
+        -device) DST_QEMU_CMD+=" $(printf '%q' "${arg}")"; rewrite_device=true; continue ;;
     esac
     DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
 done <<< "${DST_CMDLINE}"

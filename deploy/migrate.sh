@@ -198,9 +198,9 @@ if [[ "$TAP_IFACE" == "none" ]]; then
 fi
 
 # Normalize enum flags for case-insensitive matching (aligned with katamaran binary).
-TUNNEL_MODE="${TUNNEL_MODE,,}"
-LOG_LEVEL="${LOG_LEVEL,,}"
-LOG_FORMAT="${LOG_FORMAT,,}"
+TUNNEL_MODE=$(echo "${TUNNEL_MODE}" | tr '[:upper:]' '[:lower:]')
+LOG_LEVEL=$(echo "${LOG_LEVEL}" | tr '[:upper:]' '[:lower:]')
+LOG_FORMAT=$(echo "${LOG_FORMAT}" | tr '[:upper:]' '[:lower:]')
 
 if [[ "$TUNNEL_MODE" != "ipip" && "$TUNNEL_MODE" != "gre" && "$TUNNEL_MODE" != "none" ]]; then
     echo "Error: invalid --tunnel-mode '$TUNNEL_MODE' (valid: ipip, gre, none)" >&2
@@ -252,7 +252,7 @@ arg_label() {
         TAP_IFACE) echo "--tap" ;;
         KUBECTL_CONTEXT) echo "--context" ;;
         KATAMARAN_MIGRATION_ID|JOB_SUFFIX) echo "$1" ;;
-        *) local flag_name="${1,,}"; echo "--${flag_name//_/-}" ;;
+        *) local flag_name; flag_name=$(echo "$1" | tr '[:upper:]' '[:lower:]'); echo "--${flag_name//_/-}" ;;
     esac
 }
 for var_name in SOURCE_NODE DEST_NODE TAP_IFACE TAP_NETNS QMP_SOURCE QMP_DEST DEST_IP VM_IP IMAGE_REF KUBECTL_CONTEXT POD_NAME POD_NAMESPACE DEST_POD_NAME DEST_POD_NAMESPACE KATAMARAN_MIGRATION_ID JOB_SUFFIX; do
