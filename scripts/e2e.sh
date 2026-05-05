@@ -374,7 +374,6 @@ EOF
         node_exec "${node}" "${SUDO} chmod +x '${QEMU_BIN}'"
         node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
         node_exec "${node}" "${SUDO} sed -i 's|^disable_image_nvdimm = false|disable_image_nvdimm = true|' '${KATA_CFG}'"
-        node_exec "${node}" "${SUDO} sed -i 's|^shared_fs = \"virtio-fs\"|shared_fs = \"virtio-9p\"|' '${KATA_CFG}'"
         node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 300|' '${KATA_CFG}'"
     done
     rm -f "${TCG_WRAPPER}"
@@ -582,15 +581,13 @@ if [[ -n "${SRC_NVDIMM_PATH}" ]]; then
     node_exec "${NODE2}" "${SUDO} cp ${SRC_NVDIMM_PATH} /tmp/kata-dst-nvdimm-$$.img"
 fi
 
-# Start virtiofsd for the vhost-user-fs device (not needed with 9p / TCG mode).
-if [[ "${TCG}" != "true" ]]; then
-    # Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
-    node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
-    sleep 2
-    if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
-        error "virtiofsd socket not found."
-        exit 1
-    fi
+# Start virtiofsd for the vhost-user-fs device.
+# Wrap in 'bash -c "nohup ... &"' so the daemon survives SSH session exit (minikube).
+node_exec "${NODE2}" "${SUDO} bash -c \"nohup /opt/kata/libexec/virtiofsd --socket-path=${DST_VM_DIR}/vhost-fs.sock --shared-dir=/run/kata-containers/shared/sandboxes/${DST_SANDBOX}/shared --cache=auto --thread-pool-size=1 --announce-submounts --sandbox=none --migration-on-error=guest-error >/dev/null 2>&1 &\""
+sleep 2
+if ! node_exec "${NODE2}" "[ -S ${DST_VM_DIR}/vhost-fs.sock ]" 2>/dev/null; then
+    error "virtiofsd socket not found."
+    exit 1
 fi
 
 # Create tap interface in the helper pod's network namespace.

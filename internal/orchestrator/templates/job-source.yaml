@@ -16,7 +16,7 @@ metadata:
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 900
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 3600
   template:
     spec:
       serviceAccountName: katamaran-source
