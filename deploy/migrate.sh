@@ -403,7 +403,7 @@ deploy_dest_job() {
         sleep 2
     done
     echo ">>> Waiting for destination pod to be ready..."
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l "job-name=${DEST_JOB_NAME}" --timeout=60s
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready pod -l "job-name=${DEST_JOB_NAME}" --timeout=120s
 
     echo ">>> Waiting for destination service loop to become ready..."
     ready=0
@@ -504,7 +504,7 @@ spec:
       path: ${CMDLINE_HOST_DIR}
       type: DirectoryOrCreate
 EOF
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready "pod/${stager}" --timeout=60s
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready "pod/${stager}" --timeout=120s
     "${KUBECTL[@]}" -n kube-system cp "$local_tmp" "${stager}:${CMDLINE_PATH}"
     "${KUBECTL[@]}" -n kube-system delete pod "$stager" --ignore-not-found --force --grace-period=0 2>/dev/null || true
     rm -f "$local_tmp"
