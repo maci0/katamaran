@@ -61,6 +61,8 @@ Flags:
   --leader-namespace string       Namespace holding the leader-election Lease (default "kube-system")
   --leader-name string            Lease object name for leader election (default "katamaran-mgr")
   --disable-leader-election       Run reconciler without leader election (single-replica development only)
+  --pod-wait-timeout duration      How long to wait for migration Job pods to appear (default 60s;
+                                   overridden by KATAMARAN_POD_WAIT_TIMEOUT env or per-CR spec.podWaitTimeoutSeconds)
   --log-format string             Log output format: 'text' or 'json' (default "json")
   --log-level string              Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
@@ -92,6 +94,7 @@ func main() {
 	skipLeaderElect := fs.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
+	podWaitTimeout := fs.Duration("pod-wait-timeout", 60*time.Second, "How long to wait for migration Job pods to appear")
 	logFormat := fs.String("log-format", "json", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	helpFlag := fs.Bool("help", false, "")
@@ -147,6 +150,15 @@ func main() {
 	// neither in-cluster config nor the supplied kubeconfig works. The
 	// previous Script fallback covered a "developer laptop" scenario
 	// that's better served by `katamaran-orchestrator --script` directly.
+	// Env var overrides the flag default; per-CR spec overrides both.
+	if envPWT := os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT"); envPWT != "" {
+		if d, err := time.ParseDuration(envPWT); err == nil && d > 0 {
+			*podWaitTimeout = d
+		} else {
+			slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", err)
+		}
+	}
+
 	orch, err := orchestrator.New()
 	if err != nil {
 		orch, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
@@ -154,6 +166,7 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("orchestrator unavailable: %w", err))
 	}
+	orchestrator.SetPodWaitTimeout(orch, *podWaitTimeout)
 
 	disc, derr := orchestrator.NewDiscoverer()
 	if derr != nil {

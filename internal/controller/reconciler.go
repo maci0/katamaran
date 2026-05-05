@@ -480,6 +480,9 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 	if mc, found, _ := unstructured.NestedInt64(obj, "spec", "multifdChannels"); found {
 		req.MultifdChannels = int(mc)
 	}
+	if pwt, found, _ := unstructured.NestedInt64(obj, "spec", "podWaitTimeoutSeconds"); found {
+		req.PodWaitTimeoutSeconds = int(pwt)
+	}
 	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
 	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil

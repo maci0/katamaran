@@ -48,21 +48,23 @@ import (
 //
 // Use New for the in-cluster path and NewFromClient for tests.
 type native struct {
-	client    kubernetes.Interface
-	config    *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
-	namespace string
+	client         kubernetes.Interface
+	config         *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
+	namespace      string
+	podWaitTimeout time.Duration // default for firstSourcePod; overridden by Request.PodWaitTimeoutSeconds
 
 	mu       sync.Mutex
 	inflight map[MigrationID]*nativeRun
 }
 
 type nativeRun struct {
-	srcJob    string
-	destJob   string
-	updates   chan StatusUpdate
-	cancel    context.CancelFunc
-	finished  chan struct{}
-	closeOnce sync.Once // guards close(updates) so Stop + poll exit can race safely
+	srcJob                string
+	destJob               string
+	podWaitTimeoutSeconds int // per-request override; 0 = use orchestrator default
+	updates               chan StatusUpdate
+	cancel                context.CancelFunc
+	finished              chan struct{}
+	closeOnce             sync.Once // guards close(updates) so Stop + poll exit can race safely
 
 	// resultMu guards the fields below. tailProgress writes them when it
 	// scrapes a KATAMARAN_RESULT marker; poll reads them when emitting
@@ -149,11 +151,22 @@ func NewFromClient(c kubernetes.Interface) Orchestrator {
 	return newFromClient(c)
 }
 
+const defaultPodWaitTimeout = 60 * time.Second
+
 func newFromClient(c kubernetes.Interface) *native {
 	return &native{
-		client:    c,
-		namespace: DefaultJobNamespace,
-		inflight:  map[MigrationID]*nativeRun{},
+		client:         c,
+		namespace:      DefaultJobNamespace,
+		podWaitTimeout: defaultPodWaitTimeout,
+		inflight:       map[MigrationID]*nativeRun{},
+	}
+}
+
+// SetPodWaitTimeout overrides the default timeout for waiting for migration
+// Job pods to appear. Used by the controller flag / env var path.
+func SetPodWaitTimeout(o Orchestrator, d time.Duration) {
+	if n, ok := o.(*native); ok && d > 0 {
+		n.podWaitTimeout = d
 	}
 }
 
@@ -216,11 +229,12 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	run := &nativeRun{
-		srcJob:   srcJob.Name,
-		destJob:  destJob.Name,
-		updates:  make(chan StatusUpdate, 8),
-		cancel:   cancel,
-		finished: make(chan struct{}),
+		srcJob:                srcJob.Name,
+		destJob:               destJob.Name,
+		podWaitTimeoutSeconds: req.PodWaitTimeoutSeconds,
+		updates:               make(chan StatusUpdate, 8),
+		cancel:                cancel,
+		finished:              make(chan struct{}),
 	}
 	n.mu.Lock()
 	n.inflight[id] = run
@@ -249,7 +263,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // RESULT line lands a few ms after — so we keep polling until RESULT
 // arrives or the run is torn down.
 func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
-	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
+	srcPod, err := n.firstSourcePod(ctx, run.srcJob, run.podWaitTimeoutSeconds)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("Progress tail unavailable: source pod was not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
@@ -453,7 +467,7 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 // / total fields. Returns ok=false if no source pod exists, the log
 // stream fails, or no marker is present in the captured log window.
 func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtimeMS, ramXfer, ramTotal int64, ok bool) {
-	pod, err := n.firstSourcePod(ctx, srcJob)
+	pod, err := n.firstSourcePod(ctx, srcJob, 0)
 	if err != nil {
 		return 0, 0, 0, false
 	}
@@ -504,7 +518,7 @@ func parseInt64(s string) int64 {
 // so the only thing that has to happen between source-job creation and
 // dest-job creation is "wait for the source pod to exist".
 func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
-	srcPod, err := n.firstSourcePod(ctx, run.srcJob)
+	srcPod, err := n.firstSourcePod(ctx, run.srcJob, run.podWaitTimeoutSeconds)
 	if err != nil {
 		slog.Error("Cmdline replay failed: source pod not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
 		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)})
@@ -579,10 +593,15 @@ func (run *nativeRun) send(u StatusUpdate) {
 	}
 }
 
-// firstSourcePod waits up to 60s for the source Job's pod to be created
-// and returns its name. We need the pod (not the Job) to read logs from.
-func (n *native) firstSourcePod(ctx context.Context, jobName string) (string, error) {
-	deadline, cancel := context.WithTimeout(ctx, 60*time.Second)
+// firstSourcePod waits for the source Job's pod to be created and returns
+// its name. The timeout is determined by the per-request override
+// (PodWaitTimeoutSeconds), falling back to the orchestrator-level default.
+func (n *native) firstSourcePod(ctx context.Context, jobName string, reqTimeout int) (string, error) {
+	timeout := n.podWaitTimeout
+	if reqTimeout > 0 {
+		timeout = time.Duration(reqTimeout) * time.Second
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastListErr error
 	for {

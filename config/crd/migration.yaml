@@ -116,6 +116,17 @@ spec:
                 type: integer
                 minimum: 0
                 default: 0
+              podWaitTimeoutSeconds:
+                description: |
+                  Override how long the orchestrator waits for migration Job
+                  pods to appear. Zero falls back to the controller's default
+                  (--pod-wait-timeout flag or KATAMARAN_POD_WAIT_TIMEOUT env,
+                  which itself defaults to 60s). Increase for TCG / software
+                  emulation environments where pod startup is slower.
+                type: integer
+                minimum: 0
+                maximum: 3600
+                default: 0
           status:
             type: object
             properties:

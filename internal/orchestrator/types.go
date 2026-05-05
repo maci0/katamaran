@@ -95,6 +95,12 @@ type Request struct {
 	// disables multifd. Both source and destination must agree on the count.
 	MultifdChannels int
 
+	// PodWaitTimeoutSeconds overrides how long the orchestrator waits for
+	// migration Job pods to appear. Zero falls back to the orchestrator's
+	// configured default (flag/env), which itself defaults to 60s.
+	// Useful under TCG (software emulation) where pod startup is slower.
+	PodWaitTimeoutSeconds int
+
 	// TapIface is the destination tap interface to buffer with tc sch_plug.
 	// Defaults to "tap0_kata" in pod-picker mode.
 	TapIface string
