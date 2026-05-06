@@ -94,12 +94,13 @@ if [[ "${PROVIDER}" == "kind" ]]; then SUDO=""; fi
 export SUDO
 
 # Auto-detect container engine (podman preferred, docker fallback).
-if command -v podman >/dev/null 2>&1; then
+# Check if the engine's daemon is actually reachable, not just installed.
+if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
     CE="podman"
-elif command -v docker >/dev/null 2>&1; then
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     CE="docker"
 else
-    error "Neither podman nor docker found. One is required."
+    error "Neither podman nor docker found (or daemon not running). One is required."
     exit 1
 fi
 
@@ -123,17 +124,24 @@ PROFILE="katamaran-e2e-${PROVIDER}-${CNI}-${STORAGE}-${METHOD}"
 # Usage: qmp_hotplug_disk <node> <qmp_socket> <disk_image_path>
 qmp_hotplug_disk() {
     local node="$1" sock="$2" disk="$3"
-    # QMP is conversational: consume greeting, negotiate capabilities, then send commands.
-    # Each command needs a pause for QEMU to process and respond.
-    node_exec "${node}" "${SUDO} bash -c '(
-        sleep 0.2
-        printf \"{\\\"execute\\\": \\\"qmp_capabilities\\\"}\\n\"
-        sleep 0.2
-        printf \"{\\\"execute\\\": \\\"blockdev-add\\\", \\\"arguments\\\": {\\\"driver\\\": \\\"raw\\\", \\\"node-name\\\": \\\"drive-virtio-disk0\\\", \\\"file\\\": {\\\"driver\\\": \\\"file\\\", \\\"filename\\\": \\\"${disk}\\\"}}}\\n\"
-        sleep 0.2
-        printf \"{\\\"execute\\\": \\\"device_add\\\", \\\"arguments\\\": {\\\"driver\\\": \\\"virtio-blk-pci\\\", \\\"drive\\\": \\\"drive-virtio-disk0\\\", \\\"id\\\": \\\"data-disk0\\\", \\\"bus\\\": \\\"pci-bridge-0\\\", \\\"addr\\\": \\\"0x8\\\"}}\\n\"
-        sleep 0.3
-    ) | nc -U \"${sock}\"'" 2>/dev/null
+    local tmp
+    tmp=$(mktemp)
+    cat > "${tmp}" <<PYEOF
+import socket, json, time, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sys.argv[1])
+s.recv(4096)
+s.sendall(b'{"execute":"qmp_capabilities"}\n')
+time.sleep(0.2); s.recv(4096)
+s.sendall(json.dumps({"execute":"blockdev-add","arguments":{"driver":"raw","node-name":"drive-virtio-disk0","file":{"driver":"file","filename":sys.argv[2]}}}).encode() + b"\n")
+time.sleep(0.2); s.recv(4096)
+s.sendall(json.dumps({"execute":"device_add","arguments":{"driver":"virtio-blk-pci","drive":"drive-virtio-disk0","id":"data-disk0","bus":"pci-bridge-0","addr":"0x8"}}).encode() + b"\n")
+time.sleep(0.3); s.recv(4096)
+s.close()
+PYEOF
+    node_cp_to "${node}" "${tmp}" "/tmp/qmp-hotplug.py"
+    rm -f "${tmp}"
+    node_exec "${node}" "${SUDO} python3 /tmp/qmp-hotplug.py '${sock}' '${disk}'"
 }
 
 cleanup() {
@@ -665,6 +673,7 @@ while IFS= read -r arg; do
         arg=$(echo "$arg" | tr ',' '\n' | grep -v '^\(vhostfds\|vhostfd\|fds\|fd\)=' | paste -sd ',' -)
         # Assign a new guest-cid for dest vsock (source still holds the original).
         if echo "$arg" | grep -q 'vhost-vsock-pci'; then
+            # shellcheck disable=SC2001 — regex [0-9]* has no bash-native equivalent without extglob
             arg=$(echo "$arg" | sed 's/guest-cid=[0-9]*/guest-cid='"$RANDOM"'/')
         fi
         DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
