@@ -399,6 +399,8 @@ EOF
         node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 300|' '${KATA_CFG}'"
         # Reduce VM memory to avoid OOM on constrained hosts (two VMs during migration).
         node_exec "${node}" "${SUDO} sed -i 's|^default_memory = 2048|default_memory = 512|' '${KATA_CFG}'"
+        # Avoid cgroup.subtree_control errors in containerized environments (kind/Docker).
+        node_exec "${node}" "${SUDO} sed -i 's|^#*sandbox_cgroup_only.*|sandbox_cgroup_only = true|' '${KATA_CFG}'"
         if [[ "${NODE_ARCH}" == "aarch64" ]]; then
             # aarch64-only: pmu=off unsupported, nvdimm crashes under TCG.
             node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
@@ -673,7 +675,7 @@ while IFS= read -r arg; do
         arg=$(echo "$arg" | tr ',' '\n' | grep -v '^\(vhostfds\|vhostfd\|fds\|fd\)=' | paste -sd ',' -)
         # Assign a new guest-cid for dest vsock (source still holds the original).
         if echo "$arg" | grep -q 'vhost-vsock-pci'; then
-            # shellcheck disable=SC2001 — regex [0-9]* has no bash-native equivalent without extglob
+            # shellcheck disable=SC2001
             arg=$(echo "$arg" | sed 's/guest-cid=[0-9]*/guest-cid='"$RANDOM"'/')
         fi
         DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
