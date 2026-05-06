@@ -35,6 +35,7 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 - [9. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#9-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
 - [10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#10-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
 - [11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)](#11-job-based-orchestration-details-kind--podman-zero-drop-proof)
+- [12. macOS Apple Silicon — TCG (Software Emulation)](#12-macos-apple-silicon--tcg-software-emulation)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -1073,6 +1074,67 @@ sequenceDiagram
 | Orchestration | `deploy/migrate.sh` — renders templates via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
 | Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
+
+## 12. macOS Apple Silicon — TCG (Software Emulation)
+
+Kata Containers requires KVM, which is unavailable on macOS Apple Silicon
+(nested virtualisation is not functional in Apple's Hypervisor.framework).
+The `--tcg` flag runs QEMU in pure software emulation mode instead,
+enabling local e2e testing on macOS.
+
+### Requirements
+
+- macOS with Apple Silicon (M1/M2/M3/M4)
+- [Podman Desktop](https://podman-desktop.io/) with a running machine (`podman machine start`)
+- `kind`, `kubectl`, `helm` (all installable via Homebrew)
+
+### Running
+
+```bash
+# Full migration with zero-drop verification (recommended)
+./scripts/e2e.sh --tcg --method job --ping-proof
+
+# With NBD storage mirroring
+./scripts/e2e.sh --tcg --method job --storage local --ping-proof
+
+# Environment only (no migration — useful for manual testing)
+./scripts/e2e.sh --tcg --env-only
+```
+
+### What `--tcg` Does
+
+The flag applies these patches at runtime (no Kata code changes):
+
+| Patch | Why |
+|-------|-----|
+| QEMU wrapper: `accel=kvm` → `accel=tcg` | Software emulation instead of KVM |
+| QEMU wrapper: `gic-version=host` → `max`, `cpu host` → `max` | aarch64 TCG compatibility |
+| `disable_image_nvdimm = true` | nvdimm crashes under TCG on aarch64 |
+| `cpu_features = ""` (removes `pmu=off`) | PMU property unavailable on emulated vCPUs |
+| `default_memory = 512` | Prevents OOM (two VMs coexist during migration) |
+| `dial_timeout = 600` | Slower VM boot under emulation |
+| `sandbox_cgroup_only = true` | Avoids cgroup subtree_control errors in containers |
+| `--no-reboot` stripped from dest QEMU | Prevents exit on guest resume |
+| `readonly=on` preserved on dest disk | Keeps virtio feature bits identical for migration |
+
+### Typical Results
+
+```
+Migration completed: actual_downtime_ms=6 total_time_ms=708
+PASS: sch_plug: Zero drops achieved
+PASS: E2E Test Passed!
+```
+
+### Known Limitations
+
+- **`--method crd` fails** — migration data transfers but the CRD controller
+  reports failure because the dest katamaran job sees a QMP disconnect
+  post-migration. Use `--method job` instead.
+- **`--storage nfs` unsupported on kind** — the kind container kernel lacks
+  the NFS client module. Not TCG-specific.
+- **x86_64 TCG is impractical** — same-arch software emulation on x86 is
+  ~10x slower than aarch64 on Apple Silicon. VM boot exceeds 10 minutes
+  on typical CI runners.
 
 ## Troubleshooting
 
