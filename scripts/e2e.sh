@@ -396,7 +396,7 @@ EOF
         node_exec "${node}" "${SUDO} cp '${QEMU_BIN}' '${QEMU_BIN}.real'"
         node_cp_to "${node}" "${TCG_WRAPPER}" "${QEMU_BIN}"
         node_exec "${node}" "${SUDO} chmod +x '${QEMU_BIN}'"
-        node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 300|' '${KATA_CFG}'"
+        node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 600|' '${KATA_CFG}'"
         # Reduce VM memory to avoid OOM on constrained hosts (two VMs during migration).
         node_exec "${node}" "${SUDO} sed -i 's|^default_memory = 2048|default_memory = 512|' '${KATA_CFG}'"
         # Avoid cgroup.subtree_control errors in containerized environments (kind/Docker).
@@ -498,7 +498,9 @@ spec:
   - name: pause
     image: registry.k8s.io/pause:3.9
 EOFPOD
-if ! kubectl --context "${CTX}" wait --for=condition=Ready pod/kata-src --timeout=300s; then
+SRC_POD_TIMEOUT=300s
+if [[ "${TCG}" == "true" ]]; then SRC_POD_TIMEOUT=600s; fi
+if ! kubectl --context "${CTX}" wait --for=condition=Ready pod/kata-src --timeout="${SRC_POD_TIMEOUT}"; then
     error "Source pod failed to become Ready. Collecting diagnostics..."
     kubectl --context "${CTX}" --request-timeout=20s describe pod kata-src 2>&1 | tail -30
     node_exec "${NODE1}" "${SUDO} journalctl --no-pager -u containerd --since '5 minutes ago' 2>&1 | grep -iE 'kata|qemu|kvm|error|fail' | tail -20" || true
