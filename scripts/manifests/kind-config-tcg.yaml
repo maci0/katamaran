@@ -2,7 +2,17 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
+  extraMounts:
+  - hostPath: /dev/vhost-vsock
+    containerPath: /dev/vhost-vsock
+  - hostPath: /dev/vhost-net
+    containerPath: /dev/vhost-net
 - role: worker
+  extraMounts:
+  - hostPath: /dev/vhost-vsock
+    containerPath: /dev/vhost-vsock
+  - hostPath: /dev/vhost-net
+    containerPath: /dev/vhost-net
 
 kubeadmConfigPatches:
 - |

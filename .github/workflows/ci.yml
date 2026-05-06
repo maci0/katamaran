@@ -142,6 +142,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Load kernel modules for vhost devices
+        run: |
+          sudo modprobe vhost_vsock || true
+          sudo modprobe vhost_net || true
       - name: Install kind
         run: |
           KIND_VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep tag_name | cut -d'"' -f4)

@@ -5,7 +5,17 @@ networking:
   podSubnet: "10.244.0.0/16"
 nodes:
 - role: control-plane
+  extraMounts:
+  - hostPath: /dev/vhost-vsock
+    containerPath: /dev/vhost-vsock
+  - hostPath: /dev/vhost-net
+    containerPath: /dev/vhost-net
 - role: worker
+  extraMounts:
+  - hostPath: /dev/vhost-vsock
+    containerPath: /dev/vhost-vsock
+  - hostPath: /dev/vhost-net
+    containerPath: /dev/vhost-net
 
 kubeadmConfigPatches:
 - |
