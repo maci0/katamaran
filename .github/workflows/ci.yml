@@ -129,3 +129,26 @@ jobs:
           IMAGE_TAG: ${{ matrix.tag }}
           SMOKE_CMD: ${{ matrix.smoke }}
         run: docker run --rm "${IMAGE_TAG}" ${SMOKE_CMD}
+
+  e2e-tcg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [build-and-smoke]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install kind
+        run: |
+          KIND_VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep tag_name | cut -d'"' -f4)
+          curl -Lo ./kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Run e2e migration (TCG, no KVM)
+        run: ./scripts/e2e.sh --tcg --method job --ping-proof

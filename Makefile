@@ -52,20 +52,21 @@ fuzz-long:
 	go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
 
 CE ?= $(shell command -v podman 2>/dev/null || echo docker)
+GOARCH ?= $(shell go env GOARCH)
 
 # Build the katamaran container image
 image:
-	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran:dev .
+	$(CE) build --build-arg VERSION=$(VERSION) --build-arg TARGETARCH=$(GOARCH) -t localhost/katamaran:dev .
 	$(CE) save localhost/katamaran:dev -o katamaran.tar.tmp && mv katamaran.tar.tmp katamaran.tar
 
 # Build the dashboard container image
 dashboard:
-	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-dashboard:dev -f Dockerfile.dashboard .
+	$(CE) build --build-arg VERSION=$(VERSION) --build-arg TARGETARCH=$(GOARCH) -t localhost/katamaran-dashboard:dev -f Dockerfile.dashboard .
 	$(CE) save localhost/katamaran-dashboard:dev -o dashboard.tar.tmp && mv dashboard.tar.tmp dashboard.tar
 
 # Build the Migration controller container image
 mgr:
-	$(CE) build --build-arg VERSION=$(VERSION) -t localhost/katamaran-mgr:dev -f Dockerfile.mgr .
+	$(CE) build --build-arg VERSION=$(VERSION) --build-arg TARGETARCH=$(GOARCH) -t localhost/katamaran-mgr:dev -f Dockerfile.mgr .
 	$(CE) save localhost/katamaran-mgr:dev -o mgr.tar.tmp && mv mgr.tar.tmp mgr.tar
 
 # Remove build artifacts

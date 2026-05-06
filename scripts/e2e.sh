@@ -351,11 +351,15 @@ for node in "${NODE1}" "${NODE2}"; do
     node_exec "$node" "${SUDO} sed -i 's|^#*create_container_timeout = .*|create_container_timeout = 600|' '${KATA_CFG}'"
 done
 
+NODE_ARCH=$(node_exec "${NODE1}" "uname -m")
+
 if [[ "${TCG}" == "true" ]]; then
     log "Applying TCG (no-KVM) patches for software emulation..."
     QEMU_BIN=$(node_exec "${NODE1}" "grep '^path = ' '${KATA_CFG}'" | sed 's|path = "\(.*\)"|\1|')
     TCG_WRAPPER=$(mktemp)
-    cat > "${TCG_WRAPPER}" <<'EOF'
+    if [[ "${NODE_ARCH}" == "aarch64" ]]; then
+        # aarch64: rewrite accel, gic-version, and cpu for TCG compatibility.
+        cat > "${TCG_WRAPPER}" <<'EOF'
 #!/bin/bash
 args=()
 for arg in "$@"; do
@@ -368,13 +372,30 @@ for arg in "$@"; do
 done
 exec "${0}.real" "${args[@]}"
 EOF
+    else
+        # x86_64: only swap the accelerator; cpu host and other flags work as-is.
+        cat > "${TCG_WRAPPER}" <<'EOF'
+#!/bin/bash
+args=()
+for arg in "$@"; do
+    arg="${arg//accel=kvm/accel=tcg}"
+    args+=("$arg")
+done
+exec "${0}.real" "${args[@]}"
+EOF
+    fi
     for node in "${NODE1}" "${NODE2}"; do
         node_exec "${node}" "${SUDO} cp '${QEMU_BIN}' '${QEMU_BIN}.real'"
         node_cp_to "${node}" "${TCG_WRAPPER}" "${QEMU_BIN}"
         node_exec "${node}" "${SUDO} chmod +x '${QEMU_BIN}'"
-        node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
-        node_exec "${node}" "${SUDO} sed -i 's|^disable_image_nvdimm = false|disable_image_nvdimm = true|' '${KATA_CFG}'"
         node_exec "${node}" "${SUDO} sed -i 's|^dial_timeout = 45|dial_timeout = 300|' '${KATA_CFG}'"
+        # Reduce VM memory to avoid OOM on constrained hosts (two VMs during migration).
+        node_exec "${node}" "${SUDO} sed -i 's|^default_memory = 2048|default_memory = 512|' '${KATA_CFG}'"
+        if [[ "${NODE_ARCH}" == "aarch64" ]]; then
+            # aarch64-only: pmu=off unsupported, nvdimm crashes under TCG.
+            node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
+            node_exec "${node}" "${SUDO} sed -i 's|^disable_image_nvdimm = false|disable_image_nvdimm = true|' '${KATA_CFG}'"
+        fi
     done
     rm -f "${TCG_WRAPPER}"
 fi
@@ -446,7 +467,7 @@ if [[ "${STORAGE}" == "nfs" ]]; then
 
     # Create the shared data disk on NFS (visible from both nodes).
     NFS_DISK_IMG="${NFS_MNT}/shared-disk.img"
-    node_exec "${NODE1}" "${SUDO} qemu-img create -f raw ${NFS_DISK_IMG} 64M"
+    node_exec "${NODE1}" "${SUDO} truncate -s 64M ${NFS_DISK_IMG}"
     success "Shared disk image created on NFS: ${NFS_DISK_IMG}"
 fi
 
@@ -497,7 +518,7 @@ SRC_SANDBOX_ID=$(basename "${SRC_SANDBOX_DIR}")
 if [[ "${STORAGE}" == "local" ]]; then
     log "Creating local data disk for source QEMU..."
     SRC_DISK_IMG="/tmp/kata-src-data-$$.img"
-    node_exec "${NODE1}" "${SUDO} qemu-img create -f raw ${SRC_DISK_IMG} 64M"
+    node_exec "${NODE1}" "${SUDO} truncate -s 64M ${SRC_DISK_IMG}"
     qmp_hotplug_disk "${NODE1}" "${SRC_SOCK}" "${SRC_DISK_IMG}"
     success "Source data disk hotplugged: ${SRC_DISK_IMG}"
 elif [[ "${STORAGE}" == "nfs" ]]; then
@@ -606,7 +627,7 @@ DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
     | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
     | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
     | sed "s|sandboxes/${SRC_SANDBOX_ID}|sandboxes/${DST_SANDBOX}|g" \
-    | if [[ "${TCG}" == "true" ]]; then cat; else sed "s|,readonly=on||g; s|,readonly=true||g"; fi \
+    | if [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]]; then cat; else sed "s|,readonly=on||g; s|,readonly=true||g"; fi \
     | sed "s|unix:fd=[0-9]*,server=on,wait=off|unix:${DST_VM_DIR}/qmp.sock,server=on,wait=off|g" \
 )
 [[ -n "${SRC_NVDIMM_PATH}" ]] && \
@@ -652,7 +673,7 @@ while IFS= read -r arg; do
     case "${arg}" in
         -daemonize) continue ;;
         -incoming)  skip_next=true; continue ;;
-        --no-reboot) [[ "${TCG}" == "true" ]] && continue ;;
+        --no-reboot) [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]] && continue ;;
         -qmp)
             # Read the next arg to check if it's fd-based.
             read -r next_arg || true
@@ -667,7 +688,9 @@ while IFS= read -r arg; do
     DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
 done <<< "${DST_CMDLINE}"
 DST_QEMU_CMD+=" -incoming defer"
-if [[ "${TCG}" == "true" ]]; then
+if [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]]; then
+    # aarch64 TCG: --no-reboot is stripped so -daemonize would exit on guest
+    # crash. Run via nohup instead and log stderr for diagnostics.
     node_exec "${NODE2}" "${SUDO} bash -c 'nohup ${DST_QEMU_CMD} -D /tmp/dest-qemu-debug.log > /tmp/dest-qemu-stdout.log 2>&1 &'"
 else
     DST_QEMU_CMD+=" -daemonize"
@@ -689,7 +712,7 @@ success "Destination QEMU started. QMP: ${DST_SOCK}"
 if [[ "${STORAGE}" == "local" ]]; then
     log "Creating local data disk for destination QEMU..."
     DST_DISK_IMG="/tmp/kata-dst-data-$$.img"
-    node_exec "${NODE2}" "${SUDO} qemu-img create -f raw ${DST_DISK_IMG} 64M"
+    node_exec "${NODE2}" "${SUDO} truncate -s 64M ${DST_DISK_IMG}"
     qmp_hotplug_disk "${NODE2}" "${DST_SOCK}" "${DST_DISK_IMG}"
     success "Destination data disk hotplugged: ${DST_DISK_IMG}"
 elif [[ "${STORAGE}" == "nfs" ]]; then
