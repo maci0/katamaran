@@ -103,8 +103,8 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		}
 	}
 	if !cfg.SharedStorage {
-		if err := validateDriveID(cfg.DriveID); err != nil {
-			return fmt.Errorf("validating drive ID: %w", err)
+		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
+			return fmt.Errorf("validating drive IDs: %w", err)
 		}
 	}
 
@@ -121,7 +121,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		"tap_netns", cfg.TapNetns,
 		"shared_storage", cfg.SharedStorage,
 		"multifd_channels", cfg.MultifdChannels,
-		"drive_id", cfg.DriveID,
+		"drive_ids", cfg.DriveIDs,
 	)
 
 	// Step 1: Install sch_plug qdisc in pass-through mode.
@@ -218,8 +218,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	nbdStarted := false
 	if !cfg.SharedStorage {
 		// Step 3: Start NBD server to receive storage mirroring from the source.
-		slog.Info("Starting NBD server for storage migration", "drive_id", cfg.DriveID)
-		// Idempotency: attempt to stop any existing NBD server first, ignore errors.
+		slog.Info("Starting NBD server for storage migration", "drives", len(cfg.DriveIDs))
 		if _, err := client.Execute(ctx, "nbd-server-stop", nil); err != nil {
 			slog.Debug("Pre-clearing NBD server (expected if none exists)", "error", err)
 		}
@@ -237,8 +236,6 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		}
 		nbdStarted = true
 
-		// Deferred cleanup: stop NBD server on any early return to prevent
-		// leaking it. Disarmed on the success path by setting nbdStarted = false.
 		defer func() {
 			if nbdStarted {
 				cctx, ccancel := cleanupCtx(ctx)
@@ -249,13 +246,16 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 			}
 		}()
 
-		if _, err = client.Execute(ctx, "nbd-server-add", qmp.NBDServerAddArgs{
-			Device:   cfg.DriveID,
-			Writable: true,
-		}); err != nil {
-			return fmt.Errorf("adding NBD export for drive %q: %w", cfg.DriveID, err)
+		for _, driveID := range cfg.DriveIDs {
+			if _, err = client.Execute(ctx, "nbd-server-add", qmp.NBDServerAddArgs{
+				Device:   driveID,
+				Writable: true,
+			}); err != nil {
+				return fmt.Errorf("adding NBD export for drive %q: %w", driveID, err)
+			}
+			slog.Info("NBD export added", "drive_id", driveID)
 		}
-		slog.Info("NBD server listening", "addr", "[::]", "port", nbdPort)
+		slog.Info("NBD server listening", "addr", "[::]", "port", nbdPort, "exports", len(cfg.DriveIDs))
 	} else {
 		slog.Info("Shared storage mode: skipping NBD server setup")
 	}

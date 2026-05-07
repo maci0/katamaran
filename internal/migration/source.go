@@ -137,8 +137,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
 	}
 	if !cfg.SharedStorage {
-		if err := validateDriveID(cfg.DriveID); err != nil {
-			return fmt.Errorf("validating drive ID: %w", err)
+		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
+			return fmt.Errorf("validating drive IDs: %w", err)
 		}
 	}
 
@@ -190,44 +190,48 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}
 	}()
 
-	jobID := "mirror-" + cfg.DriveID
-	mirrorStarted := false
+	var mirrorJobIDs []string
 	downtimeLimitMS := cfg.DowntimeLimitMS
 
 	if !cfg.SharedStorage {
-		targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", formatQEMUHost(cfg.DestIP), nbdPort, cfg.DriveID)
-		slog.Info("Initiating storage mirror (drive-mirror)", "target", targetNBD, "drive_id", cfg.DriveID)
-		if _, err = client.Execute(ctx, "drive-mirror", qmp.DriveMirrorArgs{
-			Device: cfg.DriveID,
-			Target: targetNBD,
-			Sync:   "full",
-			Mode:   "existing", // target is an NBD export, not a new file
-			JobID:  jobID,
-		}); err != nil {
-			slog.Error("Drive-mirror failed", "target", targetNBD, "drive_id", cfg.DriveID, "error", err)
-			return fmt.Errorf("starting drive-mirror: %w", err)
+		for _, driveID := range cfg.DriveIDs {
+			jobID := "mirror-" + driveID
+			targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", formatQEMUHost(cfg.DestIP), nbdPort, driveID)
+			slog.Info("Initiating storage mirror (drive-mirror)", "target", targetNBD, "drive_id", driveID)
+			if _, err = client.Execute(ctx, "drive-mirror", qmp.DriveMirrorArgs{
+				Device: driveID,
+				Target: targetNBD,
+				Sync:   "full",
+				Mode:   "existing",
+				JobID:  jobID,
+			}); err != nil {
+				slog.Error("Drive-mirror failed", "target", targetNBD, "drive_id", driveID, "error", err)
+				return fmt.Errorf("starting drive-mirror for %s: %w", driveID, err)
+			}
+			mirrorJobIDs = append(mirrorJobIDs, jobID)
 		}
-		mirrorStarted = true
 
 		defer func() {
-			if mirrorStarted {
+			if len(mirrorJobIDs) > 0 {
 				cctx, ccancel := cleanupCtx(ctx)
 				defer ccancel()
-				if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
-					Device: jobID,
-					Force:  true,
-				}); cancelErr != nil {
-					slog.Warn("Deferred block job cancel failed", "error", cancelErr)
+				for _, jid := range mirrorJobIDs {
+					if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
+						Device: jid,
+						Force:  true,
+					}); cancelErr != nil {
+						slog.Warn("Deferred block job cancel failed", "job_id", jid, "error", cancelErr)
+					}
 				}
 			}
 		}()
 
-		slog.Info("Waiting for storage mirror to synchronize")
+		slog.Info("Waiting for storage mirrors to synchronize", "drives", len(mirrorJobIDs))
 		storageSyncStart := time.Now()
-		if err = waitForStorageSync(ctx, client, jobID); err != nil {
+		if err = waitForStorageSync(ctx, client, mirrorJobIDs...); err != nil {
 			return fmt.Errorf("storage sync failed after %s: %w", time.Since(storageSyncStart).Round(time.Millisecond), err)
 		}
-		slog.Info("Storage mirror synchronized", "elapsed", time.Since(storageSyncStart).Round(time.Millisecond))
+		slog.Info("All storage mirrors synchronized", "drives", len(mirrorJobIDs), "elapsed", time.Since(storageSyncStart).Round(time.Millisecond))
 	} else {
 		slog.Info("Shared storage mode: skipping drive-mirror")
 	}
@@ -407,15 +411,16 @@ stopLoop:
 	if !cfg.SharedStorage {
 		cctx, ccancel := cleanupCtx(ctx)
 		defer ccancel()
-		if _, err := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
-			Device: jobID,
-			Force:  true,
-		}); err != nil {
-			slog.Warn("Failed to cancel block job", "error", err)
-		} else {
-			mirrorStarted = false
-			slog.Info("Storage mirror cancelled")
+		for _, jid := range mirrorJobIDs {
+			if _, err := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
+				Device: jid,
+				Force:  true,
+			}); err != nil {
+				slog.Warn("Failed to cancel block job", "job_id", jid, "error", err)
+			}
 		}
+		mirrorJobIDs = nil
+		slog.Info("Storage mirrors cancelled")
 	}
 
 	if tunnelCreated {
@@ -548,25 +553,31 @@ func migrationTerminalError(status qmp.MigrateStatus, errorDesc string) (bool, e
 	return false, nil
 }
 
-// waitForStorageSync polls query-block-jobs until the drive-mirror job reaches
-// the "ready" state, indicating full synchronization. Fails if the job disappears,
-// never appears within jobAppearTimeout, or reaches a terminal failure state.
-func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) error {
+// waitForStorageSync polls query-block-jobs until ALL drive-mirror jobs reach
+// the "ready" state, indicating full synchronization. Fails if any job
+// disappears, never appears within jobAppearTimeout, or reaches a terminal
+// failure state.
+func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, storageSyncTimeout)
 	defer cancel()
 
-	jobSeen := false
+	type jobState struct {
+		seen          bool
+		ready         bool
+		lastLoggedPct float64
+		lastOffset    int64
+		lastLogTime   time.Time
+	}
+	state := make(map[string]*jobState, len(jobIDs))
+	for _, id := range jobIDs {
+		state[id] = &jobState{lastLoggedPct: -1}
+	}
 	appearDeadline := time.Now().Add(jobAppearTimeout)
 	ticker := time.NewTicker(storagePollInterval)
 	defer ticker.Stop()
 
-	lastLoggedPct := -1.0
-	var lastLoggedOffset int64
-	var lastLoggedTime time.Time
-
 	for {
 		if ctx.Err() != nil {
-			slog.Warn("Storage sync timed out", "job_id", jobID)
 			return fmt.Errorf("storage sync: %w", ctx.Err())
 		}
 
@@ -581,45 +592,56 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobID string) e
 		if err = json.Unmarshal(raw, &jobs); err != nil {
 			return fmt.Errorf("unmarshaling block jobs: %w", err)
 		}
-		var job *qmp.BlockJobInfo
-		if idx := slices.IndexFunc(jobs, func(j qmp.BlockJobInfo) bool { return j.Device == jobID }); idx != -1 {
-			job = &jobs[idx]
-		}
-		if job == nil {
-			if jobSeen {
-				return fmt.Errorf("block mirror job %q disappeared", jobID)
+
+		allReady := true
+		for jobID, js := range state {
+			if js.ready {
+				continue
 			}
-			if time.Now().After(appearDeadline) {
-				return fmt.Errorf("block mirror job %q did not appear", jobID)
+			var job *qmp.BlockJobInfo
+			if idx := slices.IndexFunc(jobs, func(j qmp.BlockJobInfo) bool { return j.Device == jobID }); idx != -1 {
+				job = &jobs[idx]
 			}
-		} else {
-			jobSeen = true
+			if job == nil {
+				if js.seen {
+					return fmt.Errorf("block mirror job %q disappeared", jobID)
+				}
+				if time.Now().After(appearDeadline) {
+					return fmt.Errorf("block mirror job %q did not appear", jobID)
+				}
+				allReady = false
+				continue
+			}
+			js.seen = true
 			if job.Ready {
-				return nil
+				js.ready = true
+				slog.Info("Storage mirror ready", "job_id", jobID)
+				continue
 			}
+			allReady = false
 			if job.Len > 0 {
 				pct := float64(job.Offset) / float64(job.Len) * 100
-				if pct-lastLoggedPct >= 5 || lastLoggedPct < 0 {
+				if pct-js.lastLoggedPct >= 5 || js.lastLoggedPct < 0 {
 					attrs := []any{"job_id", jobID, "progress_pct", pct, "offset", job.Offset, "len", job.Len}
-					if !lastLoggedTime.IsZero() && job.Offset > lastLoggedOffset {
-						dt := time.Since(lastLoggedTime).Seconds()
+					if !js.lastLogTime.IsZero() && job.Offset > js.lastOffset {
+						dt := time.Since(js.lastLogTime).Seconds()
 						if dt > 0 {
-							mbps := float64(job.Offset-lastLoggedOffset) / dt / (1024 * 1024)
+							mbps := float64(job.Offset-js.lastOffset) / dt / (1024 * 1024)
 							attrs = append(attrs, "throughput_mbps", mbps)
 						}
 					}
-					if job.Speed > 0 {
-						attrs = append(attrs, "speed_limit", job.Speed)
-					}
 					slog.Info("Storage sync progress", attrs...)
-					lastLoggedPct = pct
-					lastLoggedOffset = job.Offset
-					lastLoggedTime = time.Now()
+					js.lastLoggedPct = pct
+					js.lastOffset = job.Offset
+					js.lastLogTime = time.Now()
 				}
 			}
 			if job.Status == qmp.BlockJobStatusConcluded || job.Status == qmp.BlockJobStatusNull {
 				return fmt.Errorf("block mirror job %q failed (status=%s)", jobID, job.Status)
 			}
+		}
+		if allReady {
+			return nil
 		}
 		select {
 		case <-ctx.Done():

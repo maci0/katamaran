@@ -61,7 +61,7 @@ Usage:
 Common flags:
   --mode string            Migration role: 'source' or 'dest' (required)
   --qmp string             Path to QEMU QMP unix socket (default "/run/vc/vm/extra-monitor.sock")
-  --drive-id string        QEMU block device ID to migrate (default "drive-virtio-disk0")
+  --drive-id string        QEMU block device ID(s), comma-separated for multi-disk (default "drive-virtio-disk0")
   --shared-storage         Skip NBD drive-mirror (use with shared storage)
   --multifd-channels int   Parallel TCP channels for RAM migration, 0 to disable (default 4)
   --log-format string      Log output format: 'text' or 'json' (default "text")
@@ -130,7 +130,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tapNetns := fs.String("tap-netns", "", "Network namespace path for tap interface")
 	destIP := fs.String("dest-ip", "", "Destination node IP address")
 	vmIP := fs.String("vm-ip", "", "VM pod IP for traffic redirection")
-	driveID := fs.String("drive-id", "drive-virtio-disk0", "QEMU block device ID to migrate")
+	driveID := fs.String("drive-id", "drive-virtio-disk0", "QEMU block device ID(s), comma-separated for multi-disk")
 	sharedStorage := fs.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
 	tunnelMode := fs.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds")
@@ -252,7 +252,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			QMPSocket:            *qmpSocket,
 			TapIface:             *tapIface,
 			TapNetns:             *tapNetns,
-			DriveID:              *driveID,
+			DriveIDs:             strings.Split(*driveID, ","),
 			SharedStorage:        *sharedStorage,
 			MultifdChannels:      *multifdChannels,
 			DestPodName:          *destPodName,
@@ -334,7 +334,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			QMPSocket:           *qmpSocket,
 			DestIP:              parsedDest,
 			VMIP:                parsedVM,
-			DriveID:             *driveID,
+			DriveIDs:            strings.Split(*driveID, ","),
 			SharedStorage:       *sharedStorage,
 			TunnelMode:          tm,
 			DowntimeLimitMS:     *downtimeLimit,

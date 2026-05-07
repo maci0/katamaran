@@ -61,7 +61,7 @@ func TestRunSource_Failures(t *testing.T) {
 				QMPSocket:       "/nonexistent/qmp.sock",
 				DestIP:          testDestIP,
 				VMIP:            testVMIP,
-				DriveID:         "drive-virtio-disk0",
+				DriveIDs: []string{"drive-virtio-disk0"},
 				SharedStorage:   tt.sharedStorage,
 				TunnelMode:      tt.tunnelMode,
 				DowntimeLimitMS: 25,
@@ -82,7 +82,7 @@ func TestRunSource_ConfigValidation(t *testing.T) {
 		QMPSocket:       "/nonexistent/qmp.sock",
 		DestIP:          testDestIP,
 		VMIP:            testVMIP,
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
@@ -395,7 +395,7 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err != nil {
@@ -430,7 +430,7 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -478,7 +478,7 @@ func TestRunSource_NonShared_HappyPath(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err != nil {
@@ -506,7 +506,7 @@ func TestRunSource_NonShared_CommandArguments(t *testing.T) {
 		QMPSocket:       sock,
 		DestIP:          testDestIP,
 		VMIP:            testVMIP,
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
 		MultifdChannels: 4,
@@ -593,7 +593,7 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -633,7 +633,7 @@ func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -671,7 +671,7 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err != nil {
@@ -707,7 +707,7 @@ func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25, MultifdChannels: 4,
 	})
 	if err != nil {
@@ -800,7 +800,7 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -833,7 +833,7 @@ func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -866,7 +866,7 @@ func TestRunSource_SetParametersFailure(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -899,7 +899,7 @@ func TestRunSource_MigrateCommandFailure(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -916,7 +916,7 @@ func TestRunSource_InvalidDriveID(t *testing.T) {
 		QMPSocket:       "/nonexistent/qmp.sock",
 		DestIP:          testDestIP,
 		VMIP:            testVMIP,
-		DriveID:         ";evil",
+		DriveIDs: []string{";evil"},
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
 	})
@@ -931,7 +931,7 @@ func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 		QMPSocket:       "/nonexistent/qmp.sock",
 		DestIP:          testDestIP,
 		VMIP:            testVMIP,
-		DriveID:         ";evil",
+		DriveIDs: []string{";evil"},
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
@@ -967,7 +967,7 @@ func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25, AutoDowntime: true,
 	})
 	if err != nil {
@@ -1003,7 +1003,7 @@ func TestRunSource_ContextCancelled(t *testing.T) {
 	defer cancel()
 
 	err := RunSource(ctx, SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveID: "drive-virtio-disk0",
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
 	})
 	if err == nil {
@@ -1087,7 +1087,7 @@ func TestRunSource_PodResolver_PopulatesConfig(t *testing.T) {
 		PodName:         "vm-a",
 		PodNamespace:    "default",
 		DestIP:          testDestIP, // IPv4
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
@@ -1119,7 +1119,7 @@ func TestRunSource_PodResolver_LookupError(t *testing.T) {
 		PodName:         "vm-a",
 		PodNamespace:    "default",
 		DestIP:          testDestIP,
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,

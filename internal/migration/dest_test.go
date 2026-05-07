@@ -28,7 +28,7 @@ func TestRunDestination_Failures(t *testing.T) {
 			err := RunDestination(context.Background(), DestConfig{
 				QMPSocket:     "/nonexistent/qmp.sock",
 				TapIface:      tt.tap,
-				DriveID:       "drive-virtio-disk0",
+				DriveIDs: []string{"drive-virtio-disk0"},
 				SharedStorage: tt.sharedStorage,
 			})
 			if err == nil {
@@ -46,7 +46,7 @@ func TestRunDestination_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := RunDestination(ctx, DestConfig{QMPSocket: "/nonexistent/qmp.sock", DriveID: "drive-virtio-disk0"})
+	err := RunDestination(ctx, DestConfig{QMPSocket: "/nonexistent/qmp.sock", DriveIDs: []string{"drive-virtio-disk0"}})
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
@@ -56,7 +56,7 @@ func TestRunDestination_NegativeMultifd(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:       "/nonexistent/qmp.sock",
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		MultifdChannels: -1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "multifd channels must be non-negative") {
@@ -87,7 +87,7 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
 	if err != nil {
 		t.Fatalf("RunDestination shared-storage happy path: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0"})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
 	if err != nil {
 		t.Fatalf("RunDestination non-shared happy path: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRunDestination_SharedStorage_Multifd(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true, MultifdChannels: 4})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
 	if err != nil {
 		t.Fatalf("RunDestination with multifd: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
 	if err == nil {
 		t.Fatal("expected error for migrate-incoming failure")
 	}
@@ -215,7 +215,7 @@ func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0"})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
 	if err == nil {
 		t.Fatal("expected error for NBD server start failure")
 	}
@@ -245,7 +245,7 @@ func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0"})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
 	if err == nil {
 		t.Fatal("expected error for NBD server add failure")
 	}
@@ -275,7 +275,7 @@ func TestRunDestination_SetCapabilitiesFailure_Multifd(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true, MultifdChannels: 4})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
 	if err == nil {
 		t.Fatal("expected error for capabilities failure")
 	}
@@ -305,7 +305,7 @@ func TestRunDestination_SetParametersFailure_Multifd(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true, MultifdChannels: 4})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
 	if err == nil {
 		t.Fatal("expected error for parameters failure")
 	}
@@ -319,7 +319,7 @@ func TestRunDestination_InvalidTapIface(t *testing.T) {
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
 		TapIface:  ";evil",
-		DriveID:   "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid tap interface") {
 		t.Fatalf("expected tap interface validation error, got: %v", err)
@@ -331,7 +331,7 @@ func TestRunDestination_InvalidTapNetns(t *testing.T) {
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
 		TapNetns:  "/proc/../etc/passwd",
-		DriveID:   "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "path traversal") {
 		t.Fatalf("expected netns validation error, got: %v", err)
@@ -342,7 +342,7 @@ func TestRunDestination_InvalidDriveID(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
-		DriveID:   ";evil",
+		DriveIDs: []string{";evil"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid drive ID") {
 		t.Fatalf("expected drive ID validation error, got: %v", err)
@@ -353,7 +353,7 @@ func TestRunDestination_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:     "/nonexistent/qmp.sock",
-		DriveID:       ";evil",
+		DriveIDs: []string{";evil"},
 		SharedStorage: true,
 	})
 	if err == nil {
@@ -390,7 +390,7 @@ func TestRunDestination_GARPFailure(t *testing.T) {
 		}
 	})
 
-	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveID: "drive-virtio-disk0", SharedStorage: true})
+	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
 	if err == nil {
 		t.Fatal("expected error for GARP failure")
 	}
@@ -413,7 +413,7 @@ func TestRunDestination_NonShared_CommandArguments(t *testing.T) {
 
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:       sock,
-		DriveID:         "drive-virtio-disk0",
+		DriveIDs: []string{"drive-virtio-disk0"},
 		MultifdChannels: 4,
 	})
 	if err != nil {

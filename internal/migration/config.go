@@ -101,7 +101,7 @@ type SourceConfig struct {
 	QMPSocket       string
 	DestIP          netip.Addr
 	VMIP            netip.Addr
-	DriveID         string
+	DriveIDs        []string
 	SharedStorage   bool
 	TunnelMode      TunnelMode
 	DowntimeLimitMS int
@@ -137,7 +137,7 @@ type DestConfig struct {
 	QMPSocket       string
 	TapIface        string
 	TapNetns        string
-	DriveID         string
+	DriveIDs        []string
 	SharedStorage   bool
 	MultifdChannels int
 	// DestPodName and DestPodNamespace are an alternative to QMPSocket: when set,

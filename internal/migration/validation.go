@@ -47,3 +47,21 @@ func validateDriveID(id string) error {
 	}
 	return nil
 }
+
+// validateDriveIDs validates each ID and rejects duplicates.
+func validateDriveIDs(ids []string) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("at least one drive ID is required")
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if err := validateDriveID(id); err != nil {
+			return err
+		}
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("duplicate drive ID: %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
