@@ -44,8 +44,10 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Kubernetes Integration](#kubernetes-integration)
 - [Dashboard](#dashboard)
 - [Testing](#testing)
+- [Future Ideas](#future-ideas)
+- [Roadmap](docs/ROADMAP.md)
 
-See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/dashboard/README.md)**
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/dashboard/README.md)** · **[Roadmap](docs/ROADMAP.md)**
 
 ---
 
@@ -341,6 +343,7 @@ docs/
   USAGE.md                      # Usage guide (CLI and Kubernetes Jobs)
   TESTING.md                    # Test environment guide
   STORIES.md                    # User stories
+  ROADMAP.md                    # Project roadmap (short/medium/long term)
   logo.png                      # Project logo
 demo/
   nginx-kata.yaml               # Example Kata Containers pod with NGINX + NodePort
@@ -671,3 +674,30 @@ The CR's `.status` carries the same `migrationID`, `phase`, `startedAt`, `comple
 katamaran includes a comprehensive test suite ranging from native Go fuzzing to multi-node live migration tests proving zero packet drops across various CNIs (OVN-Kubernetes, Cilium, Calico, Flannel) and storage backends.
 
 For instructions on running the test suite, verifying zero-drop behavior, and fuzzing the QMP protocol, please see the **[Testing Guide](docs/TESTING.md)**.
+
+---
+
+## Future Ideas
+
+### Cross-Cluster Migration
+
+Migrate a Kata VM pod from one Kubernetes cluster to another — not just between nodes within a single cluster. This would enable use cases like cluster upgrades, cloud-region failover, and hybrid-cloud burst.
+
+- **Federation-aware orchestration**: A higher-level controller that discovers destination clusters (via Cluster API, Admiralty, or manual config) and negotiates resource reservations before starting migration
+- **Cross-cluster networking**: Establish a migration data path between clusters — WireGuard mesh, Submariner, or Cilium ClusterMesh — to carry NBD, RAM pre-copy, and tunnel traffic across cluster boundaries
+- **IP address handoff**: Pod IP will change across clusters (different pod CIDRs). Requires a DNS-based or service-mesh-based identity layer (e.g. Istio, Linkerd) so clients reconnect transparently after migration
+- **Storage replication across clusters**: For non-shared-storage setups, NBD drive-mirror must traverse the inter-cluster link. For shared storage, both clusters need access to the same Ceph/NFS pool (stretched cluster or async replication with final sync)
+- **Credential and secret migration**: ServiceAccount tokens, mounted secrets, and ConfigMaps must be recreated or mirrored on the destination cluster before the VM resumes
+- **RBAC and admission policy alignment**: The destination cluster must accept the pod's SecurityContext, RuntimeClass, and resource requests — mismatches cause the destination pod to be rejected
+- **Multi-phase cutover**: Source cluster keeps serving traffic via the IPIP/GRE tunnel while the destination cluster's ingress, DNS, and service entries converge — then the tunnel is torn down
+
+### Multi-NIC Pod Migration (Multus)
+
+Kata Containers supports [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) for attaching multiple network interfaces to a pod — including SR-IOV passthrough via VFIO. Migrating multi-NIC pods adds complexity since each interface needs its own cutover handling.
+
+- **Per-interface tunnel setup**: Each network attachment needs its own IPIP/GRE tunnel and `sch_plug` qdisc during cutover — katamaran currently assumes a single tap interface
+- **SR-IOV / VFIO passthrough**: Passthrough devices cannot be live-migrated (hardware-bound). Requires detach-on-source, re-attach-on-destination with a brief connectivity gap on that interface, or fallback to virtio-net for migratable NICs
+- **Mixed interface types**: A pod might combine a primary virtio-net (migratable) with a secondary SR-IOV NIC (non-migratable). Migration logic must handle each interface type differently
+- **NetworkAttachmentDefinition replay**: Destination must have matching `NetworkAttachmentDefinition` CRs and available device resources (e.g. SR-IOV VFs) on the target node
+- **IPAM coordination across interfaces**: Each Multus interface may use a different IPAM — the primary CNI's cluster-wide pool plus per-interface static or DHCP assignments that must be preserved or re-acquired
+- **QEMU device topology**: Additional NICs appear as hotplugged PCI devices in the guest VM. The destination QEMU must reconstruct the same PCI topology (device IDs, bus addresses) for the guest to recognize its interfaces after resume
