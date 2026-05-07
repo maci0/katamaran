@@ -21,6 +21,21 @@ type MigrationProgress struct {
 	DowntimeMS     int64  `json:"downtime_ms"`
 }
 
+// MigrationHistoryEntry records a completed migration for the history view.
+type MigrationHistoryEntry struct {
+	MigrationID    string `json:"migration_id"`
+	Result         string `json:"result"` // "success" or "error"
+	Error          string `json:"error,omitempty"`
+	StartedAt      string `json:"started_at"`
+	CompletedAt    string `json:"completed_at"`
+	DurationMS     int64  `json:"duration_ms"`
+	RAMTransferred int64  `json:"ram_transferred"`
+	RAMTotal       int64  `json:"ram_total"`
+	DowntimeMS     int64  `json:"downtime_ms"`
+}
+
+const maxHistoryEntries = 100
+
 type StatusResponse struct {
 	Version                 string             `json:"version"`
 	UptimeSeconds           int64              `json:"uptime_seconds"`
@@ -33,6 +48,7 @@ type StatusResponse struct {
 	MigrationsStarted       int64              `json:"migrations_started"`
 	MigrationsSucceeded     int64              `json:"migrations_succeeded"`
 	MigrationsFailed        int64              `json:"migrations_failed"`
+	History                 []MigrationHistoryEntry `json:"history"`
 	LoadgenRunning          bool               `json:"loadgen_running"`
 	LoadgenType             string             `json:"loadgen_type,omitempty"`
 	Logs                    []string           `json:"logs"`
@@ -80,6 +96,8 @@ type App struct {
 	migrationsStarted   int64
 	migrationsSucceeded int64
 	migrationsFailed    int64
+
+	migrationHistory []MigrationHistoryEntry
 
 	pingLog        []PingData
 	pingSeq        int64

@@ -266,6 +266,29 @@
                         <div class="text-slate-400">No logs yet. Fill in the migration config and click Start Migration to begin.</div>
                     </div>
                 </div>
+
+                <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-slate-700/50">
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Migration History</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-slate-300">
+                            <thead class="text-slate-400 border-b border-slate-700/50">
+                                <tr>
+                                    <th class="px-4 py-2 text-left">ID</th>
+                                    <th class="px-4 py-2 text-left">Result</th>
+                                    <th class="px-4 py-2 text-left">Started</th>
+                                    <th class="px-4 py-2 text-right">Duration</th>
+                                    <th class="px-4 py-2 text-right">Downtime</th>
+                                    <th class="px-4 py-2 text-right">RAM</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-body">
+                                <tr><td colspan="6" class="px-4 py-3 text-slate-400">No migrations yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
@@ -1020,6 +1043,38 @@
                 document.getElementById('stat-avg').textContent = '\u2014';
                 document.getElementById('stat-max').textContent = '\u2014';
             }
+            // Update migration history table.
+            var histBody = document.getElementById('history-body');
+            if (data.history && data.history.length > 0) {
+                while (histBody.firstChild) histBody.removeChild(histBody.firstChild);
+                data.history.forEach(function(h) {
+                    var tr = document.createElement('tr');
+                    tr.className = 'border-b border-slate-700/30';
+                    function addCell(text, cls) {
+                        var td = document.createElement('td');
+                        td.className = 'px-4 py-2' + (cls ? ' ' + cls : '');
+                        td.textContent = text;
+                        tr.appendChild(td);
+                    }
+                    addCell((h.migration_id || '').substring(0, 8), 'font-mono');
+                    var resultTd = document.createElement('td');
+                    resultTd.className = 'px-4 py-2';
+                    var badge = document.createElement('span');
+                    badge.className = h.result === 'success' ? 'text-emerald-400' : 'text-red-400';
+                    badge.textContent = h.result === 'success' ? '✓ success' : '✗ error';
+                    resultTd.appendChild(badge);
+                    tr.appendChild(resultTd);
+                    addCell(h.started_at ? new Date(h.started_at).toLocaleTimeString() : '');
+                    var dur = h.duration_ms > 1000 ? (h.duration_ms / 1000).toFixed(1) + 's' : h.duration_ms + 'ms';
+                    addCell(dur, 'text-right');
+                    addCell(h.downtime_ms > 0 ? h.downtime_ms + ' ms' : '—', 'text-right');
+                    var ram = h.ram_total > 0 ? (h.ram_transferred / 1048576).toFixed(0) + '/' + (h.ram_total / 1048576).toFixed(0) + ' MB' : '—';
+                    addCell(ram, 'text-right');
+                    if (h.error) tr.title = h.error;
+                    histBody.appendChild(tr);
+                });
+            }
+
         } catch (err) {
             fetchFailures++;
             if (fetchFailures >= 3) {

@@ -245,6 +245,7 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux.HandleFunc("GET /api/pods", a.handleListPods)
 	mux.HandleFunc("GET /api/nodes", a.handleListNodes)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/history", a.handleHistory)
 	mux.HandleFunc("POST /api/ping", a.handlePingStart)
 	mux.HandleFunc("POST /api/ping/stop", a.handleLoadgenStop)
 	mux.HandleFunc("POST /api/httpgen", a.handleHTTPStart)
@@ -364,6 +365,18 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStatus returns the current state of the dashboard, including active migrations and loadgen logs.
+func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
+	a.migrationMutex.Lock()
+	hist := make([]MigrationHistoryEntry, len(a.migrationHistory))
+	copy(hist, a.migrationHistory)
+	a.migrationMutex.Unlock()
+	// Reverse so newest first.
+	for i, j := 0, len(hist)-1; i < j; i, j = i+1, j-1 {
+		hist[i], hist[j] = hist[j], hist[i]
+	}
+	writeJSON(w, http.StatusOK, hist)
+}
+
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	rawLogs := r.URL.Query().Get("logs_after")
 	rawPings := r.URL.Query().Get("pings_after")
@@ -406,7 +419,13 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		p := *a.latestProgress // copy under lock so caller mutation is safe
 		progress = &p
 	}
+	hist := make([]MigrationHistoryEntry, len(a.migrationHistory))
+	copy(hist, a.migrationHistory)
 	a.migrationMutex.Unlock()
+	// Reverse so newest first.
+	for i, j := 0, len(hist)-1; i < j; i, j = i+1, j-1 {
+		hist[i], hist[j] = hist[j], hist[i]
+	}
 
 	var elapsedSeconds int64
 	if status && !migrationStart.IsZero() {
@@ -444,6 +463,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		MigrationsStarted:       started,
 		MigrationsSucceeded:     succeeded,
 		MigrationsFailed:        failed,
+		History:                 hist,
 		LoadgenRunning:          loadgenRunning,
 		LoadgenType:             loadgenType,
 		Logs:                    logs,

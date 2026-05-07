@@ -415,6 +415,25 @@ func (a *App) setMigrationResult(result, errMsg string) {
 	case "error":
 		a.migrationsFailed++
 	}
+
+	now := time.Now().UTC()
+	entry := MigrationHistoryEntry{
+		MigrationID: a.migrationID,
+		Result:      result,
+		Error:       errMsg,
+		StartedAt:   a.migrationStart.UTC().Format(time.RFC3339),
+		CompletedAt: now.Format(time.RFC3339),
+		DurationMS:  now.Sub(a.migrationStart).Milliseconds(),
+	}
+	if a.latestProgress != nil {
+		entry.RAMTransferred = a.latestProgress.RAMTransferred
+		entry.RAMTotal = a.latestProgress.RAMTotal
+		entry.DowntimeMS = a.latestProgress.DowntimeMS
+	}
+	a.migrationHistory = append(a.migrationHistory, entry)
+	if len(a.migrationHistory) > maxHistoryEntries {
+		a.migrationHistory = a.migrationHistory[1:]
+	}
 }
 
 // appendLog adds a new log line to the migration output buffer, discarding the oldest if full.
