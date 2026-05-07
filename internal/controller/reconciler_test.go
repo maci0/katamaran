@@ -252,6 +252,14 @@ func (f *fakeDiscoverer) LookupPodScheduling(_ context.Context, namespace, name 
 	return f.podScheduling, nil
 }
 
+func (f *fakeDiscoverer) DeletePod(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (f *fakeDiscoverer) OrphanAndDeletePod(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func newMigrationCR(name string, finalizers []string, withDeletion bool, status map[string]any) *unstructured.Unstructured {
 	obj := map[string]any{
 		"apiVersion": "katamaran.io/v1alpha1",

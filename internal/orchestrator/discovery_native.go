@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -120,6 +121,19 @@ func (d *nativeDiscoverer) LookupPodScheduling(ctx context.Context, namespace, n
 		NodeSelector: p.Spec.NodeSelector,
 		Tolerations:  p.Spec.Tolerations,
 	}, nil
+}
+
+func (d *nativeDiscoverer) DeletePod(ctx context.Context, namespace, name string) error {
+	return d.client.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (d *nativeDiscoverer) OrphanAndDeletePod(ctx context.Context, namespace, name string) error {
+	// Remove ownerReferences so the parent controller won't reschedule
+	patch := []byte(`{"metadata":{"ownerReferences":null}}`)
+	if _, err := d.client.CoreV1().Pods(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		return fmt.Errorf("orphan pod %s/%s: %w", namespace, name, err)
+	}
+	return d.client.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func pickInternalIP(addrs []corev1.NodeAddress) string {

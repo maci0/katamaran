@@ -138,6 +138,16 @@ spec:
                 minimum: 0
                 maximum: 3600
                 default: 0
+              sourceCleanup:
+                description: |
+                  What to do with the source pod after successful migration.
+                  "none" (default) leaves it alone. "delete" deletes it directly
+                  (owner controllers may reschedule). "orphan" removes the pod's
+                  ownerReferences first, then deletes it — prevents Deployments
+                  and ReplicaSets from creating a replacement.
+                type: string
+                enum: [none, delete, orphan]
+                default: none
           status:
             type: object
             properties:

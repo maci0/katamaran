@@ -58,6 +58,13 @@ type Discoverer interface {
 	// named pod's spec. Used to copy scheduling constraints from the source
 	// pod to the destination Job when destNode is omitted.
 	LookupPodScheduling(ctx context.Context, namespace, name string) (PodScheduling, error)
+
+	// DeletePod deletes the named pod.
+	DeletePod(ctx context.Context, namespace, name string) error
+
+	// OrphanAndDeletePod removes the pod's ownerReferences (so the parent
+	// controller won't reschedule) and then deletes it.
+	OrphanAndDeletePod(ctx context.Context, namespace, name string) error
 }
 
 // KataRuntimeClassName is the kata runtime class used to filter discoverable

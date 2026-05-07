@@ -118,6 +118,12 @@ type Request struct {
 	// Useful under TCG (software emulation) where pod startup is slower.
 	PodWaitTimeoutSeconds int
 
+	// SourceCleanup controls what happens to the source pod after a
+	// successful migration. "none" (default) leaves it alone, "delete"
+	// deletes it directly, "orphan" removes ownerReferences first then
+	// deletes (prevents owner controllers from rescheduling).
+	SourceCleanup string
+
 	// TapIface is the destination tap interface to buffer with tc sch_plug.
 	// Defaults to "tap0_kata" in pod-picker mode.
 	TapIface string

@@ -376,6 +376,26 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		slog.Error("Migration watch closed without terminal status", "migration", key, "migration_id", id, "last_phase", lastPhase)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
+	if lastPhase == string(orchestrator.PhaseSucceeded) && req.SourceCleanup != "" && req.SourceCleanup != "none" {
+		if req.SourcePod != nil && r.Discoverer != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			switch req.SourceCleanup {
+			case "delete":
+				if err := r.Discoverer.DeletePod(cleanupCtx, req.SourcePod.Namespace, req.SourcePod.Name); err != nil {
+					slog.Warn("Source pod delete failed (migration succeeded)", "pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
+				} else {
+					slog.Info("Source pod deleted", "pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name)
+				}
+			case "orphan":
+				if err := r.Discoverer.OrphanAndDeletePod(cleanupCtx, req.SourcePod.Namespace, req.SourcePod.Name); err != nil {
+					slog.Warn("Source pod orphan+delete failed (migration succeeded)", "pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
+				} else {
+					slog.Info("Source pod orphaned and deleted", "pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name)
+				}
+			}
+		}
+	}
 	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
 }
 
@@ -567,6 +587,7 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 	if pwt, found, _ := unstructured.NestedInt64(obj, "spec", "podWaitTimeoutSeconds"); found {
 		req.PodWaitTimeoutSeconds = int(pwt)
 	}
+	req.SourceCleanup, _, _ = unstructured.NestedString(obj, "spec", "sourceCleanup")
 	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
 	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil

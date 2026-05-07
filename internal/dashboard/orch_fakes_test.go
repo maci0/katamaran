@@ -156,3 +156,9 @@ func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (s
 func (s *stubDiscoverer) LookupPodScheduling(_ context.Context, _, _ string) (orchestrator.PodScheduling, error) {
 	return orchestrator.PodScheduling{}, nil
 }
+func (s *stubDiscoverer) DeletePod(_ context.Context, _, _ string) error {
+	return nil
+}
+func (s *stubDiscoverer) OrphanAndDeletePod(_ context.Context, _, _ string) error {
+	return nil
+}
