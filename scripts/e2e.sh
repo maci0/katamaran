@@ -467,7 +467,8 @@ if [[ "${STORAGE}" == "nfs" ]]; then
     for node in "${NODE1}" "${NODE2}"; do
         node_exec "${node}" "${SUDO} mkdir -p ${NFS_MNT}"
         if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=3,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
-            if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
+            # NFSv4 with fsid=0 exports the path as root — mount via / not the export path.
+            if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4 ${NFS_SERVER_IP}:/ ${NFS_MNT}" 2>/dev/null; then
                 error "NFS mount failed on ${node} (tried v3 and v4)."
                 exit 1
             fi
