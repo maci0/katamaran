@@ -114,6 +114,20 @@ Migrate a Kata VM pod between Kubernetes clusters for cluster upgrades, region f
 
 Kata supports Multus for multiple network interfaces including SR-IOV passthrough. Migrating multi-NIC pods requires per-interface tunnel and qdisc setup, handling non-migratable passthrough devices, and reconstructing PCI topology on the destination.
 
+### Kata Sandbox Adoption (Controller-Managed Pod Migration)
+
+Today katamaran migrates the QEMU process but the destination VM is not a Kubernetes-managed Kata pod. This limits migration to standalone pods — Deployments and StatefulSets will try to reschedule a replacement for the dead source pod, and the migrated VM is invisible to the cluster.
+
+Full controller-managed migration requires three components working together:
+
+1. **Pre-migration annotation + admission webhook** — Before migration starts, katamaran annotates the source pod's owner (Deployment/ReplicaSet) with `katamaran.io/migrating=true`. A validating admission webhook rejects replacement pod creation while the annotation is present, preventing the race between source pod death and cleanup. After migration, the annotation is removed.
+
+2. **Kata sandbox adoption** — An upstream Kata feature that allows an existing QEMU process (the migrated VM) to be adopted into a new containerd sandbox on the destination node. This would let the migrated VM appear as a regular Kata pod — visible to `kubectl`, manageable by Deployments, monitored by kubelet. Without this, the migrated VM is an orphaned process. This is the critical missing piece and requires Kata upstream changes (kata-runtime, containerd shim).
+
+3. **Owner patching** — After sandbox adoption creates a new pod on the destination, katamaran patches the owner's pod template or uses the webhook to redirect the replacement to the dest node, so the Deployment's replica count stays correct.
+
+This is roughly what KubeVirt does with its VirtualMachineInstance lifecycle — `virt-controller` owns the virt-launcher pods and manages the source→dest handoff. katamaran would need equivalent integration with Kata's containerd shim.
+
 ### Live Migration Scheduling Operator
 
 A full operator that watches node resource utilization, detects imbalance or maintenance events, and automatically triggers migrations to rebalance the cluster — similar to how vSphere DRS works for traditional VMs.
