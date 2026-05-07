@@ -221,12 +221,15 @@ func (f *fakeOrch) lastRequest() orchestrator.Request {
 }
 
 type fakeDiscoverer struct {
+	mu           sync.Mutex
 	podNode      string
 	nodeIP       string
 	podNS        string
 	podName      string
 	node         string
 	podScheduling orchestrator.PodScheduling
+	deletedPods  []string
+	orphanedPods []string
 }
 
 func (f *fakeDiscoverer) ListKataPods(context.Context) ([]orchestrator.PodInfo, error) {
@@ -252,11 +255,17 @@ func (f *fakeDiscoverer) LookupPodScheduling(_ context.Context, namespace, name 
 	return f.podScheduling, nil
 }
 
-func (f *fakeDiscoverer) DeletePod(_ context.Context, _, _ string) error {
+func (f *fakeDiscoverer) DeletePod(_ context.Context, namespace, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedPods = append(f.deletedPods, namespace+"/"+name)
 	return nil
 }
 
-func (f *fakeDiscoverer) OrphanAndDeletePod(_ context.Context, _, _ string) error {
+func (f *fakeDiscoverer) OrphanAndDeletePod(_ context.Context, namespace, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.orphanedPods = append(f.orphanedPods, namespace+"/"+name)
 	return nil
 }
 

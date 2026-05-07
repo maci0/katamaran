@@ -68,6 +68,68 @@ func TestNativeDiscoverer_ListKataNodes(t *testing.T) {
 	}
 }
 
+func TestNativeDiscoverer_DeletePod(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "victim"},
+	})
+	d := NewDiscovererFromClient(cs)
+	if err := d.DeletePod(context.Background(), "default", "victim"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Pods("default").Get(context.Background(), "victim", metav1.GetOptions{}); err == nil {
+		t.Fatal("pod should be deleted")
+	}
+}
+
+func TestNativeDiscoverer_OrphanAndDeletePod(t *testing.T) {
+	t.Parallel()
+	trueVal := true
+	cs := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "owned-pod",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1",
+				Kind:       "ReplicaSet",
+				Name:       "my-rs-abc123",
+				UID:        "fake-uid",
+				Controller: &trueVal,
+			}},
+		},
+	})
+	d := NewDiscovererFromClient(cs)
+	if err := d.OrphanAndDeletePod(context.Background(), "default", "owned-pod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Pods("default").Get(context.Background(), "owned-pod", metav1.GetOptions{}); err == nil {
+		t.Fatal("pod should be deleted after orphan+delete")
+	}
+}
+
+func TestNativeDiscoverer_OrphanAndDeletePod_NoOwner(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "bare-pod"},
+	})
+	d := NewDiscovererFromClient(cs)
+	if err := d.OrphanAndDeletePod(context.Background(), "default", "bare-pod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Pods("default").Get(context.Background(), "bare-pod", metav1.GetOptions{}); err == nil {
+		t.Fatal("bare pod should be deleted")
+	}
+}
+
+func TestNativeDiscoverer_DeletePod_NotFound(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	d := NewDiscovererFromClient(cs)
+	if err := d.DeletePod(context.Background(), "default", "missing"); err == nil {
+		t.Fatal("expected error for missing pod")
+	}
+}
+
 func TestNativeDiscoverer_LookupErrors(t *testing.T) {
 	t.Parallel()
 	pending := &corev1.Pod{
