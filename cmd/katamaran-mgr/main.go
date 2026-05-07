@@ -299,6 +299,41 @@ func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "# TYPE %s %s\n", kv.Key, spec.kind)
 		fmt.Fprintf(w, "%s %s\n", kv.Key, raw)
 	})
+
+	// Per-migration progress gauges, labeled by migration_id.
+	snap := controller.MigrationProgressSnapshot()
+	if len(snap) > 0 {
+		fmt.Fprintf(w, "# HELP katamaran_migration_ram_transferred_bytes RAM bytes transferred so far.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_ram_transferred_bytes gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_ram_transferred_bytes{migration_id=%q} %d\n", id, e.RAMTransferred)
+		}
+		fmt.Fprintf(w, "# HELP katamaran_migration_ram_total_bytes Total RAM bytes to transfer.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_ram_total_bytes gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_ram_total_bytes{migration_id=%q} %d\n", id, e.RAMTotal)
+		}
+		fmt.Fprintf(w, "# HELP katamaran_migration_phase Current migration phase.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_phase gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_phase{migration_id=%q,phase=%q} 1\n", id, e.Phase)
+		}
+		fmt.Fprintf(w, "# HELP katamaran_migration_downtime_ms Actual VM pause duration in milliseconds.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_downtime_ms gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_downtime_ms{migration_id=%q} %d\n", id, e.DowntimeMS)
+		}
+		fmt.Fprintf(w, "# HELP katamaran_migration_applied_downtime_ms Configured downtime limit in milliseconds.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_applied_downtime_ms gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_applied_downtime_ms{migration_id=%q} %d\n", id, e.AppliedDowntimeMS)
+		}
+		fmt.Fprintf(w, "# HELP katamaran_migration_rtt_ms Measured round-trip time in milliseconds.\n")
+		fmt.Fprintf(w, "# TYPE katamaran_migration_rtt_ms gauge\n")
+		for id, e := range snap {
+			fmt.Fprintf(w, "katamaran_migration_rtt_ms{migration_id=%q} %d\n", id, e.RTTMS)
+		}
+	}
 }
 
 func loadConfig(kubeconfig string) (*rest.Config, error) {

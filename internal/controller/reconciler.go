@@ -56,7 +56,60 @@ var (
 	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
 	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
 	mWatchLost       = expvar.NewInt("katamaran_migrations_watch_lost_total")
+
 )
+
+// migrationMetrics tracks per-migration progress for Prometheus export.
+// Keyed by migration ID. Entries are added on dispatch and removed when
+// the watch channel closes. The /metrics handler iterates this map and
+// emits labeled gauges.
+var migrationProgress sync.Map // map[string]*MigrationProgressEntry
+
+// MigrationProgressEntry holds per-migration metrics for Prometheus export.
+type MigrationProgressEntry struct {
+	Phase             string
+	RAMTransferred    int64
+	RAMTotal          int64
+	DowntimeMS        int64
+	AppliedDowntimeMS int64
+	RTTMS             int64
+}
+
+func updateProgressMetrics(u orchestrator.StatusUpdate) {
+	id := string(u.ID)
+	if id == "" {
+		return
+	}
+	v, _ := migrationProgress.LoadOrStore(id, &MigrationProgressEntry{})
+	e := v.(*MigrationProgressEntry)
+	e.Phase = string(u.Phase)
+	if u.RAMTransferred > 0 {
+		e.RAMTransferred = u.RAMTransferred
+	}
+	if u.RAMTotal > 0 {
+		e.RAMTotal = u.RAMTotal
+	}
+	if u.DowntimeMS > 0 {
+		e.DowntimeMS = u.DowntimeMS
+	}
+	if u.AppliedDowntimeMS > 0 {
+		e.AppliedDowntimeMS = u.AppliedDowntimeMS
+	}
+	if u.RTTMS > 0 {
+		e.RTTMS = u.RTTMS
+	}
+}
+
+// MigrationProgressSnapshot returns a point-in-time copy of all tracked
+// migration progress entries, for use by the /metrics handler.
+func MigrationProgressSnapshot() map[string]MigrationProgressEntry {
+	out := make(map[string]MigrationProgressEntry)
+	migrationProgress.Range(func(k, v any) bool {
+		out[k.(string)] = *v.(*MigrationProgressEntry)
+		return true
+	})
+	return out
+}
 
 // MigrationGVR is the GroupVersionResource the controller reconciles.
 var MigrationGVR = schema.GroupVersionResource{
@@ -279,6 +332,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		}
 		_ = r.patchStatusUpdate(ctx, key, u, errStr)
 		lastPhase = string(u.Phase)
+		updateProgressMetrics(u)
 	}
 	switch lastPhase {
 	case string(orchestrator.PhaseSucceeded):
