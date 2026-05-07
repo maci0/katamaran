@@ -1077,6 +1077,12 @@ sequenceDiagram
 
 ## 12. macOS Apple Silicon — TCG (Software Emulation)
 
+> [!NOTE]
+> TCG support is **experimental** — a convenience for developers on macOS who
+> want to run the e2e suite locally without a Linux box. It is not a
+> production target and is not tested in CI. Bug reports welcome, but
+> KVM-based testing on Linux remains the authoritative path.
+
 Kata Containers requires KVM, which is unavailable on macOS Apple Silicon
 (nested virtualisation is not functional in Apple's Hypervisor.framework).
 The `--tcg` flag runs QEMU in pure software emulation mode instead,

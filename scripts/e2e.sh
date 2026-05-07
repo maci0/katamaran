@@ -13,9 +13,9 @@
 # --kata-version <v> Kata Containers chart version (default: '3.24.0').
 # --method <name>    Orchestration method: 'job' (default) or 'crd'. 'direct' is
 #                    accepted for compatibility but exits as not implemented.
-# --tcg              Use QEMU TCG (software emulation) instead of KVM. Enables
-#                    running on hosts without nested virtualisation (e.g. macOS
-#                    Apple Silicon). Implies --provider kind.
+# --tcg              Experimental: use QEMU TCG (software emulation) instead of
+#                    KVM. Enables running on macOS Apple Silicon without nested
+#                    virtualisation. Implies --provider kind. Use --method job.
 # --ping-proof       Verify zero-drop sch_plug buffering from migration logs.
 # --env-only         Provision the cluster and install Kata, then stop (no migration).
 # --teardown         Tear down the cluster and exit.
