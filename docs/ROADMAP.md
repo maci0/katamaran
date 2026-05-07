@@ -61,7 +61,22 @@ Features that expand what can be migrated or how migration is triggered.
 
 - ~~**Node selection policy**~~ — Done (v0.3.0+). `spec.destNode` is now optional. When omitted, source pod's nodeSelector and tolerations are copied to the dest Job with an anti-affinity to exclude the source node. `spec.destNodeSelector` allows label-based constraints without naming a specific node.
 
-### Source Pod Lifecycle & Admission Webhooks
+### Source Pod Lifecycle
+
+> [!IMPORTANT]
+> katamaran migrates the QEMU process, not the Kubernetes pod. The
+> destination VM is a raw QEMU process — not a Kata pod managed by
+> containerd, not visible to Deployments or ReplicaSets. This means
+> katamaran currently works correctly for **standalone pods only**.
+> Controller-managed workloads (Deployments, StatefulSets, Jobs)
+> require manual coordination: cordon the source node, use
+> `sourceCleanup: orphan`, or accept that the Deployment will see
+> one fewer healthy replica.
+>
+> Full controller-managed migration (creating a replacement Kata pod
+> on the destination that adopts the migrated QEMU) requires deep
+> Kata/containerd integration — essentially what KubeVirt does for
+> its VirtualMachineInstance lifecycle. This is a long-term goal.
 
 - **Admission webhook for rescheduling prevention** — the current `spec.sourceCleanup: orphan` approach removes ownerReferences from the source pod and deletes it, preventing the owning Deployment/ReplicaSet from replacing it. However, there is a small race window: between migration completion and the orphan patch, the controller could create a replacement. A mutating or validating admission webhook would intercept replacement pod creation at the API level, closing this race. Not needed today (the race window is ~100ms vs. a 5-10s reconcile loop), but worth adding if katamaran operates on latency-sensitive workloads or high-churn Deployments.
 
