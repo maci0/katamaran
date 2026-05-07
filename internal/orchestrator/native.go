@@ -213,6 +213,57 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			return "", fmt.Errorf("create source job: %w", err)
 		}
 		slog.Info("Migration source job created; destination waits for cmdline replay", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
+	} else if req.DestNode == "" {
+		// Auto-select mode: create dest Job first (it has no nodeName and
+		// will be scheduled by Kubernetes), wait for the pod to land on a
+		// node, resolve DestIP from that node, then create the source Job
+		// with the now-known DestIP.
+		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+			return "", fmt.Errorf("create dest job: %w", err)
+		}
+		slog.Info("Auto-select: dest job created, waiting for scheduling", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace)
+
+		destNodeName, err := n.waitForDestNodeName(ctx, destJob.Name, req.PodWaitTimeoutSeconds)
+		if err != nil {
+			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
+				slog.Warn("failed to clean up dest job after scheduling wait failed", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
+			}
+			return "", fmt.Errorf("wait for dest pod scheduling: %w", err)
+		}
+		if destNodeName == req.SourceNode {
+			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
+				slog.Warn("failed to clean up dest job after same-node scheduling", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
+			}
+			return "", fmt.Errorf("dest pod scheduled on source node %s; cannot migrate to same node", destNodeName)
+		}
+		disc := &nativeDiscoverer{client: n.client}
+		destIP, err := disc.LookupNodeInternalIP(ctx, destNodeName)
+		if err != nil {
+			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
+				slog.Warn("failed to clean up dest job after IP lookup failed", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
+			}
+			return "", fmt.Errorf("resolve dest node IP: %w", err)
+		}
+		req.DestNode = destNodeName
+		req.DestIP = destIP
+		slog.Info("Auto-select: dest pod scheduled", "migration_id", id, "dest_node", destNodeName, "dest_ip", destIP)
+
+		// Re-render the source job now that we know DestIP.
+		srcExtra := buildExtraArgs(req)
+		if req.ReplayCmdline {
+			srcExtra = strings.TrimSpace(srcExtra + " --emit-cmdline-to " + cmdlinePath)
+		}
+		srcJob, err = renderSourceJob(req, id, srcExtra)
+		if err != nil {
+			return "", fmt.Errorf("re-render source job: %w", err)
+		}
+		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
+			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
+				slog.Warn("failed to clean up dest job after source create failed; manual cleanup may be required", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
+			}
+			return "", fmt.Errorf("create source job: %w", err)
+		}
+		slog.Info("Auto-select: migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "source_node", req.SourceNode, "dest_node", req.DestNode, "namespace", n.namespace)
 	} else {
 		// Dest first so the migrate-incoming listener is up before source connects.
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
@@ -590,6 +641,42 @@ func (run *nativeRun) send(u StatusUpdate) {
 	select {
 	case <-run.finished:
 	case run.updates <- u:
+	}
+}
+
+// waitForDestNodeName waits for the destination Job's pod to be scheduled
+// (i.e. have a non-empty spec.nodeName) and returns the assigned node name.
+// Used in auto-select mode to discover which node Kubernetes chose.
+func (n *native) waitForDestNodeName(ctx context.Context, jobName string, reqTimeout int) (string, error) {
+	timeout := n.podWaitTimeout
+	if reqTimeout > 0 {
+		timeout = time.Duration(reqTimeout) * time.Second
+	}
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastListErr error
+	for {
+		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
+			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
+		})
+		if err == nil {
+			for _, p := range pods.Items {
+				if p.Spec.NodeName != "" {
+					return p.Spec.NodeName, nil
+				}
+			}
+		} else if deadline.Err() == nil {
+			lastListErr = err
+			slog.Debug("waitForDestNodeName: list pods failed, will retry", "job", jobName, "namespace", n.namespace, "error", err)
+		}
+		select {
+		case <-deadline.Done():
+			if lastListErr != nil {
+				return "", fmt.Errorf("waiting for dest pod scheduling of job %s: %w (last list error: %v)", jobName, deadline.Err(), lastListErr)
+			}
+			return "", fmt.Errorf("waiting for dest pod scheduling of job %s: %w", jobName, deadline.Err())
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 

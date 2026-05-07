@@ -22,7 +22,7 @@ spec:
         properties:
           spec:
             type: object
-            required: [sourcePod, destNode, image]
+            required: [sourcePod, image]
             properties:
               sourcePod:
                 description: Reference to the source kata pod (namespace + name).
@@ -58,11 +58,22 @@ spec:
                     maxLength: 253
                     pattern: '^[a-zA-Z0-9_./:@=-]+$'
               destNode:
-                description: Kubernetes node name to migrate to.
+                description: |
+                  Kubernetes node name to migrate to. When omitted, the
+                  destination is selected automatically: the source pod's
+                  scheduling constraints are copied to the destination Job
+                  with an anti-affinity to exclude the source node.
                 type: string
-                minLength: 1
                 maxLength: 253
                 pattern: '^[a-zA-Z0-9_./:@=-]+$'
+              destNodeSelector:
+                description: |
+                  Optional label selector for destination node. When destNode
+                  is empty, these labels (plus the source pod's nodeSelector)
+                  guide scheduling.
+                type: object
+                additionalProperties:
+                  type: string
               image:
                 description: katamaran container image used for source/dest jobs.
                 type: string

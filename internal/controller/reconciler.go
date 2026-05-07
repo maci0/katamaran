@@ -288,21 +288,48 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			return
 		}
 		req.SourceNode = srcNode
-		destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
-		lookupCancel()
-		if lerr != nil || destIP == "" {
-			if lerr == nil {
-				lerr = fmt.Errorf("destination node InternalIP is empty")
+
+		if req.DestNode == "" {
+			// Auto-select mode: copy the source pod's scheduling
+			// constraints so the dest Job lands on a compatible node.
+			sched, lerr := r.Discoverer.LookupPodScheduling(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
+			lookupCancel()
+			if lerr != nil {
+				slog.Error("Resolve source pod scheduling failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
+				r.patchFailedStatus(ctx, key, "", "resolve source pod scheduling", lerr.Error())
+				return
 			}
-			slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
-			r.patchFailedStatus(ctx, key, "", "resolve dest node IP", lerr.Error())
-			return
-		}
-		req.DestIP = destIP
-		if req.SourceNode == req.DestNode {
-			slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
-			r.patchFailedStatus(ctx, key, "", "invalid spec", "source pod already runs on destNode")
-			return
+			// Merge source pod nodeSelector into any CRD-level destNodeSelector.
+			if len(sched.NodeSelector) > 0 {
+				if req.DestNodeSelector == nil {
+					req.DestNodeSelector = make(map[string]string, len(sched.NodeSelector))
+				}
+				for k, v := range sched.NodeSelector {
+					if _, exists := req.DestNodeSelector[k]; !exists {
+						req.DestNodeSelector[k] = v
+					}
+				}
+			}
+			req.DestTolerations = sched.Tolerations
+			// DestIP will be resolved after the dest Job pod is scheduled
+			// (inside native.Apply's auto-select path).
+		} else {
+			destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
+			lookupCancel()
+			if lerr != nil || destIP == "" {
+				if lerr == nil {
+					lerr = fmt.Errorf("destination node InternalIP is empty")
+				}
+				slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
+				r.patchFailedStatus(ctx, key, "", "resolve dest node IP", lerr.Error())
+				return
+			}
+			req.DestIP = destIP
+			if req.SourceNode == req.DestNode {
+				slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
+				r.patchFailedStatus(ctx, key, "", "invalid spec", "source pod already runs on destNode")
+				return
+			}
 		}
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
@@ -515,8 +542,11 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 
 	req.DestNode, _, _ = unstructured.NestedString(obj, "spec", "destNode")
 	req.Image, _, _ = unstructured.NestedString(obj, "spec", "image")
-	if req.DestNode == "" || req.Image == "" {
-		return req, fmt.Errorf("spec.destNode and spec.image are required")
+	if req.Image == "" {
+		return req, fmt.Errorf("spec.image is required")
+	}
+	if ns, found, _ := unstructured.NestedStringMap(obj, "spec", "destNodeSelector"); found {
+		req.DestNodeSelector = ns
 	}
 	req.SharedStorage, _, _ = unstructured.NestedBool(obj, "spec", "sharedStorage")
 	req.ReplayCmdline, _, _ = unstructured.NestedBool(obj, "spec", "replayCmdline")

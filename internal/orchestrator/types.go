@@ -1,6 +1,10 @@
 package orchestrator
 
-import "time"
+import (
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 // Request is the high-level shape of a migration submission. It is consumed
 // by both dashboard form posts and Migration CRD reconciliation.
@@ -22,8 +26,21 @@ type Request struct {
 	SourceNode string
 
 	// DestNode is the Kubernetes node name where the destination job runs.
-	// Required, must differ from SourceNode.
+	// Required when SourcePod is nil (legacy mode). When empty and SourcePod
+	// is set, the destination Job is scheduled automatically using
+	// DestNodeSelector, DestTolerations, and an anti-affinity to exclude
+	// the source node.
 	DestNode string
+
+	// DestNodeSelector is an optional label selector merged onto the
+	// destination Job's pod spec when DestNode is empty (auto-select mode).
+	// Populated from the source pod's nodeSelector and/or the CRD's
+	// spec.destNodeSelector field.
+	DestNodeSelector map[string]string
+
+	// DestTolerations are copied from the source pod when DestNode is
+	// empty so the destination Job can schedule on the same class of nodes.
+	DestTolerations []corev1.Toleration
 
 	// SourcePod identifies the source pod (pod-picker mode). SourceQMP and
 	// VMIP are optional overrides when SourcePod is set.

@@ -153,3 +153,6 @@ func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (s
 	}
 	return "", fmt.Errorf("node %s not found", name)
 }
+func (s *stubDiscoverer) LookupPodScheduling(_ context.Context, _, _ string) (orchestrator.PodScheduling, error) {
+	return orchestrator.PodScheduling{}, nil
+}

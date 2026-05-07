@@ -10,13 +10,18 @@ import (
 // so callers (e.g. the dashboard's HTTP handler) can pre-validate before
 // calling Apply or BuildArgs.
 func Validate(req Request) error {
-	if req.SourceNode == "" || req.DestNode == "" {
-		return errors.New("sourceNode and DestNode are required")
+	if req.SourceNode == "" {
+		return errors.New("sourceNode is required")
 	}
-	if req.SourceNode == req.DestNode {
+	// DestNode may be empty when SourcePod is set (auto-selection mode).
+	// In that case DestIP is also deferred until the dest Job is scheduled.
+	if req.DestNode == "" && req.SourcePod == nil {
+		return errors.New("destNode is required when sourcePod is not set")
+	}
+	if req.DestNode != "" && req.SourceNode == req.DestNode {
 		return errors.New("sourceNode and DestNode must differ")
 	}
-	if req.DestIP == "" {
+	if req.DestNode != "" && req.DestIP == "" {
 		return errors.New("destIP is required")
 	}
 	if req.Image == "" {

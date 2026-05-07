@@ -111,6 +111,17 @@ func (d *nativeDiscoverer) LookupNodeInternalIP(ctx context.Context, name string
 	return ip, nil
 }
 
+func (d *nativeDiscoverer) LookupPodScheduling(ctx context.Context, namespace, name string) (PodScheduling, error) {
+	p, err := d.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return PodScheduling{}, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)
+	}
+	return PodScheduling{
+		NodeSelector: p.Spec.NodeSelector,
+		Tolerations:  p.Spec.Tolerations,
+	}, nil
+}
+
 func pickInternalIP(addrs []corev1.NodeAddress) string {
 	for _, a := range addrs {
 		if a.Type == corev1.NodeInternalIP {

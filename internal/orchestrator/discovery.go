@@ -2,7 +2,17 @@ package orchestrator
 
 import (
 	"context"
+
+	corev1 "k8s.io/api/core/v1"
 )
+
+// PodScheduling carries the scheduling constraints copied from a source pod
+// so that the destination Job can inherit them when destNode is omitted
+// (automatic destination node selection).
+type PodScheduling struct {
+	NodeSelector map[string]string
+	Tolerations  []corev1.Toleration
+}
 
 // PodInfo is the projection of a Kubernetes pod that the orchestrator and
 // dashboard care about: identity, scheduling node, and pod IP.
@@ -43,6 +53,11 @@ type Discoverer interface {
 
 	// LookupNodeInternalIP returns the InternalIP address for the named node.
 	LookupNodeInternalIP(ctx context.Context, name string) (string, error)
+
+	// LookupPodScheduling returns the nodeSelector and tolerations from the
+	// named pod's spec. Used to copy scheduling constraints from the source
+	// pod to the destination Job when destNode is omitted.
+	LookupPodScheduling(ctx context.Context, namespace, name string) (PodScheduling, error)
 }
 
 // KataRuntimeClassName is the kata runtime class used to filter discoverable

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -45,7 +46,7 @@ func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Jo
 }
 
 func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
-	return renderJob(destJobTemplate, map[string]string{
+	job, err := renderJob(destJobTemplate, map[string]string{
 		"NODE_NAME":              req.DestNode,
 		"IMAGE":                  req.Image,
 		"QMP_SOCKET":             cmp.Or(req.DestQMP, "/run/vc/vm/katamaran-dest/qmp.sock"),
@@ -53,6 +54,33 @@ func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job,
 		"KATAMARAN_MIGRATION_ID": string(id),
 		"JOB_SUFFIX":             jobSuffix(id),
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-select mode: DestNode is empty, so let Kubernetes schedule the
+	// dest pod using the source pod's constraints plus an anti-affinity
+	// that excludes the source node.
+	if req.DestNode == "" {
+		job.Spec.Template.Spec.NodeName = ""
+		job.Spec.Template.Spec.NodeSelector = req.DestNodeSelector
+		job.Spec.Template.Spec.Tolerations = req.DestTolerations
+		job.Spec.Template.Spec.Affinity = &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+						MatchExpressions: []corev1.NodeSelectorRequirement{{
+							Key:      "kubernetes.io/hostname",
+							Operator: corev1.NodeSelectorOpNotIn,
+							Values:   []string{req.SourceNode},
+						}},
+					}},
+				},
+			},
+		}
+	}
+
+	return job, nil
 }
 
 func renderJob(tmpl []byte, vars map[string]string) (*batchv1.Job, error) {

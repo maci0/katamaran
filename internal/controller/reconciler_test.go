@@ -95,20 +95,12 @@ func TestSpecToRequest_MissingRequired(t *testing.T) {
 			want: "spec.sourcePod",
 		},
 		{
-			name: "no destNode",
-			obj: map[string]any{"spec": map[string]any{
-				"sourcePod": map[string]any{"namespace": "default", "name": "p"},
-				"image":     "y",
-			}},
-			want: "spec.destNode",
-		},
-		{
 			name: "no image",
 			obj: map[string]any{"spec": map[string]any{
 				"sourcePod": map[string]any{"namespace": "default", "name": "p"},
 				"destNode":  "x",
 			}},
-			want: "spec.destNode and spec.image are required",
+			want: "spec.image is required",
 		},
 	}
 	for _, tc := range cases {
@@ -121,6 +113,43 @@ func TestSpecToRequest_MissingRequired(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestSpecToRequest_OptionalDestNode(t *testing.T) {
+	// destNode is now optional — specToRequest should succeed without it.
+	obj := map[string]any{
+		"spec": map[string]any{
+			"sourcePod": map[string]any{"namespace": "default", "name": "p"},
+			"image":     "localhost/katamaran:dev",
+		},
+	}
+	req, err := specToRequest(obj)
+	if err != nil {
+		t.Fatalf("specToRequest: %v", err)
+	}
+	if req.DestNode != "" {
+		t.Fatalf("DestNode = %q, want empty", req.DestNode)
+	}
+}
+
+func TestSpecToRequest_DestNodeSelector(t *testing.T) {
+	obj := map[string]any{
+		"spec": map[string]any{
+			"sourcePod":        map[string]any{"namespace": "default", "name": "p"},
+			"image":            "localhost/katamaran:dev",
+			"destNodeSelector": map[string]any{"gpu": "true", "zone": "us-east-1a"},
+		},
+	}
+	req, err := specToRequest(obj)
+	if err != nil {
+		t.Fatalf("specToRequest: %v", err)
+	}
+	if len(req.DestNodeSelector) != 2 {
+		t.Fatalf("DestNodeSelector = %v, want 2 entries", req.DestNodeSelector)
+	}
+	if req.DestNodeSelector["gpu"] != "true" {
+		t.Fatalf("DestNodeSelector[gpu] = %q, want true", req.DestNodeSelector["gpu"])
 	}
 }
 
@@ -192,11 +221,12 @@ func (f *fakeOrch) lastRequest() orchestrator.Request {
 }
 
 type fakeDiscoverer struct {
-	podNode string
-	nodeIP  string
-	podNS   string
-	podName string
-	node    string
+	podNode      string
+	nodeIP       string
+	podNS        string
+	podName      string
+	node         string
+	podScheduling orchestrator.PodScheduling
 }
 
 func (f *fakeDiscoverer) ListKataPods(context.Context) ([]orchestrator.PodInfo, error) {
@@ -216,6 +246,10 @@ func (f *fakeDiscoverer) LookupPodNode(_ context.Context, namespace, name string
 func (f *fakeDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (string, error) {
 	f.node = name
 	return f.nodeIP, nil
+}
+
+func (f *fakeDiscoverer) LookupPodScheduling(_ context.Context, namespace, name string) (orchestrator.PodScheduling, error) {
+	return f.podScheduling, nil
 }
 
 func newMigrationCR(name string, finalizers []string, withDeletion bool, status map[string]any) *unstructured.Unstructured {
