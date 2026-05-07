@@ -44,7 +44,7 @@ Improvements that harden existing functionality without adding new migration cap
 
 ### Multi-Disk VMs
 
-- **Parallel or sequential NBD mirrors for multi-disk pods** — katamaran currently mirrors a single drive. Kata pods with multiple virtio-blk devices (rootfs + data disk) need either parallel NBD mirrors (one per drive) or sequential mirroring with coordinated drive-mirror completion before RAM pre-copy starts.
+- ~~**Parallel or sequential NBD mirrors for multi-disk pods**~~ — Done (v0.3.0+). `--drive-id` accepts comma-separated IDs. All mirrors run in parallel and must reach Ready before RAM pre-copy starts.
 
 ### Test Robustness
 
@@ -59,7 +59,11 @@ Features that expand what can be migrated or how migration is triggered.
 
 ### Migration Scheduling
 
-- **Node selection policy** — today the operator or user picks the destination node. Add a scheduler-aware component that selects a target node based on resource headroom, storage locality, network topology, and anti-affinity rules. Could plug into the Kubernetes scheduler framework or be a standalone admission webhook.
+- ~~**Node selection policy**~~ — Done (v0.3.0+). `spec.destNode` is now optional. When omitted, source pod's nodeSelector and tolerations are copied to the dest Job with an anti-affinity to exclude the source node. `spec.destNodeSelector` allows label-based constraints without naming a specific node.
+
+### Source Pod Lifecycle & Admission Webhooks
+
+- **Admission webhook for rescheduling prevention** — the current `spec.sourceCleanup: orphan` approach removes ownerReferences from the source pod and deletes it, preventing the owning Deployment/ReplicaSet from replacing it. However, there is a small race window: between migration completion and the orphan patch, the controller could create a replacement. A mutating or validating admission webhook would intercept replacement pod creation at the API level, closing this race. Not needed today (the race window is ~100ms vs. a 5-10s reconcile loop), but worth adding if katamaran operates on latency-sensitive workloads or high-churn Deployments.
 
 ### Pod Checkpoint / Restore
 
