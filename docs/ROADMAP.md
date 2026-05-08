@@ -145,9 +145,10 @@ Full controller-managed migration requires three components working together:
 
    No custom shim. No Kata patches. No system file modification. Uses Kata's designed extension point. The katamaran DaemonSet configures `containerd` to point the factory endpoint to katamaran's factory server on install.
 
-   **Implementation status (May 2026):** Factory server built (`cmd/katamaran-factory`), DaemonSet integration done (sidecar + Kata config patching), dest Job writes `migration-meta.json`, controller creates adoption pods. The Kata shim successfully connects to the factory and calls `Config()`. **Remaining blocker:** the `GrpcVMConfig.Data` format must exactly match Kata's internal `VMConfig` JSON serialization — the factory currently produces a mismatched format causing "failed to convert JSON to VMConfig". Needs either:
-   - Parsing Kata's TOML config on the node into the exact `VMConfig` struct (requires importing/reimplementing Kata's config parsing)
-   - Or capturing `GrpcVMConfig` from a running Kata factory and replaying it
+   **Implementation status (May 2026):** Factory server built, DaemonSet sidecar deployed, migration-meta.json written, controller creates adoption pods. **Verified on real KVM:** the Kata shim calls the factory's Config() and proceeds to config validation. **Remaining blocker:** `"hypervisor config does not match"` — the factory must return a VMConfig that matches the node's actual Kata configuration field-for-field. A minimal stub causes fallback to direct VM creation. Needs:
+   - Capturing VMConfig from the first Kata sandbox persist.json on the node (works when a sandbox exists, fails on fresh nodes)
+   - Or importing Kata's TOML config parser to construct the exact VMConfig struct
+   - Or having the Kata shim skip the config comparison when the factory is a "migration factory" (upstream change)
 
    **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration (Xen-based, details undisclosed). No other public implementation exists.
 
