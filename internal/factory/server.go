@@ -73,11 +73,29 @@ func (s *Server) OfferVM(state MigrationState) {
 
 // Config returns an empty VM config. The shim obtains its own
 // configuration independently; this satisfies the protocol contract.
-func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
-	return &cachepb.GrpcVMConfig{
+func (s *Server) Config(ctx context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
+	s.mu.Lock()
+	for len(s.vmConfig) == 0 {
+		// Block until VMConfig is available (set via SetConfig or OfferVM).
+		done := make(chan struct{})
+		go func() {
+			s.cond.Wait()
+			close(done)
+		}()
+		s.mu.Unlock()
+		select {
+		case <-done:
+			s.mu.Lock()
+		case <-ctx.Done():
+			return nil, status.Errorf(codes.DeadlineExceeded, "waiting for VMConfig: %v", ctx.Err())
+		}
+	}
+	cfg := &cachepb.GrpcVMConfig{
 		Data:        s.vmConfig,
 		AgentConfig: s.agentConfig,
-	}, nil
+	}
+	s.mu.Unlock()
+	return cfg, nil
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
@@ -87,6 +105,7 @@ func (s *Server) SetConfig(vmConfig, agentConfig []byte) {
 	defer s.mu.Unlock()
 	s.vmConfig = vmConfig
 	s.agentConfig = agentConfig
+	s.cond.Broadcast()
 }
 
 // GetBaseVM blocks until a migrated VM is available, then returns it

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -158,16 +159,31 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// loadVMConfig scans for an existing Kata sandbox persist.json and
-// extracts the VMConfig + AgentConfig for the factory's Config() RPC.
-// If no sandbox exists yet, the config is loaded from the first
-// migration-meta.json that arrives (via OfferVM).
+// loadVMConfig tries multiple sources for the VMConfig needed by the
+// Config() RPC. Checked in order:
+//  1. Existing Kata sandbox persist.json (from a running Kata pod)
+//  2. Retry periodically in the background until found
 func loadVMConfig(srv *factory.Server, watchDir string) {
 	sbsDir := filepath.Join(filepath.Dir(strings.TrimRight(watchDir, "/")), "sbs")
+	if tryLoadFromSandbox(srv, sbsDir) {
+		return
+	}
+	// No sandbox yet — start background poller that checks every 10s.
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if tryLoadFromSandbox(srv, sbsDir) {
+				return
+			}
+		}
+	}()
+}
+
+func tryLoadFromSandbox(srv *factory.Server, sbsDir string) bool {
 	entries, err := os.ReadDir(sbsDir)
 	if err != nil {
-		slog.Info("No existing sandboxes for VMConfig extraction", "dir", sbsDir, "error", err)
-		return
+		return false
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -193,8 +209,8 @@ func loadVMConfig(srv *factory.Server, watchDir string) {
 			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
 		})
 		srv.SetConfig(vmCfg, persist.Config.KataAgentConfig)
-		slog.Info("VMConfig loaded from existing sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
-		return
+		slog.Info("VMConfig loaded from sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
+		return true
 	}
-	slog.Info("No sandbox persist.json found; Config() will return empty until first migration")
+	return false
 }
