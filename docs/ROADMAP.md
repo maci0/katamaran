@@ -133,14 +133,17 @@ Full controller-managed migration requires three components working together:
 
    ~~*Approach B: upstream Kata patch*~~ — Adding `CreateSandboxFromExisting(pid, qmpSocket, vsockCID)` to `virtcontainers` would work but requires Kata upstream buy-in. [Issue #1690](https://github.com/kata-containers/kata-containers/issues/1690) has been open since 2021 with no PRs or assignees. Kata's focus is on Confidential Containers and the Rust runtime rewrite — live migration is not on their active roadmap.
 
-   **Approach C: katamaran adoption shim** — **Active development.** A lightweight containerd shim v2 binary (`containerd-shim-katamaran-v2`) that implements the containerd ttrpc API but connects to an existing migrated QEMU instead of starting one. The shim:
-   1. Receives `CreateTask` from containerd (new pod creation)
-   2. Instead of launching QEMU, connects to the migrated QEMU's QMP socket and kata-agent vsock
-   3. Monitors the QEMU process (PID from migration metadata)
-   4. Proxies container lifecycle calls to the existing kata-agent
-   5. Reports container status back to containerd/kubelet
+   ~~*Approach C: standalone adoption shim*~~ — Implements containerd ttrpc TaskService from scratch. Works but loses all Kata features (exec, logs, metrics, agent integration).
 
-   This is equivalent to KubeVirt's `virt-launcher` — a thin wrapper that makes an existing VM look like a container to Kubernetes. No Kata upstream changes needed. The shim registers as a separate runtime class (e.g. `kata-migrated`) so it doesn't interfere with normal Kata pods.
+   **Approach D: Kata VM Factory** — **Active development.** Kata has a built-in Factory interface (`virtcontainers.Factory`) with `GetVM(ctx, config) (*VM, error)` designed to provide pre-existing VMs to sandboxes. The factory is used for VM caching/templating but can be repurposed for migration adoption:
+
+   1. Migration completes — dest QEMU running with known PID, QMP socket, vsock CID
+   2. katamaran runs a **factory gRPC server** on the dest node that implements Kata's Factory protocol
+   3. `GetVM` returns a `*VM` constructed via `NewVMFromGrpc()` wrapping the migrated QEMU
+   4. New Kata pod created → shim calls factory → gets the migrated VM → connects to kata-agent via vsock
+   5. Full Kata functionality: exec, logs, metrics, container lifecycle — all work because the real Kata shim manages the VM
+
+   No custom shim. No Kata patches. No system file modification. Uses Kata's designed extension point. The katamaran DaemonSet configures `containerd` to point the factory endpoint to katamaran's factory server on install.
 
    **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration (Xen-based, details undisclosed). No other public implementation exists.
 
