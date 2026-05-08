@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"google.golang.org/grpc/codes"
@@ -74,26 +73,18 @@ func (s *Server) OfferVM(state MigrationState) {
 
 // Config returns an empty VM config. The shim obtains its own
 // configuration independently; this satisfies the protocol contract.
-func (s *Server) Config(ctx context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		s.mu.Lock()
-		if len(s.vmConfig) > 0 {
-			cfg := &cachepb.GrpcVMConfig{
-				Data:        s.vmConfig,
-				AgentConfig: s.agentConfig,
-			}
-			s.mu.Unlock()
-			return cfg, nil
-		}
-		s.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return nil, status.Errorf(codes.DeadlineExceeded, "waiting for VMConfig: %v", ctx.Err())
-		case <-ticker.C:
-		}
+func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.vmConfig) == 0 {
+		// No config yet — return error so the shim falls back to direct VM creation.
+		// This is expected before any Kata sandbox has been created on this node.
+		return nil, status.Errorf(codes.Unavailable, "VMConfig not yet available")
 	}
+	return &cachepb.GrpcVMConfig{
+		Data:        s.vmConfig,
+		AgentConfig: s.agentConfig,
+	}, nil
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
