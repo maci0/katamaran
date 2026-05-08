@@ -407,6 +407,10 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 				// Try to find the dest job's node
 				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption")
 			} else {
+				// Wait for the factory to load VMConfig from the migration
+				// state or a sandbox persist.json before creating the pod.
+				slog.Info("Waiting for factory VMConfig before adoption", "delay", "5s")
+				time.Sleep(5 * time.Second)
 				if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
 					slog.Warn("Failed to create adoption pod", "name", adoptName, "node", destNode, "error", err)
 				} else {

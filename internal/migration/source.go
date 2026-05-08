@@ -114,8 +114,13 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			fmt.Printf("KATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdlineBytes))
 		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
-		// Emit VMConfig from the source sandbox's persist.json so the
-		// dest factory can serve it to the Kata shim for VM adoption.
+	}
+
+	// Emit VMConfig from the source sandbox's persist.json so the
+	// dest factory can serve it to the Kata shim for VM adoption.
+	// Done regardless of cmdline replay mode — any migration benefits
+	// from having VMConfig available for adoption.
+	if resolvedQEMUPID != 0 {
 		emitVMConfig(resolvedQEMUPID)
 	}
 
