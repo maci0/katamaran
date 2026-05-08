@@ -419,9 +419,7 @@ rm -f katamaran.tar
 ${CE} save localhost/katamaran:dev -o katamaran.tar
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
-    for _node in $(kubectl --context "${CTX}" get nodes -o jsonpath='{.items[*].metadata.name}'); do
-        minikube -p "${PROFILE}" -n "$_node" image load katamaran.tar
-    done
+    minikube -p "${PROFILE}" image load katamaran.tar
 else
     if [[ "${CE}" == "podman" ]]; then
         KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive katamaran.tar --name "${PROFILE}"
@@ -793,9 +791,7 @@ elif [[ "${METHOD}" == "crd" ]]; then
     log "Building + loading katamaran-mgr image..."
     (cd "${PROJECT_ROOT}" && make mgr) >/dev/null
     if [[ "${PROVIDER}" == "minikube" ]]; then
-        for _node in $(kubectl --context "${CTX}" get nodes -o jsonpath='{.items[*].metadata.name}'); do
-            minikube -p "${PROFILE}" -n "$_node" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
-        done
+        minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
     else
         if [[ "${CE}" == "podman" ]]; then
             KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "${PROJECT_ROOT}/mgr.tar" --name "${PROFILE}" >/dev/null
