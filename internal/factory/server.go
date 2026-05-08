@@ -41,11 +41,13 @@ type MigrationState struct {
 type Server struct {
 	cachepb.UnimplementedCacheServiceServer
 
-	mu       sync.Mutex
-	cond     *sync.Cond
-	queue    []MigrationState
-	quit     chan struct{}
-	quitOnce sync.Once
+	mu         sync.Mutex
+	cond       *sync.Cond
+	queue      []MigrationState
+	quit       chan struct{}
+	quitOnce   sync.Once
+	vmConfig   []byte // JSON-serialized VMConfig for Config() RPC
+	agentConfig []byte // JSON-serialized AgentConfig for Config() RPC
 }
 
 // NewServer returns a Server ready to accept OfferVM calls and serve
@@ -72,7 +74,19 @@ func (s *Server) OfferVM(state MigrationState) {
 // Config returns an empty VM config. The shim obtains its own
 // configuration independently; this satisfies the protocol contract.
 func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
-	return &cachepb.GrpcVMConfig{}, nil
+	return &cachepb.GrpcVMConfig{
+		Data:        s.vmConfig,
+		AgentConfig: s.agentConfig,
+	}, nil
+}
+
+// SetConfig sets the VMConfig and AgentConfig returned by Config().
+// Called during startup after reading the Kata persist state or config.
+func (s *Server) SetConfig(vmConfig, agentConfig []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vmConfig = vmConfig
+	s.agentConfig = agentConfig
 }
 
 // GetBaseVM blocks until a migrated VM is available, then returns it

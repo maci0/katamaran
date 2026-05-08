@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -117,6 +118,7 @@ func main() {
 	}
 
 	srv := factory.NewServer()
+	loadVMConfig(srv, *watchDir)
 	grpcServer := grpc.NewServer()
 	cachepb.RegisterCacheServiceServer(grpcServer, srv)
 
@@ -154,4 +156,45 @@ func main() {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	os.Exit(1)
+}
+
+// loadVMConfig scans for an existing Kata sandbox persist.json and
+// extracts the VMConfig + AgentConfig for the factory's Config() RPC.
+// If no sandbox exists yet, the config is loaded from the first
+// migration-meta.json that arrives (via OfferVM).
+func loadVMConfig(srv *factory.Server, watchDir string) {
+	sbsDir := filepath.Join(filepath.Dir(strings.TrimRight(watchDir, "/")), "sbs")
+	entries, err := os.ReadDir(sbsDir)
+	if err != nil {
+		slog.Info("No existing sandboxes for VMConfig extraction", "dir", sbsDir, "error", err)
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		persistPath := filepath.Join(sbsDir, entry.Name(), "persist.json")
+		raw, err := os.ReadFile(persistPath)
+		if err != nil {
+			continue
+		}
+		var persist struct {
+			Config struct {
+				HypervisorType   string          `json:"HypervisorType"`
+				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
+				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
+			} `json:"Config"`
+		}
+		if err := json.Unmarshal(raw, &persist); err != nil {
+			continue
+		}
+		vmCfg, _ := json.Marshal(map[string]any{
+			"HypervisorType":   persist.Config.HypervisorType,
+			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
+		})
+		srv.SetConfig(vmCfg, persist.Config.KataAgentConfig)
+		slog.Info("VMConfig loaded from existing sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
+		return
+	}
+	slog.Info("No sandbox persist.json found; Config() will return empty until first migration")
 }

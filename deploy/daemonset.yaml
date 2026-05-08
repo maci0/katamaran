@@ -51,9 +51,14 @@ spec:
             done
 
             # --- 3. Enable Kata debug mode and QMP extra-monitor socket ---
-            # Kata >=3.25.0 config path; older versions use a different path without runtimes/qemu/.
-            KATA_CFG="/host/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
-            if [ -f "${KATA_CFG}" ]; then
+            # Auto-detect config path: Kata >=3.25.0 uses runtimes/qemu/ subdir.
+            KATA_CFG=""
+            for candidate in \
+              /host/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml \
+              /host/opt/kata/share/defaults/kata-containers/configuration-qemu.toml; do
+              if [ -f "$candidate" ]; then KATA_CFG="$candidate"; break; fi
+            done
+            if [ -n "${KATA_CFG}" ]; then
               sed -i '/^\[hypervisor\.qemu\]/,/^\[/{
                 s/^[[:space:]]*#\{0,1\}[[:space:]]*enable_debug = .*/enable_debug = true/
                 s/^[[:space:]]*#\{0,1\}[[:space:]]*extra_monitor_socket = .*/extra_monitor_socket = "qmp"/
