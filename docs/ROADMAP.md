@@ -127,30 +127,26 @@ Full controller-managed migration requires three components working together:
 
 2. **Kata sandbox adoption** — Make the migrated QEMU process appear as a regular Kata pod on the destination, visible to `kubectl`, manageable by Deployments, monitored by kubelet.
 
-   **Research (May 2026):** Kata already has the internal machinery for this. The `fetchSandbox` path in `virtcontainers/sandbox.go` loads persisted `SandboxState` + `HypervisorState` (QEMU PID, UUID, vsock CID, hotplugged devices) from disk and reconnects to a running VM without recreating it. This is designed for containerd restart recovery (containerd restarts, finds still-running shims), but the same mechanism could be exploited for migration adoption.
+   **Research (May 2026):**
 
-   **Proposed approach (no Kata upstream changes):**
-   1. Migration completes — dest QEMU is running with a known PID, QMP socket, vsock CID
-   2. katamaran writes a synthetic `SandboxState` to the dest node's Kata persist directory (`/run/vc/sbs/<id>/`) with the migrated QEMU's `HypervisorState` (PID, UUID, vsock CID, QMP socket path)
-   3. katamaran creates a new Kata pod spec on the dest node (via kubelet/containerd CRI)
-   4. `containerd-shim-kata-v2` starts, discovers persisted state via `fetchSandbox`, and reconnects to the existing QEMU instead of launching a new one
-   5. The kata-agent inside the VM responds on the vsock — the pod is now fully managed
+   ~~*Approach A: synthetic persist.json*~~ — **Dead end.** Kata's `fetchSandbox` calls `createSandbox` → `hypervisor.CreateVM()` unconditionally. It always starts a new QEMU regardless of persisted `HypervisorState`. The persist file rebuilds Go structs, not VM connections. The containerd restart recovery path works because **shims stay alive** (containerd reconnects to shims via ttrpc, shims never restart or re-adopt QEMU).
 
-   **Known challenges:**
-   - `fetchSandbox` is keyed on sandbox ID — the synthetic state must use an ID that matches what containerd assigns to the new pod sandbox
-   - The shim normally creates QEMU first, then persists state — the recovery path may not fire if the shim doesn't detect a pre-existing state at the right lifecycle point
-   - vsock CID collision — the source and dest QEMU can't share a CID (already solved by katamaran's guest-cid rewriting)
-   - virtiofsd socket and console socket paths must match the shim's expectations
-   - The persist format is internal to Kata and may change between versions
-   - kata-agent must be alive and responsive inside the migrated VM (it should be — it survived the live migration)
+   ~~*Approach B: upstream Kata patch*~~ — Adding `CreateSandboxFromExisting(pid, qmpSocket, vsockCID)` to `virtcontainers` would work but requires Kata upstream buy-in. [Issue #1690](https://github.com/kata-containers/kata-containers/issues/1690) has been open since 2021 with no PRs or assignees. Kata's focus is on Confidential Containers and the Rust runtime rewrite — live migration is not on their active roadmap.
 
-   **Alternative: upstream Kata changes.** A cleaner path would be adding a `CreateSandboxFromExisting(pid, qmpSocket, vsockCID)` API to the Kata shim. The shim would skip VM creation and directly adopt the provided QEMU process. This is a small, well-scoped change to `virtcontainers` — the `fetchSandbox` code already does most of the work. Filed as context on [kata-containers#1690](https://github.com/kata-containers/kata-containers/issues/1690).
+   **Approach C: katamaran adoption shim** — **Active development.** A lightweight containerd shim v2 binary (`containerd-shim-katamaran-v2`) that implements the containerd ttrpc API but connects to an existing migrated QEMU instead of starting one. The shim:
+   1. Receives `CreateTask` from containerd (new pod creation)
+   2. Instead of launching QEMU, connects to the migrated QEMU's QMP socket and kata-agent vsock
+   3. Monitors the QEMU process (PID from migration metadata)
+   4. Proxies container lifecycle calls to the existing kata-agent
+   5. Reports container status back to containerd/kubelet
 
-   **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration, but used Xen (not QEMU) and hasn't disclosed implementation details. No other public implementation exists. The upstream live migration issue (#1690) has been open since 2021 with no PRs or assignees.
+   This is equivalent to KubeVirt's `virt-launcher` — a thin wrapper that makes an existing VM look like a container to Kubernetes. No Kata upstream changes needed. The shim registers as a separate runtime class (e.g. `kata-migrated`) so it doesn't interfere with normal Kata pods.
 
-3. **Owner patching** — After sandbox adoption creates a new pod on the destination, katamaran patches the owner's pod template or uses the webhook to redirect the replacement to the dest node, so the Deployment's replica count stays correct.
+   **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration (Xen-based, details undisclosed). No other public implementation exists.
 
-This is roughly what KubeVirt does with its VirtualMachineInstance lifecycle — `virt-controller` owns the virt-launcher pods and manages the source→dest handoff. katamaran would need equivalent integration with Kata's containerd shim, but the `fetchSandbox` recovery path suggests the gap is smaller than originally assumed.
+3. **Owner patching** — After the adoption shim creates a functioning pod on the destination, katamaran patches the source pod's owner (Deployment/ReplicaSet) or uses the admission webhook to redirect replacements to the dest node, keeping the replica count correct.
+
+This is roughly what KubeVirt does with its VirtualMachineInstance lifecycle — `virt-controller` owns the virt-launcher pods and manages the source→dest handoff.
 
 ### Live Migration Scheduling Operator
 
