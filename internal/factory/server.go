@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"google.golang.org/grpc/codes"
@@ -74,28 +75,25 @@ func (s *Server) OfferVM(state MigrationState) {
 // Config returns an empty VM config. The shim obtains its own
 // configuration independently; this satisfies the protocol contract.
 func (s *Server) Config(ctx context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
-	s.mu.Lock()
-	for len(s.vmConfig) == 0 {
-		// Block until VMConfig is available (set via SetConfig or OfferVM).
-		done := make(chan struct{})
-		go func() {
-			s.cond.Wait()
-			close(done)
-		}()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		if len(s.vmConfig) > 0 {
+			cfg := &cachepb.GrpcVMConfig{
+				Data:        s.vmConfig,
+				AgentConfig: s.agentConfig,
+			}
+			s.mu.Unlock()
+			return cfg, nil
+		}
 		s.mu.Unlock()
 		select {
-		case <-done:
-			s.mu.Lock()
 		case <-ctx.Done():
 			return nil, status.Errorf(codes.DeadlineExceeded, "waiting for VMConfig: %v", ctx.Err())
+		case <-ticker.C:
 		}
 	}
-	cfg := &cachepb.GrpcVMConfig{
-		Data:        s.vmConfig,
-		AgentConfig: s.agentConfig,
-	}
-	s.mu.Unlock()
-	return cfg, nil
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
