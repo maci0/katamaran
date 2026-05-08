@@ -379,11 +379,11 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		slog.Info("Dest VM status after migration", "status", string(raw))
 	}
 
-	// Try to load VMConfig from two sources:
-	// 1. Local persist.json (Kata-managed sandbox)
-	// 2. Source pod log markers (cmdline-replay destinations)
-	persistPath := filepath.Join("/run/vc/sbs", meta.ID, "persist.json")
-	if persistBytes, err := os.ReadFile(persistPath); err == nil {
+	// Try to load VMConfig from any sandbox persist.json on this node.
+	// We scan all sandboxes, not just ours — VMConfig is the same across
+	// all Kata pods on the same node (same Kata version + config).
+	persistBytes, persistPath := findAnyPersistJSON()
+	if persistBytes != nil {
 		var persist struct {
 			HypervisorState json.RawMessage `json:"HypervisorState"`
 			Config          struct {
@@ -430,4 +430,23 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	} else {
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
 	}
+}
+
+// findAnyPersistJSON scans /run/vc/sbs/ for any sandbox persist.json.
+func findAnyPersistJSON() ([]byte, string) {
+	entries, err := os.ReadDir("/run/vc/sbs")
+	if err != nil {
+		return nil, ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join("/run/vc/sbs", e.Name(), "persist.json")
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return data, p
+		}
+	}
+	return nil, ""
 }
