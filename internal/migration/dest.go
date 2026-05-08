@@ -379,10 +379,9 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		slog.Info("Dest VM status after migration", "status", string(raw))
 	}
 
-	// Try to read the HypervisorState from Kata's persist.json. This is
-	// the critical field the factory needs to reconstruct the sandbox.
-	// For cmdline-replay destinations there is no persist.json (Kata did
-	// not create the sandbox), so a missing file is expected.
+	// Try to load VMConfig from two sources:
+	// 1. Local persist.json (Kata-managed sandbox)
+	// 2. Source pod log markers (cmdline-replay destinations)
 	persistPath := filepath.Join("/run/vc/sbs", meta.ID, "persist.json")
 	if persistBytes, err := os.ReadFile(persistPath); err == nil {
 		var persist struct {
@@ -408,8 +407,16 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 			}
 			slog.Info("Loaded state from persist.json", "path", persistPath)
 		}
+	} else if cfg.ReplayCmdlineFromPod != "" {
+		// No persist.json — try to fetch VMConfig from the source pod's log.
+		vmCfg, agentCfg := fetchVMConfigFromPodLog(ctx, cfg.ReplayCmdlineFromPod)
+		if len(vmCfg) > 0 {
+			meta.VMConfig = vmCfg
+			meta.AgentConfig = agentCfg
+			slog.Info("Loaded VMConfig from source pod log", "ref", cfg.ReplayCmdlineFromPod)
+		}
 	} else {
-		slog.Info("persist.json not found (expected for cmdline-replay destinations)", "path", persistPath)
+		slog.Info("persist.json not found and no source pod ref for VMConfig", "path", persistPath)
 	}
 
 	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "migration-meta.json")

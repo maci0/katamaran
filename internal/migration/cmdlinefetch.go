@@ -107,6 +107,63 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 	}
 }
 
+// fetchVMConfigFromPodLog retrieves the VMConfig emitted by the source
+// binary as KATAMARAN_VMCONFIG_B64 and KATAMARAN_AGENTCONFIG_B64 markers.
+// Returns nil slices if not found (best-effort, non-fatal).
+func fetchVMConfigFromPodLog(ctx context.Context, ref string) (vmConfig, agentConfig []byte) {
+	ns, pod, err := parsePodRef(ref)
+	if err != nil {
+		slog.Warn("Invalid pod ref for VMConfig fetch", "ref", ref, "error", err)
+		return nil, nil
+	}
+	host, port, err := resolveAPIServerHostPort()
+	if err != nil {
+		slog.Warn("Cannot resolve apiserver for VMConfig fetch", "error", err)
+		return nil, nil
+	}
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		slog.Warn("Cannot read SA token for VMConfig fetch", "error", err)
+		return nil, nil
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	caBytes, err := os.ReadFile(caPath)
+	if err != nil {
+		slog.Warn("Cannot read CA for VMConfig fetch", "error", err)
+		return nil, nil
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caBytes)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		},
+	}
+	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s/log?container=katamaran",
+		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(pod))
+
+	body, err := getPodLog(ctx, client, endpoint, token)
+	if err != nil {
+		slog.Warn("Failed to fetch source pod log for VMConfig", "error", err)
+		return nil, nil
+	}
+
+	const vmMarker = "KATAMARAN_VMCONFIG_B64="
+	const agentMarker = "KATAMARAN_AGENTCONFIG_B64="
+	if b64 := scanMarker(body, vmMarker); b64 != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(b64); err == nil {
+			vmConfig = decoded
+		}
+	}
+	if b64 := scanMarker(body, agentMarker); b64 != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(b64); err == nil {
+			agentConfig = decoded
+		}
+	}
+	return vmConfig, agentConfig
+}
+
 // parsePodRef splits "<ns>/<name>" into its components.
 func parsePodRef(ref string) (string, string, error) {
 	parts := strings.SplitN(ref, "/", 2)

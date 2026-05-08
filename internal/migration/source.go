@@ -114,6 +114,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			fmt.Printf("KATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdlineBytes))
 		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
+		// Emit VMConfig from the source sandbox's persist.json so the
+		// dest factory can serve it to the Kata shim for VM adoption.
+		emitVMConfig(resolvedQEMUPID)
 	}
 
 	cfg.DestIP = cfg.DestIP.Unmap()
@@ -746,4 +749,54 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// emitVMConfig reads the source sandbox's persist.json and emits the
+// VMConfig as a base64-encoded stdout marker. The dest binary scrapes
+// this from the source pod's log to populate migration-meta.json so the
+// factory can serve it to the Kata shim for VM adoption.
+func emitVMConfig(qemuPID int) {
+	sbsDir := "/run/vc/sbs"
+	entries, err := os.ReadDir(sbsDir)
+	if err != nil {
+		slog.Info("Cannot read sandbox dir for VMConfig emission", "dir", sbsDir, "error", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		persistPath := filepath.Join(sbsDir, e.Name(), "persist.json")
+		raw, err := os.ReadFile(persistPath)
+		if err != nil {
+			continue
+		}
+		var persist struct {
+			HypervisorState struct {
+				Pid int `json:"Pid"`
+			} `json:"HypervisorState"`
+			Config struct {
+				HypervisorType   string          `json:"HypervisorType"`
+				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
+				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
+			} `json:"Config"`
+		}
+		if json.Unmarshal(raw, &persist) != nil {
+			continue
+		}
+		if persist.HypervisorState.Pid != qemuPID {
+			continue
+		}
+		vmCfg, _ := json.Marshal(map[string]any{
+			"HypervisorType":   persist.Config.HypervisorType,
+			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
+			"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
+		})
+		agentCfg := persist.Config.KataAgentConfig
+		fmt.Printf("KATAMARAN_VMCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(vmCfg))
+		fmt.Printf("KATAMARAN_AGENTCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(agentCfg))
+		slog.Info("Emitted VMConfig for factory adoption", "sandbox", e.Name(), "size", len(vmCfg))
+		return
+	}
+	slog.Info("No matching sandbox found for VMConfig emission", "qemu_pid", qemuPID)
 }
