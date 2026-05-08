@@ -39,8 +39,9 @@ spec:
             # --- 1. Install katamaran binary ---
             mkdir -p /host/usr/local/bin
             cp /usr/local/bin/katamaran /host/usr/local/bin/katamaran
-            chmod 0755 /host/usr/local/bin/katamaran
-            echo "katamaran binary installed"
+            cp /usr/local/bin/katamaran-factory /host/usr/local/bin/katamaran-factory
+            chmod 0755 /host/usr/local/bin/katamaran /host/usr/local/bin/katamaran-factory
+            echo "katamaran + factory binaries installed"
 
             # --- 2. Load required kernel modules ---
             for mod in ipip ip6_tunnel ip_gre ip6_gre sch_plug; do
@@ -121,7 +122,7 @@ spec:
           mountPath: /host-bin
           subPath: usr/local/bin
       - name: factory
-        image: localhost/katamaran-factory:dev
+        image: localhost/katamaran:dev
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
