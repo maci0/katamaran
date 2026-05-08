@@ -145,6 +145,10 @@ Full controller-managed migration requires three components working together:
 
    No custom shim. No Kata patches. No system file modification. Uses Kata's designed extension point. The katamaran DaemonSet configures `containerd` to point the factory endpoint to katamaran's factory server on install.
 
+   **Implementation status (May 2026):** Factory server built (`cmd/katamaran-factory`), DaemonSet integration done (sidecar + Kata config patching), dest Job writes `migration-meta.json`, controller creates adoption pods. The Kata shim successfully connects to the factory and calls `Config()`. **Remaining blocker:** the `GrpcVMConfig.Data` format must exactly match Kata's internal `VMConfig` JSON serialization — the factory currently produces a mismatched format causing "failed to convert JSON to VMConfig". Needs either:
+   - Parsing Kata's TOML config on the node into the exact `VMConfig` struct (requires importing/reimplementing Kata's config parsing)
+   - Or capturing `GrpcVMConfig` from a running Kata factory and replaying it
+
    **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration (Xen-based, details undisclosed). No other public implementation exists.
 
 3. **Owner patching** — After the adoption shim creates a functioning pod on the destination, katamaran patches the source pod's owner (Deployment/ReplicaSet) or uses the admission webhook to redirect replacements to the dest node, keeping the replica count correct.
