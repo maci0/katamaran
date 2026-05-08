@@ -396,6 +396,25 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			}
 		}
 	}
+	if lastPhase == string(orchestrator.PhaseSucceeded) && req.AdoptVM {
+		if req.SourcePod != nil {
+			adoptCtx, adoptCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer adoptCancel()
+			adoptName := "adopted-" + string(id)[:8]
+			destNode := req.DestNode
+			// If auto-scheduled, resolve dest node from the dest job
+			if destNode == "" {
+				// Try to find the dest job's node
+				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption")
+			} else {
+				if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
+					slog.Warn("Failed to create adoption pod", "name", adoptName, "node", destNode, "error", err)
+				} else {
+					slog.Info("Adoption pod created", "name", adoptName, "node", destNode)
+				}
+			}
+		}
+	}
 	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
 }
 
@@ -588,6 +607,7 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 		req.PodWaitTimeoutSeconds = int(pwt)
 	}
 	req.SourceCleanup, _, _ = unstructured.NestedString(obj, "spec", "sourceCleanup")
+	req.AdoptVM, _, _ = unstructured.NestedBool(obj, "spec", "adoptVM")
 	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
 	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil
@@ -659,5 +679,41 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 	if err != nil {
 		slog.Error("patch status failed", "migration", key, "error", err)
 	}
+	return err
+}
+
+// createAdoptionPod creates a minimal Kata pod on the destination node.
+// When the Kata shim starts, it calls the factory's GetBaseVM which returns
+// the migrated QEMU. The pause container is just a placeholder — the real
+// workload is already running inside the migrated VM.
+func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Request, name, destNode string) error {
+	pod := &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": req.SourcePod.Namespace,
+				"labels": map[string]any{
+					"app.kubernetes.io/name":      "katamaran",
+					"app.kubernetes.io/component": "adopted-vm",
+					"katamaran.io/source-pod":     req.SourcePod.Name,
+				},
+			},
+			"spec": map[string]any{
+				"runtimeClassName": "kata-qemu",
+				"nodeName":         destNode,
+				"containers": []any{
+					map[string]any{
+						"name":  "vm",
+						"image": "registry.k8s.io/pause:3.9",
+					},
+				},
+			},
+		},
+	}
+
+	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	_, err := r.Dynamic.Resource(podGVR).Namespace(req.SourcePod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	return err
 }

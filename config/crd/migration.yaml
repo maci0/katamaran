@@ -148,6 +148,14 @@ spec:
                 type: string
                 enum: [none, delete, orphan]
                 default: none
+              adoptVM:
+                description: |
+                  When true, the controller creates a new Kata pod on the
+                  destination node after successful migration. The pod connects
+                  to the katamaran VM factory which serves the migrated QEMU,
+                  making the VM visible to Kubernetes as a managed pod.
+                type: boolean
+                default: false
           status:
             type: object
             properties:

@@ -540,3 +540,36 @@ func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
 		t.Fatalf("actualDowntimeMS = %d, want 17", downtime)
 	}
 }
+
+func TestSpecToRequest_AdoptVM(t *testing.T) {
+	obj := map[string]any{
+		"spec": map[string]any{
+			"sourcePod": map[string]any{"namespace": "default", "name": "src"},
+			"image":     "test:latest",
+			"adoptVM":   true,
+		},
+	}
+	req, err := specToRequest(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.AdoptVM {
+		t.Fatal("expected AdoptVM=true")
+	}
+}
+
+func TestSpecToRequest_AdoptVM_DefaultFalse(t *testing.T) {
+	obj := map[string]any{
+		"spec": map[string]any{
+			"sourcePod": map[string]any{"namespace": "default", "name": "src"},
+			"image":     "test:latest",
+		},
+	}
+	req, err := specToRequest(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.AdoptVM {
+		t.Fatal("expected AdoptVM=false by default")
+	}
+}
