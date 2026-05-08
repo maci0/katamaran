@@ -204,9 +204,12 @@ func tryLoadFromSandbox(srv *factory.Server, sbsDir string) bool {
 		if err := json.Unmarshal(raw, &persist); err != nil {
 			continue
 		}
+		// Data must contain the full VMConfig (HypervisorType + HypervisorConfig + AgentConfig)
+		// matching what Kata's VMConfig.ToGrpc() produces via json.Marshal(&VMConfig{}).
 		vmCfg, _ := json.Marshal(map[string]any{
 			"HypervisorType":   persist.Config.HypervisorType,
 			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
+			"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
 		})
 		srv.SetConfig(vmCfg, persist.Config.KataAgentConfig)
 		slog.Info("VMConfig loaded from sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
