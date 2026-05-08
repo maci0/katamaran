@@ -34,6 +34,8 @@ type MigrationState struct {
 	HypervisorState json.RawMessage `json:"hypervisor_state"`
 	CPU             uint32          `json:"cpu"`
 	Memory          uint32          `json:"memory"`
+	VMConfig        json.RawMessage `json:"vm_config,omitempty"`
+	AgentConfig     json.RawMessage `json:"agent_config,omitempty"`
 }
 
 // Server implements cachepb.CacheServiceServer, serving migrated VMs

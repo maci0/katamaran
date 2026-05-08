@@ -356,6 +356,8 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		HypervisorState json.RawMessage `json:"hypervisor_state,omitempty"`
 		CPU             uint32          `json:"cpu"`
 		Memory          uint32          `json:"memory"`
+		VMConfig        json.RawMessage `json:"vm_config,omitempty"`
+		AgentConfig     json.RawMessage `json:"agent_config,omitempty"`
 	}
 
 	sandboxID := filepath.Base(filepath.Dir(cfg.QMPSocket))
@@ -385,10 +387,26 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	if persistBytes, err := os.ReadFile(persistPath); err == nil {
 		var persist struct {
 			HypervisorState json.RawMessage `json:"HypervisorState"`
+			Config          struct {
+				HypervisorType   string          `json:"HypervisorType"`
+				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
+				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
+			} `json:"Config"`
 		}
-		if json.Unmarshal(persistBytes, &persist) == nil && len(persist.HypervisorState) > 0 {
-			meta.HypervisorState = persist.HypervisorState
-			slog.Info("Loaded HypervisorState from persist.json", "path", persistPath)
+		if json.Unmarshal(persistBytes, &persist) == nil {
+			if len(persist.HypervisorState) > 0 {
+				meta.HypervisorState = persist.HypervisorState
+			}
+			if len(persist.Config.HypervisorConfig) > 0 {
+				vmCfg, _ := json.Marshal(map[string]any{
+					"HypervisorType":   persist.Config.HypervisorType,
+					"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
+					"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
+				})
+				meta.VMConfig = vmCfg
+				meta.AgentConfig = persist.Config.KataAgentConfig
+			}
+			slog.Info("Loaded state from persist.json", "path", persistPath)
 		}
 	} else {
 		slog.Info("persist.json not found (expected for cmdline-replay destinations)", "path", persistPath)

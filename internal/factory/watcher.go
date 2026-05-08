@@ -95,6 +95,10 @@ func (w *Watcher) scan() {
 
 		slog.Info("Discovered migration metadata", "path", metaPath, "id", state.ID)
 		w.seen[metaPath] = struct{}{}
+		if len(state.VMConfig) > 0 {
+			w.server.SetConfig(state.VMConfig, state.AgentConfig)
+			slog.Info("VMConfig set from migration metadata", "id", state.ID)
+		}
 		w.server.OfferVM(state)
 	}
 }
