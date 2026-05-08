@@ -84,11 +84,9 @@ func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMCon
 			AgentConfig: s.agentConfig,
 		}, nil
 	}
-	// Return a minimal valid VMConfig so the shim proceeds to call GetBaseVM.
-	// The real config comes from the persisted sandbox state or migration metadata.
-	minimal := []byte(`{"HypervisorType":"qemu","HypervisorConfig":{},"AgentConfig":{}}`)
-	agent := []byte(`{"LongLiveConn":true}`)
-	return &cachepb.GrpcVMConfig{Data: minimal, AgentConfig: agent}, nil
+	// No VMConfig yet — return error so the shim falls back to direct VM creation.
+	// The factory will have VMConfig after migration-meta.json is processed.
+	return nil, status.Errorf(codes.Unavailable, "VMConfig not yet available")
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
