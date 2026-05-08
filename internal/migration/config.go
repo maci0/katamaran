@@ -170,6 +170,10 @@ type DestConfig struct {
 	// "katamaran-dest". Also used to substitute the source sandbox path in
 	// the captured cmdline.
 	SandboxID string
+	// SourcePodRef, when non-empty, is "<namespace>/<name>" of the source
+	// pod. Used to fetch VMConfig from the source pod's log markers for
+	// factory adoption. Set from --pod-name/--pod-namespace on the dest.
+	SourcePodRef string
 }
 
 // cleanupCtx returns a context with cleanupTimeout that is independent of the

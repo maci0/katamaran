@@ -248,6 +248,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			printUsage(stderr)
 			return 2
 		}
+		var sourcePodRef string
+		if *podNS != "" && *podName != "" {
+			sourcePodRef = *podNS + "/" + *podName
+		}
 		err = migration.RunDestination(ctx, migration.DestConfig{
 			QMPSocket:            *qmpSocket,
 			TapIface:             *tapIface,
@@ -259,6 +263,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			DestPodNamespace:     *destPodNS,
 			ReplayCmdlineFile:    *replayCmdline,
 			ReplayCmdlineFromPod: *replayCmdlineFromPod,
+			SourcePodRef:         sourcePodRef,
 		})
 	case roleSource:
 		if *destIP == "" {

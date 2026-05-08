@@ -407,16 +407,22 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 			}
 			slog.Info("Loaded state from persist.json", "path", persistPath)
 		}
-	} else if cfg.ReplayCmdlineFromPod != "" {
-		// No persist.json — try to fetch VMConfig from the source pod's log.
-		vmCfg, agentCfg := fetchVMConfigFromPodLog(ctx, cfg.ReplayCmdlineFromPod)
-		if len(vmCfg) > 0 {
-			meta.VMConfig = vmCfg
-			meta.AgentConfig = agentCfg
-			slog.Info("Loaded VMConfig from source pod log", "ref", cfg.ReplayCmdlineFromPod)
-		}
 	} else {
-		slog.Info("persist.json not found and no source pod ref for VMConfig", "path", persistPath)
+		// No persist.json locally — try to fetch VMConfig from the source pod's log.
+		srcRef := cfg.ReplayCmdlineFromPod
+		if srcRef == "" {
+			srcRef = cfg.SourcePodRef
+		}
+		if srcRef != "" {
+			vmCfg, agentCfg := fetchVMConfigFromPodLog(ctx, srcRef)
+			if len(vmCfg) > 0 {
+				meta.VMConfig = vmCfg
+				meta.AgentConfig = agentCfg
+				slog.Info("Loaded VMConfig from source pod log", "ref", srcRef)
+			}
+		} else {
+			slog.Info("No persist.json and no source pod ref for VMConfig")
+		}
 	}
 
 	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "migration-meta.json")
