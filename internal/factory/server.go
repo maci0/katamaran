@@ -78,15 +78,17 @@ func (s *Server) OfferVM(state MigrationState) {
 func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.vmConfig) == 0 {
-		// No config yet — return error so the shim falls back to direct VM creation.
-		// This is expected before any Kata sandbox has been created on this node.
-		return nil, status.Errorf(codes.Unavailable, "VMConfig not yet available")
+	if len(s.vmConfig) > 0 {
+		return &cachepb.GrpcVMConfig{
+			Data:        s.vmConfig,
+			AgentConfig: s.agentConfig,
+		}, nil
 	}
-	return &cachepb.GrpcVMConfig{
-		Data:        s.vmConfig,
-		AgentConfig: s.agentConfig,
-	}, nil
+	// Return a minimal valid VMConfig so the shim proceeds to call GetBaseVM.
+	// The real config comes from the persisted sandbox state or migration metadata.
+	minimal := []byte(`{"HypervisorType":"qemu","HypervisorConfig":{},"AgentConfig":{}}`)
+	agent := []byte(`{"LongLiveConn":true}`)
+	return &cachepb.GrpcVMConfig{Data: minimal, AgentConfig: agent}, nil
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
