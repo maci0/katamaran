@@ -66,6 +66,23 @@ spec:
             else
               echo "Kata config not found at ${KATA_CFG} — skipping QMP setup"
             fi
+
+            # --- 4. Configure Kata to use katamaran factory for VM caching ---
+            if [ -n "${KATA_CFG}" ] && [ -f "${KATA_CFG}" ]; then
+              if ! grep -q 'vm_cache_endpoint.*katamaran' "${KATA_CFG}"; then
+                sed -i '/^\[factory\]/,/^\[/{
+                  s|^#*vm_cache_number.*|vm_cache_number = 1|
+                  s|^#*vm_cache_endpoint.*|vm_cache_endpoint = "/var/run/katamaran/factory.sock"|
+                }' "${KATA_CFG}"
+                if grep -q 'vm_cache_endpoint = "/var/run/katamaran/factory.sock"' "${KATA_CFG}"; then
+                  echo "Kata factory endpoint configured for katamaran"
+                else
+                  echo "Kata [factory] section not found; skipping factory config"
+                fi
+              else
+                echo "Kata factory endpoint already configured"
+              fi
+            fi
         volumeMounts:
         - name: host-root
           mountPath: /host
@@ -103,9 +120,46 @@ spec:
         - name: host-root
           mountPath: /host-bin
           subPath: usr/local/bin
+      - name: factory
+        image: localhost/katamaran-factory:dev
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        command: ["/usr/local/bin/katamaran-factory"]
+        args:
+          - "--listen"
+          - "/var/run/katamaran/factory.sock"
+          - "--watch-dir"
+          - "/run/vc/vm/"
+        volumeMounts:
+        - name: run-vc
+          mountPath: /run/vc
+          readOnly: true
+        - name: factory-sock
+          mountPath: /var/run/katamaran
       terminationGracePeriodSeconds: 30
       volumes:
       - name: host-root
         hostPath:
           path: /
           type: Directory
+      - name: run-vc
+        hostPath:
+          path: /run/vc
+          type: DirectoryOrCreate
+      - name: factory-sock
+        hostPath:
+          path: /var/run/katamaran
+          type: DirectoryOrCreate

@@ -2,10 +2,14 @@ package migration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
@@ -330,5 +334,75 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	slog.Info("GARP announce-self scheduled", "rounds", garpRounds)
 
 	slog.Info("Destination setup complete", "elapsed", time.Since(destStart).Round(time.Millisecond))
+
+	// Best-effort: write migration-meta.json so the factory server can
+	// adopt this VM. Failures are logged but never fail the migration.
+	writeMigrationMeta(ctx, cfg, client)
+
 	return nil
+}
+
+// writeMigrationMeta writes a migration-meta.json file next to the QMP socket.
+// The factory watcher picks this up and offers the VM to Kata shims via
+// GetBaseVM. All errors are logged as warnings and never propagated.
+func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client) {
+	type migrationMeta struct {
+		ID              string          `json:"id"`
+		QEMUPid         int             `json:"qemu_pid"`
+		QMPSocket       string          `json:"qmp_socket"`
+		VsockCID        uint32          `json:"vsock_cid"`
+		UUID            string          `json:"uuid"`
+		VirtiofsdPid    int             `json:"virtiofsd_pid"`
+		HypervisorState json.RawMessage `json:"hypervisor_state,omitempty"`
+		CPU             uint32          `json:"cpu"`
+		Memory          uint32          `json:"memory"`
+	}
+
+	sandboxID := filepath.Base(filepath.Dir(cfg.QMPSocket))
+	meta := migrationMeta{
+		ID:        sandboxID,
+		QMPSocket: cfg.QMPSocket,
+	}
+
+	// Read QEMU PID from the pid file next to the QMP socket.
+	pidPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "pid")
+	if pidBytes, err := os.ReadFile(pidPath); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes))); err == nil {
+			meta.QEMUPid = pid
+		}
+	}
+
+	// Query VM status via QMP (informational).
+	if raw, err := client.Execute(ctx, "query-status", nil); err == nil {
+		slog.Info("Dest VM status after migration", "status", string(raw))
+	}
+
+	// Try to read the HypervisorState from Kata's persist.json. This is
+	// the critical field the factory needs to reconstruct the sandbox.
+	// For cmdline-replay destinations there is no persist.json (Kata did
+	// not create the sandbox), so a missing file is expected.
+	persistPath := filepath.Join("/run/vc/sbs", meta.ID, "persist.json")
+	if persistBytes, err := os.ReadFile(persistPath); err == nil {
+		var persist struct {
+			HypervisorState json.RawMessage `json:"HypervisorState"`
+		}
+		if json.Unmarshal(persistBytes, &persist) == nil && len(persist.HypervisorState) > 0 {
+			meta.HypervisorState = persist.HypervisorState
+			slog.Info("Loaded HypervisorState from persist.json", "path", persistPath)
+		}
+	} else {
+		slog.Info("persist.json not found (expected for cmdline-replay destinations)", "path", persistPath)
+	}
+
+	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "migration-meta.json")
+	metaJSON, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		slog.Warn("Failed to marshal migration metadata", "error", err)
+		return
+	}
+	if err := os.WriteFile(metaPath, metaJSON, 0o644); err != nil {
+		slog.Warn("Failed to write migration metadata", "path", metaPath, "error", err)
+	} else {
+		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
+	}
 }
