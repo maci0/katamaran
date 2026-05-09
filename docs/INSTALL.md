@@ -165,9 +165,9 @@ text-format directly.
 
 If you plan to run migrations through Kubernetes Jobs, these assets are included:
 
-- `deploy/job-dest.yaml`
-- `deploy/job-source.yaml`
-- `deploy/migrate.sh` *(legacy shell harness — kept for ad-hoc CLI runs and CI smoke; production paths use the in-cluster Native orchestrator)*
+- `internal/orchestrator/templates/job-dest.yaml` (canonical destination Job template, embedded into the binaries)
+- `internal/orchestrator/templates/job-source.yaml` (canonical source Job template, embedded into the binaries)
+- `deploy/migrate.sh` *(legacy shell harness — renders the templates above via `envsubst` and `kubectl apply`; kept for ad-hoc CLI runs and CI smoke; production paths use the in-cluster Native orchestrator)*
 
 The dashboard (`deploy/dashboard.yaml`) runs migrations through the Native orchestrator (client-go), which embeds the same Job templates and submits them directly via the apiserver — no `envsubst`, no kubectl, no `migrate.sh` invocation. The standalone `katamaran-orchestrator` CLI uses the same client-go path for structured local or CI runs.
 

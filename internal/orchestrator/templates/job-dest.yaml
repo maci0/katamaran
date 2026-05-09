@@ -96,10 +96,15 @@ spec:
           path: /lib/modules
           type: Directory
       - name: cmdline-dir
-        # In --replay-cmdline mode, deploy/migrate.sh stages the captured
-        # source QEMU cmdline at /tmp/katamaran-cmdlines/cmdline-<id>.txt
-        # before this job starts. The dest binary reads the file and replays
-        # the cmdline with -incoming defer to spawn a fresh QEMU.
+        # Holds the QEMU cmdline file the dest binary feeds into
+        # `-incoming defer` to spawn a fresh QEMU. Two paths populate it:
+        #   - manual `deploy/migrate.sh --replay-cmdline`: stages the file
+        #     at /tmp/katamaran-cmdlines/cmdline-<id>.txt via kubectl cp
+        #     before this job runs.
+        #   - in-cluster Native orchestrator (--replay-cmdline-from-pod):
+        #     dest binary fetches the source pod's KATAMARAN_CMDLINE_B64
+        #     marker via the apiserver and writes it here itself.
+        # Either way the dest reads from /tmp/katamaran-cmdlines/.
         hostPath:
           path: /tmp/katamaran-cmdlines
           type: DirectoryOrCreate

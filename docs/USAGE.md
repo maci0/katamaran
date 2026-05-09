@@ -134,11 +134,11 @@ chosen limit and the measured RTT are surfaced:
 
 The repository includes:
 
-- `deploy/job-dest.yaml`
-- `deploy/job-source.yaml`
-- `deploy/migrate.sh`
+- `internal/orchestrator/templates/job-dest.yaml` (canonical destination Job template, embedded into the binaries)
+- `internal/orchestrator/templates/job-source.yaml` (canonical source Job template, embedded into the binaries)
+- `deploy/migrate.sh` (legacy shell wrapper that renders the templates above)
 
-`deploy/migrate.sh` renders templates with `envsubst`, starts destination job first, waits for readiness, starts source job, then collects logs.
+`deploy/migrate.sh` renders the canonical templates with `envsubst`, starts destination job first, waits for readiness, starts source job, then collects logs.
 
 ### Required inputs
 

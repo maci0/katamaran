@@ -1043,10 +1043,10 @@ sequenceDiagram
     T->>K: Apply destination VM pod
     T->>T: Detect QMP sockets + destination tap
     T->>K: Run deploy/migrate.sh
-    T->>K: Apply rendered job-dest.yaml
+    T->>K: Apply rendered templates/job-dest.yaml
     K-->>D: Start privileged dest job on dest node
     T->>K: Wait dest readiness gate
-    T->>K: Apply rendered job-source.yaml
+    T->>K: Apply rendered templates/job-source.yaml
     K-->>S: Start privileged source job on source node
     S->>D: Execute live migration (storage/ram/network)
     T->>K: Wait source job complete
@@ -1069,9 +1069,9 @@ sequenceDiagram
 
 | Component | Description |
 |-----------|-------------|
-| Dest execution | K8s Job (`deploy/job-dest.yaml`) — privileged pod on destination node |
-| Source execution | K8s Job (`deploy/job-source.yaml`) — privileged pod on source node |
-| Orchestration | `deploy/migrate.sh` — renders templates via `envsubst`, applies jobs, waits for completion |
+| Dest execution | K8s Job (`internal/orchestrator/templates/job-dest.yaml`) — privileged pod on destination node |
+| Source execution | K8s Job (`internal/orchestrator/templates/job-source.yaml`) — privileged pod on source node |
+| Orchestration | `deploy/migrate.sh` — renders the canonical templates above via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
 | Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
 

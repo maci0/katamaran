@@ -158,28 +158,25 @@ curl http://$NODE_IP:30081
 
 ### 6. Run the Migration via Kubernetes Jobs
 
-To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. You apply these manifests manually, passing the required state through environment variables:
+To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. The canonical Job manifests live in `internal/orchestrator/templates/` (embedded into the binaries). For ad-hoc shell-driven runs, `deploy/migrate.sh` renders those templates with `envsubst`, applies them via `kubectl`, and waits for completion:
 
 ```bash
-export VM_IP=$(kubectl get pod nginx-kata -o jsonpath='{.status.podIP}')
-export DEST_IP=$(kubectl get node katamaran-demo-m02 -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
-export IMAGE="localhost/katamaran:dev"
-export EXTRA_ARGS=""
+# Find the QMP sockets via the container runtime (crictl works for containerd/cri-o):
+SRC_POD_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo -- sudo crictl pods --name nginx-kata -q)
+DEST_POD_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo-m02 -- sudo crictl pods --name nginx-kata-dest -q)
 
-# Find the QMP sockets using the container runtime (crictl works for containerd/cri-o):
-# SRC_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo -- sudo crictl pods --name nginx-kata -q)
-# DEST_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo-m02 -- sudo crictl pods --name nginx-kata-dest -q)
-
-# Apply the destination job first (it waits for incoming migration)
-export NODE_NAME="katamaran-demo-m02"
-export QMP_SOCKET="/run/vc/vm/<dest-id>/extra-monitor.sock"
-envsubst < deploy/job-dest.yaml | kubectl apply -f -
-
-# Then apply the source job to initiate the migration
-export NODE_NAME="katamaran-demo"
-export QMP_SOCKET="/run/vc/vm/<src-id>/extra-monitor.sock"
-envsubst < deploy/job-source.yaml | kubectl apply -f -
+./deploy/migrate.sh \
+  --source-node katamaran-demo \
+  --dest-node   katamaran-demo-m02 \
+  --qmp-source  "/run/vc/vm/${SRC_POD_ID}/extra-monitor.sock" \
+  --qmp-dest    "/run/vc/vm/${DEST_POD_ID}/extra-monitor.sock" \
+  --tap         tap0_kata \
+  --vm-ip       "$(kubectl get pod nginx-kata -o jsonpath='{.status.podIP}')" \
+  --dest-ip     "$(kubectl get node katamaran-demo-m02 -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}')" \
+  --image       localhost/katamaran:dev
 ```
+
+Production paths submit the same templates through the in-cluster `Native` orchestrator embedded in the dashboard or in `katamaran-mgr` (CRD controller) — see `kubectl apply -f deploy/migration-example.yaml` for the CRD path.
 
 > [!WARNING]
 > **This manual `kubectl apply` will fail out-of-the-box.** 
