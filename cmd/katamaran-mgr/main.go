@@ -12,9 +12,8 @@
 //
 // Deployment: see config/crd/migration.yaml for the CRD itself, and a
 // matching ServiceAccount + ClusterRole + ClusterRoleBinding granting access
-// to Migration CRs and status, Jobs, pod/node discovery, pods/log, pods/exec,
-// transient stager pods for replayCmdline, and coordination.k8s.io/leases for
-// leader election.
+// to Migration CRs and status, Jobs, pod/node discovery, pods/log, and
+// coordination.k8s.io/leases for leader election.
 package main
 
 import (
