@@ -38,18 +38,15 @@ import (
 // dashboard log pane is not implemented.
 //
 // ReplayCmdline support: when the request has ReplayCmdline=true, the
-// orchestrator submits the source Job, tails the source pod's logs for the
-// `KATAMARAN_CMDLINE_AT=` marker, SPDY-streams the cmdline file off the
-// source pod, creates a one-shot stager pod on the destination node to
-// land the file via hostPath, and only then creates the dest Job. This
-// requires a rest.Config (SPDY upgrade), so NewFromClient (test
-// constructor without a rest.Config) still returns
-// ErrReplayCmdlineNotSupported.
+// orchestrator submits the source Job first, waits for its pod to be
+// scheduled, then submits the dest Job with `--replay-cmdline-from-pod
+// <ns>/<srcPod>` appended. The dest binary fetches the source's QEMU
+// cmdline by reading the source pod's log via the in-cluster apiserver
+// (KATAMARAN_CMDLINE_B64 marker).
 //
 // Use New for the in-cluster path and NewFromClient for tests.
 type native struct {
 	client         kubernetes.Interface
-	config         *rest.Config // optional; required only for ReplayCmdline mode (SPDY exec)
 	namespace      string
 	podWaitTimeout time.Duration // default for firstSourcePod; overridden by Request.PodWaitTimeoutSeconds
 
@@ -85,16 +82,8 @@ type nativeRun struct {
 	autoDowntime     bool
 }
 
-// ErrReplayCmdlineNotSupported is returned by Apply when the request has
-// ReplayCmdline=true but the orchestrator was constructed without a
-// rest.Config (e.g. via NewFromClient in tests). Use New or
-// NewFromKubeconfig for ReplayCmdline support.
-var ErrReplayCmdlineNotSupported = errors.New("ReplayCmdline requires a rest.Config (use orchestrator.New, not NewFromClient)")
-
 // New builds an Orchestrator using the in-cluster service account. Job
-// manifests are submitted into kube-system. The returned implementation
-// supports ReplayCmdline because it carries a rest.Config for SPDY
-// remote-command calls.
+// manifests are submitted into kube-system.
 func New() (Orchestrator, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -139,14 +128,10 @@ func newFromRestConfig(cfg *rest.Config) (*native, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
 	}
-	n := newFromClient(cs)
-	n.config = cfg
-	return n, nil
+	return newFromClient(cs), nil
 }
 
-// NewFromClient is the test-friendly constructor. The returned
-// Orchestrator does NOT support ReplayCmdline (no rest.Config for
-// SPDY) — production code paths should use New or NewFromKubeconfig.
+// NewFromClient is the test-friendly constructor.
 func NewFromClient(c kubernetes.Interface) Orchestrator {
 	return newFromClient(c)
 }
@@ -179,9 +164,6 @@ func SetPodWaitTimeout(o Orchestrator, d time.Duration) {
 func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if err := Validate(req); err != nil {
 		return "", err
-	}
-	if req.ReplayCmdline && n.config == nil {
-		return "", ErrReplayCmdlineNotSupported
 	}
 
 	id := newID()

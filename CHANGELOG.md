@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `orchestrator.ErrReplayCmdlineNotSupported` and the `*rest.Config`
+  field on `native`. Both were load-bearing only for the v0.1.x
+  SPDY/stager-pod cmdline-replay pipeline (removed in v0.2.0). The
+  `ReplayCmdline` path now needs nothing beyond the standard
+  `kubernetes.Interface`, so `NewFromClient(cs)` is fully featured for
+  tests too. `New` / `NewFromKubeconfig` still exist and produce the
+  same clientset; only the dead error / dead field are gone. Drops
+  the `TestNative_Apply_RejectsReplayCmdline` test that asserted on
+  the dead error.
 - `katamaran-dashboard` Role: dropped `pods/exec create` and `pods
   create / delete` (namespaced). Same v0.2.0 cleanup that the
   controller's RBAC already got. Dashboard's in-process orchestrator

@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"strings"
 	"testing"
@@ -23,17 +22,6 @@ func validRequest() Request {
 		DestIP:     "10.0.0.20",
 		Image:      "katamaran:dev",
 		SourcePod:  &PodRef{Namespace: "default", Name: "vm-a"},
-	}
-}
-
-func TestNative_Apply_RejectsReplayCmdline(t *testing.T) {
-	t.Parallel()
-	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs)
-	req := validRequest()
-	req.ReplayCmdline = true
-	if _, err := n.Apply(context.Background(), req); !errors.Is(err, ErrReplayCmdlineNotSupported) {
-		t.Fatalf("want ErrReplayCmdlineNotSupported, got %v", err)
 	}
 }
 
