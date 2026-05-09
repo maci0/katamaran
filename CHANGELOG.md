@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Mid-flight controller-restart recovery for ReplayCmdline mode.
+  `Orchestrator.Resume(ctx, id, req) (created bool, err error)`
+  re-attempts the resolve-source-pod + submit-dest-job staging step
+  that previously ran in a goroutine inside katamaran-mgr. If the
+  leader pod restarts between source-job creation and dest-job
+  creation, the new leader's recovery loop calls Resume on every
+  tick (idempotent: returns `(false, nil)` when the dest Job already
+  exists) until the dest is up. Without this branch the migration
+  would have stalled forever — source running, no dest, recovery
+  loop spinning until timeout.
+- `orchestrator.SourceJobName(id)` / `DestJobName(id)` helpers
+  exposing the `katamaran-{source,dest}-<id>` naming convention so
+  the controller's recovery path constructs job names from the CR's
+  `.status.migrationID` without round-tripping through label
+  listing.
+- `katamaran_migrations_resumed_total` counter exposed at
+  `/debug/vars` and `/metrics` on katamaran-mgr. Increments only
+  when `Orchestrator.Resume` actually creates the dest Job during
+  recovery (idempotent no-ops on subsequent reconcile ticks do not
+  bump the counter). Live-verified on minikube against v0.2.0
+  before the v0.3.0 rebase.
+
+### Changed
+
+- Docs (`README.md`, `docs/INSTALL.md`, `docs/USAGE.md`,
+  `docs/TESTING.md`, `internal/orchestrator/templates/job-dest.yaml`):
+  fixed every stale reference to `deploy/job-{source,dest}.yaml` (the
+  v0.1.0 release deleted those files; the canonical templates have
+  lived under `internal/orchestrator/templates/` since). README §6's
+  manual-jobs walkthrough now invokes `deploy/migrate.sh` (which
+  renders the canonical templates) instead of the broken
+  `envsubst < deploy/job-source.yaml` recipe. Job-template comment
+  on `cmdline-dir` rewritten to cover both shell-driven (kubectl cp)
+  and orchestrator-driven (apiserver pod-log fetch) population paths.
+
+### Removed
+
+- `katamaran-dashboard` Role: dropped `pods/exec create` and `pods
+  create / delete` (namespaced). Same v0.2.0 cleanup that the
+  controller's RBAC already got. Dashboard's in-process orchestrator
+  only needs `jobs create/delete/get/list/watch` + `pods
+  get/list/watch` + `pods/log get`. Cluster-scope `pods
+  delete/patch` in the separate ClusterRole stays — those are used
+  by the v0.3.0 source-pod cleanup feature. Apply the updated
+  `deploy/dashboard.yaml` when upgrading.
+- `cmd/katamaran-mgr/main.go` package doc: removed the
+  "pods/exec, transient stager pods for replayCmdline" line that
+  described the v0.1.x RBAC the controller no longer needs.
+
 ## [0.2.0] - 2026-05-01
 
 Architectural refactor: cmdline replay no longer needs a stager pod

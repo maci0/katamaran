@@ -52,11 +52,11 @@ var (
 	mSucceeded       = expvar.NewInt("katamaran_migrations_succeeded_total")
 	mFailed          = expvar.NewInt("katamaran_migrations_failed_total")
 	mRecovered       = expvar.NewInt("katamaran_migrations_recovered_total")
+	mResumed         = expvar.NewInt("katamaran_migrations_resumed_total")
 	mDeleted         = expvar.NewInt("katamaran_migrations_deleted_total")
 	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
 	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
 	mWatchLost       = expvar.NewInt("katamaran_migrations_watch_lost_total")
-
 )
 
 // migrationMetrics tracks per-migration progress for Prometheus export.
@@ -491,6 +491,33 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			slog.Error("Recovery failed from source job before destination started", "migration", key, "migration_id", id, "source_job", src.Name)
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", "")
 			return
+		}
+		// Source still running but dest never got created — orchestrator
+		// staging goroutine died with the previous controller leader. Re-attempt
+		// staging via Orchestrator.Resume; subsequent reconcile ticks will see
+		// the new dest Job and fall through to the normal terminal-condition
+		// branches above. Resume is idempotent, so calling it on every tick is
+		// safe — the counter only bumps on actual create.
+		//
+		// Pass the spec-derived Request directly: Resume only consults
+		// req.ReplayCmdline + the dest-side fields (DestNode, Image, DestQMP)
+		// when rendering the dest Job. SourceNode / DestIP are already baked
+		// into the running source Job's argv, so the Discoverer round-trip
+		// the dispatch path uses would be dead work here.
+		if dest == nil && src != nil && orchestrator.TerminalJobCondition(src) == "" {
+			req, sErr := specToRequest(obj.Object)
+			if sErr != nil {
+				slog.Warn("recover: specToRequest failed; cannot resume", "migration", key, "error", sErr)
+				continue
+			}
+			created, rErr := r.Orchestrator.Resume(ctx, orchestrator.MigrationID(id), req)
+			switch {
+			case rErr != nil:
+				slog.Warn("recover: Resume failed; will retry next tick", "migration", key, "migration_id", id, "error", rErr)
+			case created:
+				mResumed.Add(1)
+				slog.Info("Recovery: triggered Resume to create destination job", "migration", key, "migration_id", id, "source_job", src.Name)
+			}
 		}
 		if dest == nil && src == nil {
 			slog.Error("Recovery failed: source and destination jobs disappeared", "migration", key, "migration_id", id)

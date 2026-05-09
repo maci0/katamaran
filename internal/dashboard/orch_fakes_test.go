@@ -123,6 +123,10 @@ func (f *fakeOrchestrator) Stop(_ context.Context, id orchestrator.MigrationID) 
 	return nil
 }
 
+func (f *fakeOrchestrator) Resume(_ context.Context, _ orchestrator.MigrationID, _ orchestrator.Request) (bool, error) {
+	return false, nil
+}
+
 // stubDiscoverer is a no-cluster fake used by the /api/pods, /api/nodes,
 // and pod-mode handlers so the dashboard's HTTP layer can be exercised
 // without an apiserver.

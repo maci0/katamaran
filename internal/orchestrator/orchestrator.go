@@ -41,7 +41,25 @@ type Orchestrator interface {
 	// Stop requests cancellation of an in-flight migration. Best-effort: the
 	// caller should still Watch for the terminal state to confirm.
 	Stop(ctx context.Context, id MigrationID) error
+
+	// Resume re-attempts the post-Apply staging step (resolving the source
+	// pod and submitting the destination Job in ReplayCmdline mode) for an
+	// in-flight migration whose orchestrator-side state was lost (e.g. the
+	// controller pod restarted between Apply returning and the staging
+	// goroutine completing). Idempotent: returns (false, nil) when the
+	// destination Job already exists, (true, nil) when this call actually
+	// created it, and (false, err) when the source Job is missing or has
+	// no reachable pod.
+	Resume(ctx context.Context, id MigrationID, req Request) (created bool, err error)
 }
+
+// SourceJobName / DestJobName follow the rendered Job naming convention
+// (`katamaran-source-<id>` / `katamaran-dest-<id>`). Exported so the
+// controller's recovery path can construct the names from a Migration
+// CR's .status.migrationID without round-tripping through label
+// listing.
+func SourceJobName(id MigrationID) string { return "katamaran-source-" + string(id) }
+func DestJobName(id MigrationID) string   { return "katamaran-dest-" + string(id) }
 
 // TerminalJobCondition returns the most recent terminal condition (Complete or Failed)
 // on a Job, or "" if neither is set yet. Shared between orchestrator and controller.

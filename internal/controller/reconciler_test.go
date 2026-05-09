@@ -169,13 +169,15 @@ type fakeOrchCall struct {
 }
 
 type fakeOrch struct {
-	mu       sync.Mutex
-	calls    []fakeOrchCall
-	lastReq  orchestrator.Request
-	applyID  orchestrator.MigrationID
-	applyErr error
-	stopErr  error
-	updates  chan orchestrator.StatusUpdate
+	mu            sync.Mutex
+	calls         []fakeOrchCall
+	lastReq       orchestrator.Request
+	applyID       orchestrator.MigrationID
+	applyErr      error
+	stopErr       error
+	resumeErr     error
+	resumeCreated bool
+	updates       chan orchestrator.StatusUpdate
 }
 
 func (f *fakeOrch) Apply(_ context.Context, req orchestrator.Request) (orchestrator.MigrationID, error) {
@@ -202,6 +204,13 @@ func (f *fakeOrch) Stop(_ context.Context, id orchestrator.MigrationID) error {
 	f.calls = append(f.calls, fakeOrchCall{op: "Stop", id: string(id)})
 	return f.stopErr
 }
+func (f *fakeOrch) Resume(_ context.Context, id orchestrator.MigrationID, req orchestrator.Request) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeOrchCall{op: "Resume", id: string(id)})
+	f.lastReq = req
+	return f.resumeCreated, f.resumeErr
+}
 func (f *fakeOrch) callsFor(op string) []fakeOrchCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -221,15 +230,15 @@ func (f *fakeOrch) lastRequest() orchestrator.Request {
 }
 
 type fakeDiscoverer struct {
-	mu           sync.Mutex
-	podNode      string
-	nodeIP       string
-	podNS        string
-	podName      string
-	node         string
+	mu            sync.Mutex
+	podNode       string
+	nodeIP        string
+	podNS         string
+	podName       string
+	node          string
 	podScheduling orchestrator.PodScheduling
-	deletedPods  []string
-	orphanedPods []string
+	deletedPods   []string
+	orphanedPods  []string
 }
 
 func (f *fakeDiscoverer) ListKataPods(context.Context) ([]orchestrator.PodInfo, error) {
@@ -455,6 +464,49 @@ func TestReconciler_RecoverFromAnyNonTerminalPhase(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("recovery never patched succeeded from cutover")
+}
+
+// TestReconciler_RecoverCallsResumeWhenSourceRunningDestMissing covers
+// the mid-flight controller-restart case: source job is running, dest
+// job was never created (orchestrator goroutine died with the previous
+// mgr leader). Recovery must call Orchestrator.Resume so the dest job
+// gets created and the migration completes.
+func TestReconciler_RecoverCallsResumeWhenSourceRunningDestMissing(t *testing.T) {
+	cr := newMigrationCR("m-resume", []string{finalizerName}, false, map[string]any{
+		"phase":       "submitted",
+		"migrationID": "id-resume",
+	})
+	srcJob := batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "katamaran-source-id-resume",
+			Namespace: orchestrator.DefaultJobNamespace,
+			Labels: map[string]string{
+				orchestrator.MigrationIDLabel: "id-resume",
+				"app.kubernetes.io/component": "source",
+			},
+		},
+		// No terminal condition: still running.
+	}
+	orch := &fakeOrch{resumeCreated: true}
+	rec, _, _ := newReconcilerWithCR(t, orch, cr, srcJob)
+	startResumed := mResumed.Value()
+	if err := rec.reconcileAll(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls := orch.callsFor("Resume"); len(calls) > 0 {
+			if calls[0].id != "id-resume" {
+				t.Fatalf("Resume called with id %q, want id-resume", calls[0].id)
+			}
+			if got := mResumed.Value() - startResumed; got < 1 {
+				t.Fatalf("mResumed delta = %d, want >= 1 (created=true should bump counter)", got)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("recovery never called Resume; calls=%v", orch.calls)
 }
 
 func TestReconciler_RecoverFromMissingJobs(t *testing.T) {

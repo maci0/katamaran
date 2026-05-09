@@ -387,3 +387,108 @@ func drainUpdates(c <-chan StatusUpdate, timeout time.Duration) []StatusUpdate {
 		}
 	}
 }
+
+// TestNative_Resume_NoOpWhenNotReplay confirms Resume only does work in
+// ReplayCmdline mode.
+func TestNative_Resume_NoOpWhenNotReplay(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := NewFromClient(cs).(*native)
+	created, err := n.Resume(context.Background(), MigrationID("abc"), validRequest())
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if created {
+		t.Fatal("Resume must report created=false in non-replay mode")
+	}
+	jobs, _ := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Fatalf("Resume must not create jobs in non-replay mode; got %d", len(jobs.Items))
+	}
+}
+
+// TestNative_Resume_IdempotentWhenDestExists locks the contract that
+// Resume is a no-op once the dest Job is already created — letting the
+// recovery path call it on every reconcile tick without bumping counters.
+func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
+	t.Parallel()
+	id := MigrationID("idem-1")
+	cs := fake.NewSimpleClientset(&batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: DestJobName(id), Namespace: "kube-system"},
+	})
+	n := NewFromClient(cs).(*native)
+	req := validRequest()
+	req.ReplayCmdline = true
+	created, err := n.Resume(context.Background(), id, req)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if created {
+		t.Fatal("Resume must report created=false when dest already exists")
+	}
+	jobs, _ := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected exactly 1 job (the existing dest), got %d", len(jobs.Items))
+	}
+}
+
+// TestNative_Resume_ErrorsWhenSourceMissing covers the "source job
+// disappeared" case — Resume cannot proceed and surfaces the missing
+// source so the reconciler can mark the CR Failed instead of looping.
+func TestNative_Resume_ErrorsWhenSourceMissing(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := NewFromClient(cs).(*native)
+	req := validRequest()
+	req.ReplayCmdline = true
+	created, err := n.Resume(context.Background(), MigrationID("ghost"), req)
+	if err == nil {
+		t.Fatal("expected error when source job is missing")
+	}
+	if created {
+		t.Fatal("Resume must report created=false when it errored")
+	}
+	if !strings.Contains(err.Error(), "get source job") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNative_Resume_CreatesDestWithReplayFromPod is the happy-path
+// equivalent of stageThenStartDest: source job + pod exist, Resume
+// resolves the pod and submits a dest job whose command carries the
+// `--replay-cmdline-from-pod <ns>/<srcPod>` flag.
+func TestNative_Resume_CreatesDestWithReplayFromPod(t *testing.T) {
+	t.Parallel()
+	id := MigrationID("happy-1")
+	srcName := SourceJobName(id)
+	cs := fake.NewSimpleClientset(
+		&batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: srcName, Namespace: "kube-system"},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      srcName + "-abc12",
+				Namespace: "kube-system",
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": srcName},
+			},
+		},
+	)
+	n := NewFromClient(cs).(*native)
+	req := validRequest()
+	req.ReplayCmdline = true
+	created, err := n.Resume(context.Background(), id, req)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !created {
+		t.Fatal("Resume must report created=true on happy path")
+	}
+	dest, err := cs.BatchV1().Jobs("kube-system").Get(context.Background(), DestJobName(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("dest job not created: %v", err)
+	}
+	cmd := jobCommand(t, *dest)
+	if !strings.Contains(cmd, "--replay-cmdline-from-pod kube-system/"+srcName+"-abc12") {
+		t.Fatalf("dest cmd missing --replay-cmdline-from-pod flag: %s", cmd)
+	}
+}

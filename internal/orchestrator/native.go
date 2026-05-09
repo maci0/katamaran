@@ -725,6 +725,59 @@ func (n *native) Watch(_ context.Context, id MigrationID) (<-chan StatusUpdate, 
 	return run.updates, nil
 }
 
+// Resume re-runs the source-pod-resolution + dest-Job-creation step
+// for an in-flight migration whose original goroutine was lost (e.g.
+// the controller pod restarted between source-Job submission and the
+// dest-Job submission). Returns (true, nil) when this call actually
+// created the dest Job, (false, nil) when the dest Job already existed
+// (idempotent: the recovery path can call Resume on every reconcile
+// tick without inflating counters), or (false, err) when the source
+// Job is missing or has no reachable pod.
+//
+// Used by the Migration CRD controller's recovery path: when reconcile
+// finds a non-terminal CR with a source Job but no dest Job, it calls
+// Resume to drive the staging forward instead of marking the migration
+// failed.
+func (n *native) Resume(ctx context.Context, id MigrationID, req Request) (bool, error) {
+	if !req.ReplayCmdline {
+		// Non-replay mode submits both Jobs in Apply itself; there's
+		// nothing to resume. The recovery path only invokes Resume when
+		// the dest Job is missing AND the source Job is present, which
+		// only happens in ReplayCmdline mode.
+		return false, nil
+	}
+	destName := DestJobName(id)
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Get(ctx, destName, metav1.GetOptions{}); err == nil {
+		return false, nil // already created
+	} else if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("get dest job %s: %w", destName, err)
+	}
+	srcName := SourceJobName(id)
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Get(ctx, srcName, metav1.GetOptions{}); err != nil {
+		return false, fmt.Errorf("get source job %s: %w", srcName, err)
+	}
+	srcPod, err := n.firstSourcePod(ctx, srcName, req.PodWaitTimeoutSeconds)
+	if err != nil {
+		return false, fmt.Errorf("locate source pod: %w", err)
+	}
+	destJob, err := renderDestJob(req, id, buildExtraArgs(req))
+	if err != nil {
+		return false, fmt.Errorf("render dest job: %w", err)
+	}
+	patched, err := injectReplayFromPod(destJob, n.namespace, srcPod)
+	if err != nil {
+		return false, fmt.Errorf("inject replay flag: %w", err)
+	}
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, patched, metav1.CreateOptions{}); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("create dest job: %w", err)
+	}
+	slog.Info("Resume: destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
+	return true, nil
+}
+
 // Stop deletes both Jobs (background propagation). The watcher will emit a
 // terminal update when the source Job's controller reports Failed.
 func (n *native) Stop(ctx context.Context, id MigrationID) error {

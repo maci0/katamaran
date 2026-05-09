@@ -283,6 +283,7 @@ func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
 		"katamaran_migrations_succeeded_total":        {"Migrations that reached PhaseSucceeded.", "counter"},
 		"katamaran_migrations_failed_total":           {"Migrations that reached PhaseFailed.", "counter"},
 		"katamaran_migrations_recovered_total":        {"Migrations the controller resumed observing after a restart.", "counter"},
+		"katamaran_migrations_resumed_total":          {"Migrations whose dest Job was (re-)created via Orchestrator.Resume during restart recovery.", "counter"},
 		"katamaran_migrations_deleted_total":          {"Migration CRs the controller cleaned up via finalizer.", "counter"},
 		"katamaran_migrations_inflight":               {"Migrations currently in a non-terminal phase.", "gauge"},
 		"katamaran_migrations_reconcile_errors_total": {"Reconcile loop errors observed since startup.", "counter"},
