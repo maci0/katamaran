@@ -64,9 +64,16 @@ spec:
           requests:
             cpu: 50m
             memory: 64Mi
+          # Limit must cover: the VM's RAM dimm (mem-path=/dev/shm
+          # backed by the 4Gi tmpfs volume below — that allocation is
+          # accounted to this container's cgroup), plus QEMU and
+          # virtiofsd overhead. The previous 4Gi limit OOMKilled the
+          # container as soon as the migrated VM's pages started
+          # arriving and filling /dev/shm. 8Gi gives the 4Gi dimm
+          # tmpfs full headroom + ~4Gi for QEMU heap/buffers.
           limits:
             cpu: "4"
-            memory: 4Gi
+            memory: 8Gi
         command: ["/bin/sh", "-c", "mkdir -p \"$(dirname \"${QMP_SOCKET}\")\" && /usr/local/bin/katamaran --mode dest --qmp \"${QMP_SOCKET}\" ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
