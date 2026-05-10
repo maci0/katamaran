@@ -36,6 +36,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -774,20 +775,83 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 // When the Kata shim starts, it calls the factory's GetBaseVM which returns
 // the migrated QEMU. The pause container is just a placeholder — the real
 // workload is already running inside the migrated VM.
+//
+// Strategy A part 1 (label/owner inheritance): when the source pod was
+// owned by a ReplicaSet (i.e. part of a Deployment), copy its
+// labels (including the Deployment selector label and the
+// pod-template-hash that the RS uses to count its replicas) and its
+// ownerReferences. The RS sees the adoption pod as one of its own
+// pods, so once the source is deleted the replica count stays at the
+// desired value and no replacement is spawned. Without this, the RS
+// would create a fresh cold pod on the source node alongside the
+// adopted pod on the destination, leaving the Deployment with two
+// VMs (the migrated one as a "memorial" and a brand-new one).
+//
+// Note: a 5s race window remains between source-pod delete and
+// adoption-pod create. During that window the RS sees zero matching
+// pods and may spawn a replacement. Strategy A part 2 (validating
+// admission webhook) closes that window. Without the webhook, the
+// label/owner inheritance still avoids the steady-state "two pods"
+// problem on retries: the next reconcile sees the spurious replacement
+// + the adopted pod and the RS will pick one to delete (RS does not
+// know which carries the migrated VM, so this is best-effort
+// pre-webhook).
 func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Request, name, destNode string) error {
+	labels := map[string]string{
+		"app.kubernetes.io/name":      "katamaran",
+		"app.kubernetes.io/component": "adopted-vm",
+		"katamaran.io/source-pod":     req.SourcePod.Name,
+	}
+	var ownerRefs []metav1.OwnerReference
+	if r.Kube != nil {
+		src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(ctx, req.SourcePod.Name, metav1.GetOptions{})
+		if err == nil {
+			for k, v := range src.Labels {
+				if _, taken := labels[k]; taken {
+					continue
+				}
+				labels[k] = v
+			}
+			ownerRefs = src.OwnerReferences
+		} else if !apierrors.IsNotFound(err) {
+			slog.Warn("createAdoptionPod: source-pod lookup failed; proceeding without label/owner inheritance",
+				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
+		}
+	}
+
+	labelsAny := make(map[string]any, len(labels))
+	for k, v := range labels {
+		labelsAny[k] = v
+	}
+	meta := map[string]any{
+		"name":      name,
+		"namespace": req.SourcePod.Namespace,
+		"labels":    labelsAny,
+	}
+	if len(ownerRefs) > 0 {
+		refs := make([]any, 0, len(ownerRefs))
+		for _, o := range ownerRefs {
+			ref := map[string]any{
+				"apiVersion": o.APIVersion,
+				"kind":       o.Kind,
+				"name":       o.Name,
+				"uid":        string(o.UID),
+			}
+			if o.Controller != nil {
+				ref["controller"] = *o.Controller
+			}
+			if o.BlockOwnerDeletion != nil {
+				ref["blockOwnerDeletion"] = *o.BlockOwnerDeletion
+			}
+			refs = append(refs, ref)
+		}
+		meta["ownerReferences"] = refs
+	}
 	pod := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "v1",
 			"kind":       "Pod",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": req.SourcePod.Namespace,
-				"labels": map[string]any{
-					"app.kubernetes.io/name":      "katamaran",
-					"app.kubernetes.io/component": "adopted-vm",
-					"katamaran.io/source-pod":     req.SourcePod.Name,
-				},
-			},
+			"metadata":   meta,
 			"spec": map[string]any{
 				"runtimeClassName": "kata-qemu",
 				"nodeName":         destNode,

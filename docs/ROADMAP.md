@@ -156,6 +156,44 @@ Full controller-managed migration requires three components working together:
 
 This is roughly what KubeVirt does with its VirtualMachineInstance lifecycle — `virt-controller` owns the virt-launcher pods and manages the source→dest handoff.
 
+#### Adoption-pod identity: Strategy A (chosen) vs. Strategy B (deferred experiment)
+
+When a Deployment-managed pod migrates, katamaran must decide how the adoption pod relates to the original. Two strategies were evaluated; **Strategy A** is the implementation path. Strategy B is recorded here as a future experiment.
+
+**Strategy A — separate adoption pod, prevent RS replacement (in progress)**
+
+- Controller creates a *new* pod object (`adopted-<id8>`) on the destination node.
+- The adoption pod inherits the source's labels (so it matches the Deployment selector + RS pod-template-hash) and ownerReferences (so the ReplicaSet treats it as one of its own pods).
+- Source pod is then deleted via `spec.sourceCleanup: orphan|delete`.
+- A 5s race window remains between source-delete and adoption-create where the RS sees zero matching pods and may spawn a fresh replacement. A **validating admission webhook** intercepts that spurious create and denies it while a Migration CR for the source pod is in `succeeded` phase but the adoption pod has not yet appeared.
+- End state: Deployment view is unchanged (one pod matching the selector), the migrated VM lives inside the new adoption pod, the original pod object is gone.
+- **Trade-off:** the migrated VM lives in a *different k8s pod object* than it started in. Tools that key off pod UID across the migration (e.g. some monitoring stacks) will see a "new pod". Same pattern KubeVirt uses with VirtualMachineInstance, so this is industry standard for live VM migration on k8s.
+- **Why chosen:** smallest blast radius (one webhook rule, simple controller diff), bounded race window, end-state semantics match RS expectations exactly.
+
+**Strategy B — adoption pod takes source identity, defer source delete (experiment)**
+
+- Controller creates the adoption pod with the source's full labels + ownerReferences *first*, leaving the source pod alive.
+- Both pods now match the Deployment selector. RS sees `current = 2 > desired = 1` and marks one for delete.
+- Webhook intercepts that DELETE: if the target carries `katamaran.io/adopted-vm: true`, deny — RS keeps trying, eventually picks the source pod instead, and that delete is allowed through.
+- After source delete, RS sees `current = 1`, settles. End state: identical to Strategy A from the cluster's view.
+
+**Why B is theoretically more "seamless":** removes the visible window where pod count goes from 1 → 0 → 1; the swap happens entirely within k8s's reconcile-then-prune loop instead of a controller-orchestrated delete-then-create. Some monitoring stacks tolerate this pattern better.
+
+**Why B is deferred:**
+
+1. **More complex webhook.** A must deny *creates* during a known window. B must deny *deletes* and pick winners between two pods that look identical to the RS — race-handling logic is finicky and the webhook has to make a non-obvious "which pod has the migrated VM" judgement on every RS-driven delete.
+2. **RS pod-pick is non-deterministic.** Kubernetes' RS controller selects pods to delete using a heuristic (newest-first, then by pod status). The webhook has to enforce katamaran's preferred winner regardless of what the RS chose, which means more denied-then-retried API calls.
+3. **End state identical to A.** Pod name + UID still change (k8s pod names are immutable; can't truly transfer identity). The "seamlessness" is real but small — only matters during the ~1s window between adoption-create and source-delete.
+4. **k8s primitive constraints.** `pod.spec.nodeName` is immutable post-binding, and pod names are unique-per-namespace. There is no API path that would let the *same* Pod object survive migration; both strategies converge on memorial-pod semantics.
+
+**When to revisit B:**
+
+- If a real-world workload's monitoring stack breaks visibly in the A flow's brief 0-pod window, B's "always at least one matching pod" property becomes worth the webhook complexity.
+- If we add cross-cluster migration where different clusters have different pod-name namespaces, B's identity-handover model maps more cleanly.
+- If a future kubelet/scheduler change makes pod nodeName mutable (none on the horizon), B becomes the natural representation.
+
+For now, A's simpler webhook + smaller diff wins. Track this section if you want to prototype B as an experimental branch.
+
 ### Live Migration Scheduling Operator
 
 A full operator that watches node resource utilization, detects imbalance or maintenance events, and automatically triggers migrations to rebalance the cluster — similar to how vSphere DRS works for traditional VMs.
