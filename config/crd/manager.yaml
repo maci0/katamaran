@@ -24,7 +24,10 @@ rules:
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+  # create: adoption pod for migrated VM (spec.adoptVM=true).
+  # patch + delete: spec.sourceCleanup=orphan removes ownerReferences, then deletes.
+  # delete: spec.sourceCleanup=delete deletes the source pod outright.
+  verbs: ["get", "list", "watch", "create", "patch", "delete"]
 # Tail source pod logs for KATAMARAN_PROGRESS / KATAMARAN_RESULT
 # markers and (for the dest binary in replayCmdline mode) read the
 # source pod's KATAMARAN_CMDLINE_B64 marker.
