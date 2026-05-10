@@ -142,16 +142,34 @@ func TestServerGetBaseVMHonorsDeadline(t *testing.T) {
 	}
 }
 
-func TestServerQuitUnblocksGetBaseVM(t *testing.T) {
+// TestServerGetBaseVMNonBlockingWhenQueueEmpty locks the contract that
+// GetBaseVM does NOT block when the migration queue is empty — it must
+// return Unavailable so kata-shim falls back to cold VM creation. Live
+// regression test: blocking here breaks every fresh sandbox creation
+// when Kata is configured with vm_cache_number=1 + factory endpoint.
+func TestServerGetBaseVMNonBlockingWhenQueueEmpty(t *testing.T) {
 	t.Parallel()
 
 	srv := NewServer()
-	errCh := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
-		errCh <- err
+		if status.Code(err) != codes.Unavailable {
+			t.Errorf("GetBaseVM with empty queue status = %v, want %v; err=%v", status.Code(err), codes.Unavailable, err)
+		}
 	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("GetBaseVM blocked when queue empty; should return Unavailable immediately")
+	}
+}
 
+func TestServerQuitReturnsUnavailableOnNextCall(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer()
 	if _, err := srv.Quit(context.Background(), &emptypb.Empty{}); err != nil {
 		t.Fatalf("Quit: %v", err)
 	}
@@ -160,14 +178,8 @@ func TestServerQuitUnblocksGetBaseVM(t *testing.T) {
 	default:
 		t.Fatal("QuitCh was not closed")
 	}
-
-	select {
-	case err := <-errCh:
-		if status.Code(err) != codes.Unavailable {
-			t.Fatalf("GetBaseVM after Quit status = %v, want %v; err=%v", status.Code(err), codes.Unavailable, err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("GetBaseVM did not unblock after Quit")
+	if _, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("GetBaseVM after Quit status = %v, want %v; err=%v", status.Code(err), codes.Unavailable, err)
 	}
 }
 

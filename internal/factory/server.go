@@ -47,7 +47,6 @@ type Server struct {
 	cachepb.UnimplementedCacheServiceServer
 
 	mu                        sync.Mutex
-	cond                      *sync.Cond
 	queue                     []MigrationState
 	quit                      chan struct{}
 	quitOnce                  sync.Once
@@ -59,11 +58,9 @@ type Server struct {
 // NewServer returns a Server ready to accept OfferVM calls and serve
 // gRPC requests from Kata shims.
 func NewServer() *Server {
-	s := &Server{
+	return &Server{
 		quit: make(chan struct{}),
 	}
-	s.cond = sync.NewCond(&s.mu)
-	return s
 }
 
 // OfferVM enqueues a migrated VM so the next GetBaseVM caller can
@@ -74,7 +71,6 @@ func (s *Server) OfferVM(state MigrationState) {
 	defer s.mu.Unlock()
 	s.queue = append(s.queue, state)
 	slog.Info("VM offered to factory", "id", state.ID, "qemu_pid", state.QEMUPid, "queue_depth", len(s.queue))
-	s.cond.Signal()
 }
 
 // Config returns the stored VMConfig + AgentConfig from the most recent
@@ -111,35 +107,39 @@ func (s *Server) SetConfig(vmConfig, agentConfig []byte) {
 	s.vmConfig = bytes.Clone(vmConfig)
 	s.agentConfig = bytes.Clone(agentConfig)
 	s.vmConfigUnavailableLogged = false
-	s.cond.Broadcast()
 }
 
-// GetBaseVM blocks until a migrated VM is available, then returns it
-// as a GrpcVM. Each migration state is consumed exactly once.
+// GetBaseVM serves the next queued migration state, or returns Unavailable
+// when the queue is empty so the kata-shim falls back to cold VM creation.
+//
+// Why not block: with vm_cache_number=1 in Kata's config, kata-shim calls
+// GetBaseVM for EVERY new sandbox, not just adoption pods. Blocking here
+// would stall every fresh pod creation until either a migration occurs or
+// the shim's CheckRequest deadline trips, breaking the cluster for normal
+// workloads.
+//
+// Race vs. adoption: the reconciler writes migration-meta.json on the
+// dest node BEFORE creating the adoption pod, and waits 5s before the
+// pod create call. The watcher's 2s poll picks the meta file up and
+// calls OfferVM in that window, so by the time the adoption pod's
+// kata-shim hits GetBaseVM, the queue is populated.
 func (s *Server) GetBaseVM(ctx context.Context, _ *emptypb.Empty) (*cachepb.GrpcVM, error) {
-	stopCancelWake := context.AfterFunc(ctx, func() {
-		s.mu.Lock()
-		s.cond.Broadcast()
-		s.mu.Unlock()
-	})
-	defer stopCancelWake()
-
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, err.Error())
+		}
+		return nil, status.Error(codes.Canceled, err.Error())
+	}
 	s.mu.Lock()
-	for len(s.queue) == 0 {
-		if err := ctx.Err(); err != nil {
-			s.mu.Unlock()
-			if errors.Is(err, context.DeadlineExceeded) {
-				return nil, status.Error(codes.DeadlineExceeded, err.Error())
-			}
-			return nil, status.Error(codes.Canceled, err.Error())
-		}
-		select {
-		case <-s.quit:
-			s.mu.Unlock()
-			return nil, status.Error(codes.Unavailable, "factory shutting down")
-		default:
-		}
-		s.cond.Wait()
+	select {
+	case <-s.quit:
+		s.mu.Unlock()
+		return nil, status.Error(codes.Unavailable, "factory shutting down")
+	default:
+	}
+	if len(s.queue) == 0 {
+		s.mu.Unlock()
+		return nil, status.Error(codes.Unavailable, "no migrated VM available; shim should cold-create")
 	}
 	state := s.queue[0]
 	s.queue[0] = MigrationState{}
@@ -175,13 +175,12 @@ func (s *Server) Status(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcStatu
 	}, nil
 }
 
-// Quit signals the server to shut down gracefully. Pending GetBaseVM
-// callers are unblocked with an Unavailable error.
+// Quit signals the server to shut down gracefully. Subsequent GetBaseVM
+// calls return Unavailable on the closed quit channel.
 func (s *Server) Quit(_ context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	s.quitOnce.Do(func() {
 		slog.Info("Quit requested via gRPC")
 		close(s.quit)
-		s.cond.Broadcast()
 	})
 	return &emptypb.Empty{}, nil
 }
