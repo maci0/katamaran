@@ -95,6 +95,10 @@ func main() {
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	podWaitTimeout := fs.Duration("pod-wait-timeout", 60*time.Second, "How long to wait for migration Job pods to appear")
+	webhookAddr := fs.String("webhook-addr", ":9443", "HTTPS listen address for the validating admission webhook (TLS, in-process self-signed cert)")
+	webhookService := fs.String("webhook-service", "katamaran-mgr-webhook", "Name of the Kubernetes Service the apiserver dials to reach the webhook (used as TLS SAN)")
+	webhookNamespace := fs.String("webhook-namespace", "kube-system", "Namespace of the webhook Service (used as TLS SAN)")
+	disableWebhook := fs.Bool("disable-webhook", false, "Skip starting the validating webhook (development only)")
 	logFormat := fs.String("log-format", "json", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	helpFlag := fs.Bool("help", false, "")
@@ -199,8 +203,15 @@ func main() {
 	}()
 
 	go serveDebug(ctx, *addr)
+	if !*disableWebhook {
+		go func() {
+			if err := serveWebhook(ctx, *webhookAddr, *webhookService, *webhookNamespace, rec, kube); err != nil {
+				slog.Error("Webhook server exited with error", "error", err)
+			}
+		}()
+	}
 
-	slog.Info("katamaran-mgr starting", "version", buildinfo.Version, "poll_interval", rec.PollInterval, "addr", *addr, "leader_election", !*skipLeaderElect)
+	slog.Info("katamaran-mgr starting", "version", buildinfo.Version, "poll_interval", rec.PollInterval, "addr", *addr, "webhook_addr", *webhookAddr, "leader_election", !*skipLeaderElect)
 
 	if *skipLeaderElect {
 		runReconciler(ctx, rec)

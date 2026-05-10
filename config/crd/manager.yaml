@@ -43,6 +43,14 @@ rules:
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["get", "list", "watch", "create", "update"]
+# Webhook bootstrap: mgr generates a self-signed cert at startup and
+# patches its CA bundle onto the ValidatingWebhookConfiguration so the
+# apiserver trusts it. Get on configurations is enough for the no-op
+# path; update fires only when the CA bundle changes.
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations"]
+  resourceNames: ["katamaran-mgr"]
+  verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -122,6 +130,8 @@ spec:
         ports:
         - name: debug
           containerPort: 8081
+        - name: webhook
+          containerPort: 9443
         resources:
           requests: { cpu: 50m, memory: 64Mi }
           limits:   { cpu: 500m, memory: 256Mi }
@@ -150,3 +160,57 @@ spec:
             drop: ["ALL"]
           seccompProfile:
             type: RuntimeDefault
+---
+# Service the apiserver dials to reach the validating admission webhook.
+# Multi-replica mgr Deployment + leader election: any replica serves
+# the webhook (admission decisions don't need a leader; pendingAdoption
+# state is filled by the leader and read here, so non-leader webhook
+# answers may miss a recently-marked entry — accepted trade-off vs.
+# routing all admission traffic through one replica).
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-mgr-webhook
+  namespace: kube-system
+spec:
+  selector:
+    app: katamaran-mgr
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: webhook
+---
+# ValidatingWebhookConfiguration intercepts Pod CREATE; mgr's webhook
+# denies RS-driven replacement creates during the source-deleted-
+# adoption-pending window (see internal/controller/admission.go).
+#
+# caBundle is patched at runtime by mgr (in-process self-signed cert).
+# The placeholder below is replaced on the leader's startup; until
+# that patch lands, failurePolicy=Ignore keeps the cluster usable.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: katamaran-mgr
+webhooks:
+- name: pods.katamaran.io
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  failurePolicy: Ignore
+  timeoutSeconds: 5
+  matchPolicy: Equivalent
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+    operations: ["CREATE"]
+    scope: Namespaced
+  clientConfig:
+    service:
+      name: katamaran-mgr-webhook
+      namespace: kube-system
+      path: /admit
+      port: 443
+    # caBundle is patched at runtime by mgr via
+    # patchWebhookConfigCABundle. Until then, failurePolicy=Ignore
+    # keeps cluster usable.
+    caBundle: Cg==

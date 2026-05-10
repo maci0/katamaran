@@ -145,6 +145,8 @@ type Reconciler struct {
 
 	mu       sync.Mutex
 	tracking map[types.NamespacedName]*track // migrations currently being watched
+
+	pending *pendingAdoptionRegistry // ReplicaSet UIDs in source-deleted-adoption-pending window; consulted by webhook
 }
 
 // track holds the per-migration state the controller needs to handle
@@ -165,6 +167,7 @@ func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orches
 		PollInterval:  5 * time.Second,
 		StatusTimeout: 30 * time.Minute,
 		tracking:      map[types.NamespacedName]*track{},
+		pending:       newPendingAdoptionRegistry(),
 	}
 }
 
@@ -405,10 +408,30 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		slog.Error("Migration watch closed without terminal status", "migration", key, "migration_id", id, "last_phase", lastPhase)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
+	var rsUID types.UID
 	if lastPhase == string(orchestrator.PhaseSucceeded) && req.SourceCleanup != "" && req.SourceCleanup != "none" {
 		if req.SourcePod != nil && r.Discoverer != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
+			// Look up source pod's controller-ref BEFORE delete so the
+			// webhook can deny RS-driven replacements during the
+			// adoption window. Best-effort: missing Kube clientset, RBAC
+			// failure, or non-RS owner all silently fall back to "no
+			// pending mark", which means the webhook won't deny anything
+			// for this migration.
+			if r.Kube != nil && req.AdoptVM {
+				if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(cleanupCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
+					for _, o := range src.OwnerReferences {
+						if o.Controller != nil && *o.Controller && o.Kind == "ReplicaSet" {
+							rsUID = o.UID
+							r.pending.Mark(rsUID, string(id))
+							slog.Info("Marked ReplicaSet as adoption-pending; RS replacements will be denied by webhook",
+								"rs_uid", rsUID, "migration_id", id)
+							break
+						}
+					}
+				}
+			}
 			switch req.SourceCleanup {
 			case "delete":
 				if err := r.Discoverer.DeletePod(cleanupCtx, req.SourcePod.Namespace, req.SourcePod.Name); err != nil {
@@ -443,6 +466,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 				if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
 					slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
 				} else {
+					r.pending.Clear(rsUID)
 					slog.Info("Adoption pod created", "migration", key, "migration_id", id, "name", adoptName, "node", destNode)
 				}
 			}
