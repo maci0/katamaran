@@ -308,6 +308,51 @@ func TestWaitForMigrationComplete_Cancelled(t *testing.T) {
 	}
 }
 
+// postActiveStallGraceForTest overrides postActiveStallGrace for the
+// caller test and returns a restore func suitable for t.Cleanup.
+func postActiveStallGraceForTest(_ *testing.T, d time.Duration) func() {
+	prev := postActiveStallGrace
+	postActiveStallGrace = d
+	return func() { postActiveStallGrace = prev }
+}
+
+// TestWaitForMigrationComplete_QMPStallTreatedAsSuccess locks the
+// post-pause hand-off contract: when query-migrate fails repeatedly
+// after kata-shim tears down the source QEMU, the source binary must
+// declare success rather than fail. Regression test for the T2 e2e
+// failure where source returned "QMP read i/o timeout" although the
+// dest had already resumed the VM. The stall grace fires immediately
+// because the function is only entered post-pause.
+func TestWaitForMigrationComplete_QMPStallTreatedAsSuccess(t *testing.T) {
+	t.Parallel()
+	prevGrace := postActiveStallGraceForTest(t, 200*time.Millisecond)
+	t.Cleanup(prevGrace)
+
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		// Accept the first query-migrate command, never reply — simulates
+		// kata-shim tearing down source QEMU after handover so the QMP
+		// socket stops responding.
+		qmptest.ConsumeCommand(conn)
+		io.Copy(io.Discard, conn)
+	})
+
+	// Need ≥ queryMigrateTimeout (5s) + pollInterval (1s) + grace
+	// (200ms) for two query-migrate attempts, since the first one's
+	// stall sets firstStallAt and the second one trips the grace check.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := qmp.NewClient(ctx, sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	if err := waitForMigrationComplete(ctx, client); err != nil {
+		t.Fatalf("waitForMigrationComplete should treat sustained QMP stall as success after grace; got %v", err)
+	}
+}
+
 func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
