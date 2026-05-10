@@ -92,12 +92,17 @@ func (p *pendingAdoptionRegistry) MigrationFor(uid types.UID) string {
 // should be allowed.
 //
 // Denies pods whose controllerRef points at a ReplicaSet currently
-// flagged in pendingAdoption. The adopted pod itself bypasses because
-// the controller creates it directly via the apiserver after clearing
-// the registry entry; the webhook only sees RS-driven creates during
-// the race window.
+// flagged in pendingAdoption. Bypasses pods carrying the
+// `app.kubernetes.io/component=adopted-vm` label — those are
+// adoption pods created by the controller itself and inherit the
+// source pod's ownerReferences (Strategy A part 1), so without this
+// bypass the webhook would also deny the very pod that's supposed
+// to fill the RS replica count.
 func (r *Reconciler) ShouldDenyPodCreate(pod *corev1.Pod) string {
 	if r == nil || r.pending == nil || pod == nil {
+		return ""
+	}
+	if pod.Labels["app.kubernetes.io/component"] == "adopted-vm" {
 		return ""
 	}
 	for _, owner := range pod.OwnerReferences {

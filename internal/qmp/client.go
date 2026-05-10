@@ -394,14 +394,19 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		}
 
 		if resp.Event == eventName {
+			slog.Info("QMP event matched", "event", resp.Event)
 			return nil
 		}
 
 		// Buffer non-matching events so they aren't lost. Without this,
 		// events arriving between WaitForEvent calls would be silently
-		// dropped, causing subsequent WaitForEvent calls to hang.
+		// dropped, causing subsequent WaitForEvent calls to hang. Log
+		// at INFO so production dest-job logs surface the events QEMU
+		// actually fires during migration — useful when chasing a
+		// missing-RESUME hang where you can't enable debug logging
+		// on a stuck job.
 		if resp.Event != "" {
-			slog.Debug("Buffered non-matching QMP event", "received", resp.Event, "waiting_for", eventName, "socket", c.socket)
+			slog.Info("QMP event received (non-matching, buffered)", "received", resp.Event, "waiting_for", eventName)
 			c.bufferEvent(resp)
 		}
 	}

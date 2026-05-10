@@ -119,6 +119,36 @@ func TestShouldDenyPodCreate_NoControllerRefAllowed(t *testing.T) {
 	}
 }
 
+// TestShouldDenyPodCreate_AdoptionPodBypassesEvenWithMatchingMark
+// locks the bypass: the controller's own adoption pod inherits the
+// source pod's ownerReferences (Strategy A part 1) so without the
+// bypass the webhook would deny the pod it's supposed to let through.
+// Live regression test for the T3b run where the first adoption-pod
+// create attempt was rejected by its own webhook.
+func TestShouldDenyPodCreate_AdoptionPodBypassesEvenWithMatchingMark(t *testing.T) {
+	t.Parallel()
+	r := &Reconciler{pending: newPendingAdoptionRegistry()}
+	rsUID := types.UID("rs-1")
+	r.pending.Mark(rsUID, "mig-abc")
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "katamaran",
+				"app.kubernetes.io/component": "adopted-vm",
+				"katamaran.io/source-pod":     "src-foo",
+				"app":                         "kata-deploy-test", // inherited from source
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", UID: rsUID, Controller: &ctrl},
+			},
+		},
+	}
+	if got := r.ShouldDenyPodCreate(pod); got != "" {
+		t.Fatalf("adoption pod with matching pending RSUID must bypass webhook; got deny reason %q", got)
+	}
+}
+
 func TestShouldDenyPodCreate_NilSafe(t *testing.T) {
 	t.Parallel()
 	var r *Reconciler
