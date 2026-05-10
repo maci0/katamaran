@@ -6,6 +6,34 @@
 // The server listens on a Unix socket and polls a configurable
 // directory for migration-meta.json files produced by the destination
 // katamaran process after migration completes.
+//
+// Activation status (current): the factory binds the configured Unix
+// socket but Kata's vm_cache_endpoint feature requires the
+// `kata-runtime factory init` lifecycle to register the factory with
+// the runtime. With vm_cache_number=0 (the daemonset default — see
+// deploy/daemonset.yaml's "Configure Kata to use katamaran factory"
+// block for why), kata-shim never dials this socket on the normal
+// pod-creation path. Setting vm_cache_number=1 with our socket
+// confused kata-shim into the cache-handshake codepath and timed out
+// every fresh sandbox creation, which is why the current install
+// keeps it at 0.
+//
+// What the factory IS used for today:
+//   - Holding migration-meta.json + VMConfig payloads written by the
+//     destination katamaran job, so a controller restart doesn't lose
+//     the data needed for adoption.
+//   - Status / debug introspection via the Status RPC.
+//
+// What the factory will be used for once Kata Sandbox Adoption lands
+// (see docs/ROADMAP.md "Kata Sandbox Adoption" → Approach D):
+//   - Per-sandbox factory_endpoint annotation on adoption pods so
+//     kata-shim dials the factory only for that one pod, gets the
+//     migrated VM via GetBaseVM, and skips the cold-boot path. Until
+//     that wiring is in place, the adopted-vm pod created by the
+//     controller still cold-boots a fresh kata sandbox — the K8s view
+//     is correct (Deployment intact, no spurious pods, see Strategy
+//     A in ROADMAP), but the migrated VM state is not yet inherited
+//     by the new pod.
 package main
 
 import (

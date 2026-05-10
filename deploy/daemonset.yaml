@@ -73,20 +73,56 @@ spec:
               echo "Kata config not found at ${KATA_CFG} — skipping QMP setup"
             fi
 
-            # --- 4. Configure Kata to use katamaran factory for VM caching ---
+            # --- 4. Point Kata's vm_cache_endpoint at the katamaran
+            #        factory socket BUT leave vm_cache_number=0.
+            #
+            # Why: Kata's vm_cache feature is tightly coupled to the
+            # `kata-runtime factory init` lifecycle — kata-shim only
+            # connects to vm_cache_endpoint when the runtime started a
+            # factory process via that command, registering ownership
+            # of the socket. Pointing vm_cache_endpoint at an
+            # arbitrary process (us) does not cause kata-shim to dial
+            # the socket; it just records a configured path. If we
+            # ALSO set vm_cache_number=1, kata-runtime spins up its
+            # own internal pre-warm VM but never consults our
+            # factory, AND every fresh sandbox creation goes through
+            # an extra cache-handshake codepath that timed out
+            # CheckRequest in our cluster (kata-shim gRPC call to the
+            # not-actually-registered cache).
+            #
+            # The katamaran factory's actual job today is to (a) hold
+            # the migrated QEMU's metadata (migration-meta.json) so a
+            # future adoption-shim integration can hand the running
+            # VM to a fresh sandbox, and (b) serve VMConfig snapshots
+            # to katamaran's own controller paths. Neither requires
+            # vm_cache_number to be non-zero on the kata side.
+            #
+            # We still write vm_cache_endpoint to the katamaran
+            # socket path so that, when adoption goes live (see
+            # docs/ROADMAP.md "Kata Sandbox Adoption"), the wiring
+            # is already in place — the only flip needed is enabling
+            # the path on a per-sandbox annotation rather than
+            # globally via vm_cache_number.
             if [ -n "${KATA_CFG}" ] && [ -f "${KATA_CFG}" ]; then
               if ! grep -q 'vm_cache_endpoint.*katamaran' "${KATA_CFG}"; then
                 sed -i '/^\[factory\]/,/^\[/{
-                  s|^#*vm_cache_number.*|vm_cache_number = 1|
+                  s|^#*vm_cache_number.*|vm_cache_number = 0|
                   s|^#*vm_cache_endpoint.*|vm_cache_endpoint = "/var/run/katamaran/factory.sock"|
                 }' "${KATA_CFG}"
                 if grep -q 'vm_cache_endpoint = "/var/run/katamaran/factory.sock"' "${KATA_CFG}"; then
-                  echo "Kata factory endpoint configured for katamaran"
+                  echo "Kata factory endpoint configured for katamaran (vm_cache_number=0; factory dormant until adoption flow lands)"
                 else
                   echo "Kata [factory] section not found; skipping factory config"
                 fi
               else
-                echo "Kata factory endpoint already configured"
+                # Belt-and-braces: ensure vm_cache_number is 0 even
+                # if the endpoint was already pointing at our socket
+                # from a previous (now-rolled-back) install that set it
+                # to 1.
+                sed -i '/^\[factory\]/,/^\[/{
+                  s|^vm_cache_number = 1$|vm_cache_number = 0|
+                }' "${KATA_CFG}"
+                echo "Kata factory endpoint already configured (vm_cache_number normalised to 0)"
               fi
             fi
         volumeMounts:
