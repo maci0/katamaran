@@ -27,6 +27,10 @@ func requestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+func isAPIPath(path string) bool {
+	return path == "/api" || strings.HasPrefix(path, "/api/")
+}
+
 // generateID returns a random 16-character hex string suitable for
 // request and migration correlation IDs.
 func generateID() string {
@@ -74,15 +78,20 @@ const maxRequestIDLen = 128
 const slowRequestThreshold = 5 * time.Second
 
 // validRequestID checks that a client-supplied request ID is safe to propagate.
-// Rejects IDs that are too long or contain non-printable/non-ASCII characters
-// to prevent log pollution and header abuse.
+// Restricts to alphanumerics plus `._-` so the value cannot smuggle whitespace,
+// quotes, or other shell/log-meta characters into response headers or log lines.
 func validRequestID(id string) bool {
 	if len(id) == 0 || len(id) > maxRequestIDLen {
 		return false
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
-		if c < 0x20 || c > 0x7e {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+		default:
 			return false
 		}
 	}
@@ -105,12 +114,14 @@ func requestLogger(next http.Handler) http.Handler {
 		rw.Header().Set("X-Request-Id", reqID)
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey, reqID))
 		next.ServeHTTP(rw, r)
-		duration := time.Since(start)
-		recordHTTPRequest(r.URL.Path, rw.status, duration)
-		// Skip logging health, readiness, metrics, and debug scrape paths.
+		// Skip metric recording and logging for health, readiness, metrics,
+		// and debug scrape paths. Single check avoids the duplicate
+		// isObservabilityPath inside recordHTTPRequest.
 		if isObservabilityPath(r.URL.Path) {
 			return
 		}
+		duration := time.Since(start)
+		recordHTTPRequest(rw.status, duration)
 		slow := duration >= slowRequestThreshold
 		failed := rw.status >= http.StatusInternalServerError
 		// Suppress INFO logs for the dashboard's 1-Hz status poll. Errors and
@@ -138,7 +149,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("HTTP handler panic", "method", r.Method, "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()), "request_id", requestIDFromContext(r.Context()))
-				if strings.HasPrefix(r.URL.Path, "/api/") {
+				if isAPIPath(r.URL.Path) {
 					jsonError(w, "Internal server error", http.StatusInternalServerError)
 				} else {
 					http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -195,35 +206,41 @@ func csrfCheck(next http.Handler) http.Handler {
 }
 
 func csrfForbidden(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	dashboardCSRFRejectionsTotal.Add(1)
+	if isAPIPath(r.URL.Path) {
 		jsonError(w, "Forbidden", http.StatusForbidden)
 	} else {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 	}
 }
 
+// contentSecurityPolicy is the value written to Content-Security-Policy on every
+// response. Held as a single concatenated const so the per-request header path
+// is one map write.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js; " +
+	"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; " +
+	"img-src 'self' data:; " +
+	"connect-src 'self'; " +
+	"base-uri 'self'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'; " +
+	"object-src 'none'"
+
 // securityHeaders wraps an http.Handler to set standard security headers
 // on every response.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js; "+
-				"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "+
-				"img-src 'self' data:; "+
-				"connect-src 'self'; "+
-				"base-uri 'self'; "+
-				"form-action 'self'; "+
-				"frame-ancestors 'none'; "+
-				"object-src 'none'")
+		h := w.Header()
+		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("X-XSS-Protection", "0")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

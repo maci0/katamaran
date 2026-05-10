@@ -1,16 +1,19 @@
 // Package factory implements a gRPC CacheService server that serves
 // migrated QEMU VM state to Kata Containers' VM cache protocol.
 //
-// After a live migration completes, the destination QEMU writes a
-// migration-meta.json file. The factory's directory watcher picks it
-// up and offers it to the server via OfferVM. The Kata shim then
-// connects over the Unix socket, calls GetBaseVM, and adopts the
-// already-running VM instead of cold-booting a new one.
+// After a live migration completes, the destination katamaran process
+// writes a migration-meta.json file next to the QMP socket. The
+// factory's directory watcher picks it up and offers it to the server
+// via OfferVM. The Kata shim then connects over the Unix socket, calls
+// GetBaseVM, and adopts the already-running VM instead of cold-booting
+// a new one.
 package factory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
@@ -21,8 +24,8 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// MigrationState holds the metadata written by the destination QEMU
-// process after a successful incoming live migration. The factory
+// MigrationState holds the metadata written by the destination
+// katamaran process after a successful incoming live migration. The factory
 // translates this into the GrpcVM proto that Kata's shim expects.
 type MigrationState struct {
 	ID              string          `json:"id"`
@@ -43,13 +46,14 @@ type MigrationState struct {
 type Server struct {
 	cachepb.UnimplementedCacheServiceServer
 
-	mu         sync.Mutex
-	cond       *sync.Cond
-	queue      []MigrationState
-	quit       chan struct{}
-	quitOnce   sync.Once
-	vmConfig   []byte // JSON-serialized VMConfig for Config() RPC
-	agentConfig []byte // JSON-serialized AgentConfig for Config() RPC
+	mu                        sync.Mutex
+	cond                      *sync.Cond
+	queue                     []MigrationState
+	quit                      chan struct{}
+	quitOnce                  sync.Once
+	vmConfig                  []byte // JSON-serialized VMConfig for Config() RPC
+	agentConfig               []byte // JSON-serialized AgentConfig for Config() RPC
+	vmConfigUnavailableLogged bool
 }
 
 // NewServer returns a Server ready to accept OfferVM calls and serve
@@ -73,85 +77,83 @@ func (s *Server) OfferVM(state MigrationState) {
 	s.cond.Signal()
 }
 
-// Config returns an empty VM config. The shim obtains its own
-// configuration independently; this satisfies the protocol contract.
+// Config returns the stored VMConfig + AgentConfig from the most recent
+// migration-meta.json. Returns Unavailable until SetConfig has been called,
+// so the shim falls back to direct VM creation in that window.
 func (s *Server) Config(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcVMConfig, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.vmConfig) > 0 {
+		vmConfig := bytes.Clone(s.vmConfig)
+		agentConfig := bytes.Clone(s.agentConfig)
+		s.mu.Unlock()
 		return &cachepb.GrpcVMConfig{
-			Data:        s.vmConfig,
-			AgentConfig: s.agentConfig,
+			Data:        vmConfig,
+			AgentConfig: agentConfig,
 		}, nil
 	}
-	// No VMConfig yet — return error so the shim falls back to direct VM creation.
-	// The factory will have VMConfig after migration-meta.json is processed.
+	queueDepth := len(s.queue)
+	shouldLog := !s.vmConfigUnavailableLogged
+	s.vmConfigUnavailableLogged = true
+	s.mu.Unlock()
+	if shouldLog {
+		slog.Warn("Factory VMConfig unavailable; Config RPC callers will fall back to cold VM creation", "queue_depth", queueDepth)
+	}
 	return nil, status.Errorf(codes.Unavailable, "VMConfig not yet available")
 }
 
 // SetConfig sets the VMConfig and AgentConfig returned by Config().
-// Called during startup after reading the Kata persist state or config.
+// Called at startup with the Kata sandbox persist.json contents and again
+// by the directory watcher whenever a fresh migration-meta.json carries
+// VMConfig from the source pod.
 func (s *Server) SetConfig(vmConfig, agentConfig []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.vmConfig = vmConfig
-	s.agentConfig = agentConfig
+	s.vmConfig = bytes.Clone(vmConfig)
+	s.agentConfig = bytes.Clone(agentConfig)
+	s.vmConfigUnavailableLogged = false
 	s.cond.Broadcast()
 }
 
 // GetBaseVM blocks until a migrated VM is available, then returns it
 // as a GrpcVM. Each migration state is consumed exactly once.
 func (s *Server) GetBaseVM(ctx context.Context, _ *emptypb.Empty) (*cachepb.GrpcVM, error) {
-	// Wait in a goroutine so we can also respect ctx cancellation and
-	// server shutdown.
-	type result struct {
-		state MigrationState
-		ok    bool
-	}
-	ch := make(chan result, 1)
-	go func() {
+	stopCancelWake := context.AfterFunc(ctx, func() {
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		for len(s.queue) == 0 {
-			select {
-			case <-s.quit:
-				ch <- result{ok: false}
-				return
-			default:
-			}
-			s.cond.Wait()
-			// Re-check quit after waking.
-			select {
-			case <-s.quit:
-				ch <- result{ok: false}
-				return
-			default:
-			}
-		}
-		state := s.queue[0]
-		s.queue = s.queue[1:]
-		ch <- result{state: state, ok: true}
-	}()
-
-	select {
-	case <-ctx.Done():
-		// Unblock the waiter so it doesn't leak.
 		s.cond.Broadcast()
-		return nil, status.Error(codes.Canceled, ctx.Err().Error())
-	case r := <-ch:
-		if !r.ok {
-			return nil, status.Error(codes.Unavailable, "factory shutting down")
+		s.mu.Unlock()
+	})
+	defer stopCancelWake()
+
+	s.mu.Lock()
+	for len(s.queue) == 0 {
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil, status.Error(codes.DeadlineExceeded, err.Error())
+			}
+			return nil, status.Error(codes.Canceled, err.Error())
 		}
-		hypervisorBytes := []byte(r.state.HypervisorState)
-		slog.Info("Serving VM to shim", "id", r.state.ID, "qemu_pid", r.state.QEMUPid)
-		return &cachepb.GrpcVM{
-			Id:         r.state.ID,
-			Hypervisor: hypervisorBytes,
-			ProxyPid:   int64(r.state.VirtiofsdPid),
-			Cpu:        r.state.CPU,
-			Memory:     r.state.Memory,
-		}, nil
+		select {
+		case <-s.quit:
+			s.mu.Unlock()
+			return nil, status.Error(codes.Unavailable, "factory shutting down")
+		default:
+		}
+		s.cond.Wait()
 	}
+	state := s.queue[0]
+	s.queue[0] = MigrationState{}
+	s.queue = s.queue[1:]
+	s.mu.Unlock()
+
+	slog.Info("Serving VM to shim", "id", state.ID, "qemu_pid", state.QEMUPid)
+	return &cachepb.GrpcVM{
+		Id:         state.ID,
+		Hypervisor: state.HypervisorState,
+		ProxyPid:   int64(state.VirtiofsdPid),
+		Cpu:        state.CPU,
+		Memory:     state.Memory,
+	}, nil
 }
 
 // Status returns the number of VMs currently queued and the server's PID.

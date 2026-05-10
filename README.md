@@ -158,36 +158,23 @@ curl http://$NODE_IP:30081
 
 ### 6. Run the Migration via Kubernetes Jobs
 
-To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. The canonical Job manifests live in `internal/orchestrator/templates/` (embedded into the binaries). For ad-hoc shell-driven runs, `deploy/migrate.sh` renders those templates with `envsubst`, applies them via `kubectl`, and waits for completion:
+To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. The canonical Job manifests live in `internal/orchestrator/templates/` (embedded into the binaries). For ad-hoc shell-driven runs, `deploy/migrate.sh` renders those templates with `envsubst`, applies them via `kubectl`, and waits for completion.
+
+The current shell path can run in pod-picker mode: the source job resolves the Kata sandbox at runtime, captures the source QEMU command line, and the destination job replays it with `-incoming defer`, so no placeholder destination Kata pod is required:
 
 ```bash
-# Find the QMP sockets via the container runtime (crictl works for containerd/cri-o):
-SRC_POD_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo -- sudo crictl pods --name nginx-kata -q)
-DEST_POD_ID=$(minikube ssh -p katamaran-demo -n katamaran-demo-m02 -- sudo crictl pods --name nginx-kata-dest -q)
-
 ./deploy/migrate.sh \
   --source-node katamaran-demo \
   --dest-node   katamaran-demo-m02 \
-  --qmp-source  "/run/vc/vm/${SRC_POD_ID}/extra-monitor.sock" \
-  --qmp-dest    "/run/vc/vm/${DEST_POD_ID}/extra-monitor.sock" \
-  --tap         tap0_kata \
-  --vm-ip       "$(kubectl get pod nginx-kata -o jsonpath='{.status.podIP}')" \
+  --pod-name    nginx-kata \
+  --pod-namespace default \
   --dest-ip     "$(kubectl get node katamaran-demo-m02 -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}')" \
-  --image       localhost/katamaran:dev
+  --image       localhost/katamaran:dev \
+  --shared-storage \
+  --replay-cmdline
 ```
 
 Production paths submit the same templates through the in-cluster `Native` orchestrator embedded in the dashboard or in `katamaran-mgr` (CRD controller) — see `kubectl apply -f deploy/migration-example.yaml` for the CRD path.
-
-> [!WARNING]
-> **This manual `kubectl apply` will fail out-of-the-box.** 
-> Live migrating a Kata Container requires a destination QEMU process waiting with the exact same UUID, vsock, and hardware state as the source, started with the `-incoming` flag. 
-> 
-> In a production cluster, a dedicated **Kubernetes Operator** automates this complex state-matching phase before applying the katamaran jobs. 
-> 
-> To see the full end-to-end flow working in your local terminal (including the automated state-matching wrapper), use the provided E2E script:
-> ```bash
-> ./scripts/e2e.sh --provider minikube --ping-proof
-> ```
 
 > **Tip:** For a faster setup (~30s instead of ~5min), use Kind + Podman instead of minikube:
 > ```bash
@@ -278,6 +265,8 @@ go.mod                          # Go module (github.com/maci0/katamaran)
 Makefile                        # Build, test, fuzz, image targets
 Dockerfile                      # Multi-stage container image build
 Dockerfile.dashboard            # Dashboard container image build
+Dockerfile.factory              # VM factory container image build
+Dockerfile.mgr                  # Migration controller container image build
 .dockerignore                   # Build context exclusions
 .github/
   dependabot.yml                # Dependabot config (GitHub Actions + Go modules, weekly)
@@ -285,37 +274,80 @@ Dockerfile.dashboard            # Dashboard container image build
     ci.yml                      # GitHub Actions CI (lint, test, fuzz seeds, build, Docker)
 cmd/
   katamaran/
-    main.go                     # CLI entry point — flag parsing and dispatch
+    main.go                     # Thin wrapper around internal/katamaran.Run
     main_test.go                # CLI validation and flag behavior tests
   dashboard/
     main.go                     # Dashboard CLI wrapper
-    index.html                  # Dashboard frontend (dark theme, Chart.js)
     README.md                   # Dashboard usage guide
+  katamaran-orchestrator/
+    main.go                     # Structured JSON-in / NDJSON-out orchestrator CLI
+    request.go                  # JSON Request decoding helpers
+    status.go                   # NDJSON status emission helpers
+    main_test.go                # CLI validation tests
+  katamaran-mgr/
+    main.go                     # Migration CRD controller entrypoint
+    debug.go                    # /healthz, /readyz, /metrics, /debug/vars handlers
+    kubeconfig.go               # Out-of-cluster kubeconfig loader
+    main_test.go                # Controller CLI helper tests
+  katamaran-factory/
+    main.go                     # Kata VM cache gRPC server entrypoint
+    sandbox_config.go           # Reads VMConfig + AgentConfig from sandbox persist.json
+    main_test.go                # Factory CLI tests
 internal/
+  buildinfo/
+    buildinfo.go                # Build version variable (overridden via ldflags)
+  controller/
+    reconciler.go               # Migration CRD reconcile loop and status patching
+    reconciler_test.go          # Controller reconciliation tests
   dashboard/
+    index.html                  # Embedded dashboard frontend (dark theme, Chart.js)
+    doc.go                      # Package-level overview
     server.go                   # Dashboard web server and route table
     server_test.go              # Dashboard endpoint, middleware, and security tests
     loadgen.go                  # Ping and HTTP load generator handlers
     metrics.go                  # expvar counters and duration buckets
     middleware.go               # HTTP middleware (logging, recovery, CSRF, security headers)
     migrate.go                  # Migration orchestration handler
+    response.go                 # JSON response + form-POST parsing helpers
     types.go                    # Dashboard state and API response types
-    validate.go                 # Input validation and SSRF prevention
+    validation.go               # Input validation and SSRF prevention
+  factory/
+    server.go                   # Kata VM cache gRPC server implementation
+    watcher.go                  # migration-meta.json directory watcher
+    cachepb/                    # Generated CacheService protobuf bindings
+  katamaran/
+    cli.go                      # Primary source/destination CLI implementation
   logging/
     logging.go                  # Logging setup helpers (SetupLogger)
     logging_test.go             # Logging tests
   migration/
-    config.go                   # Config types, constants, and helpers (validators, formatQEMUHost)
-    config_test.go              # Config unit tests and FuzzFormatQEMUHost
+    config.go                   # SourceConfig / DestConfig types, shared constants, and QEMU URI helpers
+    config_test.go              # Config unit tests
+    validation.go               # Tap-interface / netns / drive-id validators
+    cmdlinefetch.go             # Pod-log apiserver fetcher for replayed QEMU cmdlines
+    cmdlinefetch_test.go        # Pod-log fetcher unit tests
     dest.go                     # Destination-side migration logic
     dest_test.go                # Destination unit tests
+    destspawn.go                # Spawns the dest QEMU + virtiofsd in --replay-cmdline mode
+    destspawn_test.go           # Dest QEMU spawner unit tests
     exec.go                     # External command execution (runCmd, runCmdInNetns)
     exec_test.go                # Exec unit tests
+    podresolve.go               # Resolves pod IP / sandbox UUID / QEMU PID via apiserver + procfs
+    podresolve_test.go          # Pod-resolver unit tests
     qmp_recording_test.go       # QMP command recording helpers for migration tests
     source.go                   # Source-side migration logic and polling
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
     tunnel_test.go              # Tunnel unit tests
+  orchestrator/
+    orchestrator.go             # Public orchestrator interface and shared helpers
+    types.go                    # Request, status, and migration ID types
+    id.go                       # MigrationID generator
+    validation.go               # Request validation (Validate, ValidateSafeArgValue)
+    cmdline.go                  # hostPath layout for the captured-cmdline replay flow
+    discovery*.go               # Kubernetes pod/node discovery boundary
+    native*.go                  # client-go implementation that submits migration Jobs
+    templates/                  # Embedded source/destination Job manifests
   qmp/
     client.go                   # QMP client (connect, execute, wait for events)
     client_test.go              # QMP client unit tests
@@ -323,8 +355,6 @@ internal/
     types.go                    # QMP protocol types and command argument structs
   qmptest/
     qmptest.go                  # Shared test helpers for faking a QMP server
-  buildinfo/
-    buildinfo.go                # Build version variable (overridden via ldflags)
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
   daemonset.yaml                # DaemonSet for node setup (binary, kernel modules, QMP config when present)
@@ -356,7 +386,9 @@ scripts/                        # Test and operational scripts
   manifests/                    # E2E test manifests and templates
     kata-pod.yaml               # Kata Containers pod template
     kind-config.yaml            # Kind cluster configuration
+    kind-config-tcg.yaml        # Kind cluster configuration (TCG/software-emulation variant)
     kind-config-nocni.yaml      # Kind cluster configuration (CNI disabled for Cilium/Flannel)
+    kind-config-nocni-tcg.yaml  # Kind cluster configuration (no CNI + TCG)
     nfs-pv.yaml                 # NFS PersistentVolume template
     nfs-server.yaml             # NFS server pod template
     pod-src.yaml                # Source pod manifest for E2E tests
@@ -416,7 +448,7 @@ flowchart LR
     NATIVE[Native orchestrator<br/>internal/orchestrator/native.go]
     JOBS[(source + dest Jobs<br/>katamaran-source-&lt;id&gt;<br/>katamaran-dest-&lt;id&gt;)]
     SRC[Source pod<br/>--mode source]
-    DEST[Dest pod<br/>--mode dest, --replay-cmdline]
+    DEST[Dest pod<br/>--mode dest, --replay-cmdline-from-pod]
     QEMU_SRC[(Source QEMU<br/>kata sandbox)]
     QEMU_DST[(Dest QEMU<br/>spawned by katamaran)]
 
@@ -562,47 +594,48 @@ For production live migration with minimal downtime and operational complexity:
 
 ### Integration Architecture (Operator-Driven)
 
-A Kubernetes operator would manage migration as a CRD:
+The in-cluster controller manages migrations with the `Migration` CRD:
 
 ```yaml
 apiVersion: katamaran.io/v1alpha1
-kind: VMMigration
+kind: Migration
 metadata:
   name: migrate-nginx-pod
+  namespace: default
 spec:
-  podName: nginx-kata-7b4f8c
-  targetNode: worker-02
-  strategy: live
+  sourcePod:
+    namespace: default
+    name: nginx-kata
+  destNode: worker-02
+  image: localhost/katamaran:dev
   sharedStorage: true
-  timeout: 300s
+  replayCmdline: true
+  downtimeMS: 25
 ```
 
-The operator's reconciliation loop:
+The controller's reconciliation loop:
 
 ```mermaid
 flowchart TD
-    A[VMMigration CR created] --> B{Validate target node}
-    B -->|capacity, runtime, kernel| C[Prepare destination pod]
-    C --> D[Get QMP socket paths]
-    D --> E["katamaran --mode dest (target node)"]
-    E --> F["katamaran --mode source (source node)"]
-    F --> G{Migration result}
-    G -->|Success| H[Patch pod nodeName]
-    H --> I[Update endpoint slices]
-    I --> J[Clean up source]
-    G -->|Failure| K[migrate-cancel]
-    K --> L[Resume source VM]
-    L --> M[Clean up destination]
+    A[Migration CR created] --> B[Resolve source node and destination IP]
+    B --> C[Submit source and destination Jobs]
+    C --> D["katamaran --mode source"]
+    C --> E["katamaran --mode dest"]
+    D --> F{Migration result}
+    E --> F
+    F -->|Success| G[Patch Migration status]
+    G --> H[Optional source cleanup / VM adoption]
+    F -->|Failure| I[migrate-cancel]
+    I --> J[Patch error status and clean up Jobs]
 ```
 
 ### Open Questions for Production
 
 - **Pod checkpoint/restore**: Should the operator snapshot the pod spec and container state for rollback?
-- **Multi-disk VMs**: katamaran currently mirrors a single drive. Multi-disk setups would need parallel NBD mirrors or sequential mirroring.
 - **Live migration scheduling**: Which node to pick? Factors: resource headroom, storage locality, network topology, anti-affinity rules.
 - **Preemption**: Can a migration be preempted mid-flight if the destination node runs out of resources? This requires `migrate-cancel` QMP support (already available in QEMU).
 - **Encryption**: NBD traffic and RAM migration traffic are currently unencrypted. For cross-rack or cross-AZ migration, WireGuard or IPsec tunnels should wrap the migration streams.
-- **Observability**: Exposing migration progress (storage sync %, RAM dirty rate, downtime duration) as Prometheus metrics via the operator.
+- **Observability**: Storage sync percentage and dirty-page rate are not yet exported as controller metrics.
 
 ---
 

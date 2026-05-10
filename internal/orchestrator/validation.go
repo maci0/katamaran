@@ -3,12 +3,13 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
 // Validate checks a Request for required fields and mode consistency. Exposed
 // so callers (e.g. the dashboard's HTTP handler) can pre-validate before
-// calling Apply or BuildArgs.
+// calling Apply.
 func Validate(req Request) error {
 	if req.SourceNode == "" {
 		return errors.New("sourceNode is required")
@@ -19,7 +20,7 @@ func Validate(req Request) error {
 		return errors.New("destNode is required when sourcePod is not set")
 	}
 	if req.DestNode != "" && req.SourceNode == req.DestNode {
-		return errors.New("sourceNode and DestNode must differ")
+		return errors.New("sourceNode and destNode must differ")
 	}
 	if req.DestNode != "" && req.DestIP == "" {
 		return errors.New("destIP is required")
@@ -43,13 +44,16 @@ func Validate(req Request) error {
 		return fmt.Errorf("tunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
 	}
 	if req.DowntimeMS < 0 || req.DowntimeMS > 60000 {
-		return fmt.Errorf("downtimeMS must be between 1 and 60000 when set, got %d", req.DowntimeMS)
+		return fmt.Errorf("downtimeMS must be between 0 and 60000, got %d", req.DowntimeMS)
 	}
 	if req.MultifdChannels < 0 {
 		return fmt.Errorf("multifdChannels must be non-negative, got %d", req.MultifdChannels)
 	}
 	if req.AutoDowntimeFloorMS < 0 {
 		return fmt.Errorf("autoDowntimeFloorMS must be non-negative, got %d", req.AutoDowntimeFloorMS)
+	}
+	if req.CNIConvergenceDelaySeconds < 0 {
+		return fmt.Errorf("cniConvergenceDelaySeconds must be non-negative, got %d", req.CNIConvergenceDelaySeconds)
 	}
 	logLevel := strings.ToLower(req.LogLevel)
 	if logLevel != "" && logLevel != "debug" && logLevel != "info" && logLevel != "warn" && logLevel != "error" {
@@ -59,8 +63,29 @@ func Validate(req Request) error {
 	if logFormat != "" && logFormat != "text" && logFormat != "json" {
 		return fmt.Errorf("logFormat must be one of text or json, got %q", req.LogFormat)
 	}
+	if req.PodWaitTimeoutSeconds < 0 {
+		return fmt.Errorf("podWaitTimeoutSeconds must be non-negative, got %d", req.PodWaitTimeoutSeconds)
+	}
+	if req.SourceCleanup != "" && req.SourceCleanup != "none" && req.SourceCleanup != "delete" && req.SourceCleanup != "orphan" {
+		return fmt.Errorf("sourceCleanup must be one of none, delete, or orphan, got %q", req.SourceCleanup)
+	}
 	if err := validateRequestArgValues(req); err != nil {
 		return err
+	}
+	// Defense-in-depth: DestIP and VMIP are interpolated into the rendered
+	// source/dest Job's shell command. Reject anything that isn't a parseable
+	// IP at the orchestrator boundary so a future change to ValidateSafeArgValue
+	// (or a non-dashboard caller) can't pass a value that looks IP-shaped but
+	// hides shell metacharacters or hostname-style content.
+	if req.DestIP != "" {
+		if _, err := netip.ParseAddr(req.DestIP); err != nil {
+			return fmt.Errorf("destIP %q is not a valid IP address: %w", req.DestIP, err)
+		}
+	}
+	if req.VMIP != "" {
+		if _, err := netip.ParseAddr(req.VMIP); err != nil {
+			return fmt.Errorf("vmIP %q is not a valid IP address: %w", req.VMIP, err)
+		}
 	}
 	return nil
 }

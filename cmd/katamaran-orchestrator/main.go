@@ -1,8 +1,9 @@
 // katamaran-orchestrator is a thin CLI wrapper around the orchestrator
 // package. It reads a single JSON-encoded orchestrator.Request from stdin,
 // submits the migration, and streams structured StatusUpdate events as
-// newline-delimited JSON on stdout. Exit code: 0 on PhaseSucceeded, 1 on
-// PhaseFailed, 2 on argument/decoding errors.
+// newline-delimited JSON on stdout. Exit codes: 0 on PhaseSucceeded, 1 on
+// PhaseFailed or runtime error, 2 on argument/decoding errors, 130 on
+// signal-induced shutdown.
 //
 // Intended for scripts and CI pipelines that want a structured (not
 // bash-tail) migration runner. The dashboard and the Migration CRD
@@ -21,7 +22,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -33,6 +33,7 @@ import (
 	"syscall"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
@@ -44,8 +45,18 @@ Usage:
   katamaran-orchestrator --version
   katamaran-orchestrator --help
 
+I/O:
+  stdin    A single JSON-encoded orchestrator.Request object (required; max 1 MiB).
+  stdout   Newline-delimited JSON status updates (one object per line) until a
+           terminal phase is reached. Fields: id, phase, time, msg, err,
+           ram_transferred, ram_total, downtime_ms, applied_downtime_ms,
+           rtt_ms, auto_downtime.
+  stderr   Diagnostic messages and errors.
+
 Flags:
-  --kubeconfig string    Path to kubeconfig (only used out-of-cluster; ignored when running inside a pod)
+  --kubeconfig string    Optional path to kubeconfig (out-of-cluster only)
+  --log-format string    Log output format: 'text' or 'json' (default "text")
+  --log-level string     Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
 Other:
   -v, --version          Show version and exit
@@ -53,8 +64,9 @@ Other:
 
 Exit codes:
   0   PhaseSucceeded
-  1   PhaseFailed (or runtime error)
+  1   PhaseFailed or runtime error
   2   Argument or request-decoding error
+  130 Interrupted by signal (SIGINT/SIGTERM)
 
 Example:
   echo '{
@@ -67,10 +79,24 @@ Example:
 `)
 }
 
+// isStdinTTY reports whether stdin is connected to a terminal. The CLI is
+// designed to take a piped JSON request; if a user runs the binary
+// interactively without piping, ReadAll would block forever waiting for
+// EOF — this lets us fail fast with a helpful message instead.
+func isStdinTTY(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (st.Mode() & os.ModeCharDevice) != 0
+}
+
 func main() {
 	fs := flag.NewFlagSet("katamaran-orchestrator", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig (only used out-of-cluster; ignored when running inside a pod)")
+	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
+	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
+	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -93,13 +119,28 @@ func main() {
 		os.Exit(2)
 	}
 
+	*logFormat = strings.ToLower(*logFormat)
+	*logLevel = strings.ToLower(*logLevel)
+	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-orchestrator"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+
+	if isStdinTTY(os.Stdin) {
+		fmt.Fprintf(os.Stderr, "Error: stdin is a terminal; pipe a JSON request, e.g. `echo '{...}' | katamaran-orchestrator`\n\n")
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
 	req, err := readRequest(os.Stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage(os.Stderr)
 		os.Exit(2)
 	}
 	if err := orchestrator.Validate(req); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: invalid request: %v\n\n", err)
+		printUsage(os.Stderr)
 		os.Exit(2)
 	}
 
@@ -113,7 +154,7 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: orchestrator init: %v\n", err)
-		os.Exit(2)
+		os.Exit(1)
 	}
 	id, err := o.Apply(ctx, req)
 	if err != nil {
@@ -135,18 +176,7 @@ func main() {
 	}()
 	exit := 0
 	for u := range updates {
-		// Render error fields as strings — encoding/json refuses error values.
-		out := struct {
-			ID    orchestrator.MigrationID `json:"id"`
-			Phase orchestrator.StatusPhase `json:"phase"`
-			Time  string                   `json:"time"`
-			Msg   string                   `json:"msg,omitempty"`
-			Err   string                   `json:"err,omitempty"`
-		}{ID: u.ID, Phase: u.Phase, Time: u.When.UTC().Format("2006-01-02T15:04:05.000Z"), Msg: u.Message}
-		if u.Error != nil {
-			out.Err = u.Error.Error()
-		}
-		if err := enc.Encode(out); err != nil {
+		if err := enc.Encode(newStatusOutput(u)); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: write status update: %v\n", err)
 			os.Exit(1)
 		}
@@ -154,21 +184,11 @@ func main() {
 			exit = 1
 		}
 	}
+	// Signal-induced shutdown surfaces 130 even when the orchestrator
+	// emitted a final PhaseFailed update during teardown — otherwise a
+	// Ctrl-C looks indistinguishable from a real migration failure.
+	if ctx.Err() != nil {
+		os.Exit(130)
+	}
 	os.Exit(exit)
-}
-
-func readRequest(r io.Reader) (orchestrator.Request, error) {
-	body, err := io.ReadAll(r)
-	if err != nil {
-		return orchestrator.Request{}, fmt.Errorf("read stdin: %w", err)
-	}
-	body = bytes.TrimSpace(body)
-	if len(body) == 0 {
-		return orchestrator.Request{}, fmt.Errorf("request JSON is required on stdin")
-	}
-	var req orchestrator.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		return orchestrator.Request{}, fmt.Errorf("decode request JSON: %w", err)
-	}
-	return req, nil
 }

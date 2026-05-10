@@ -404,6 +404,14 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	kataSharedSandboxRoot = filepath.Join(tmpDir, "kata-shared")
 	t.Cleanup(func() { kataSharedSandboxRoot = prevShared })
 
+	// extractNvdimmPath rejects mem-paths outside known Kata roots (defense
+	// against a compromised source pod injecting an arbitrary file path).
+	// The synthetic source nvdimm here lives under tmpDir, so widen the
+	// allowlist for the duration of the test.
+	prevPrefixes := nvdimmPathAllowedPrefixes
+	nvdimmPathAllowedPrefixes = append(append([]string(nil), prevPrefixes...), tmpDir+"/")
+	t.Cleanup(func() { nvdimmPathAllowedPrefixes = prevPrefixes })
+
 	dstSandboxID := "katamaran-dest-test"
 	dstSandboxDir := filepath.Join(srcSandboxRoot, dstSandboxID)
 	dstSocket := filepath.Join(dstSandboxDir, "extra-monitor.sock")

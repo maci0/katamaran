@@ -3,7 +3,7 @@
 # are applied at install-time via deploy/dashboard.yaml (or out-of-band)
 # so the dashboard only needs RBAC to create the Job itself.
 # Rendered by the Native orchestrator or via envsubst by deploy/migrate.sh.
-# Variables: NODE_NAME, IMAGE, QMP_SOCKET, DEST_IP, VM_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
+# Variables: NODE_NAME, IMAGE, DEST_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -66,7 +66,7 @@ spec:
           limits:
             cpu: "1"
             memory: 256Mi
-        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode source --dest-ip ${DEST_IP} ${EXTRA_ARGS}"]
+        command: ["/bin/sh", "-c", "/usr/local/bin/katamaran --mode source --dest-ip \"${DEST_IP}\" ${EXTRA_ARGS}"]
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc
@@ -88,10 +88,12 @@ spec:
           path: /lib/modules
           type: Directory
       - name: cmdline-dir
-        # Used by --emit-cmdline-to in --replay-cmdline mode. The orchestrator
-        # (deploy/migrate.sh) kubectl-cps the captured QEMU cmdline file from
-        # this dir to the dest node's matching mount. Always mounted so the
-        # job manifest is identical between modes; harmless when the flag is
+        # Used by --emit-cmdline-to in --replay-cmdline mode. The Native
+        # orchestrator path consumes the cmdline via the source pod log
+        # (KATAMARAN_CMDLINE_B64 marker scraped through the apiserver);
+        # deploy/migrate.sh kubectl-cps the captured file from this dir
+        # to the dest node's matching mount. Always mounted so the job
+        # manifest is identical between modes; harmless when the flag is
         # not set (the file is simply never written).
         hostPath:
           path: /tmp/katamaran-cmdlines

@@ -37,26 +37,26 @@ type MigrationHistoryEntry struct {
 const maxHistoryEntries = 100
 
 type StatusResponse struct {
-	Version                 string             `json:"version"`
-	UptimeSeconds           int64              `json:"uptime_seconds"`
-	Migrating               bool               `json:"migrating"`
-	MigrationID             string             `json:"migration_id,omitempty"`
-	MigrationElapsedSeconds int64              `json:"migration_elapsed_seconds,omitempty"`
-	MigrationProgress       *MigrationProgress `json:"migration_progress,omitempty"`
-	LastMigrationResult     string             `json:"last_migration_result,omitempty"`
-	LastMigrationError      string             `json:"last_migration_error,omitempty"`
-	MigrationsStarted       int64              `json:"migrations_started"`
-	MigrationsSucceeded     int64              `json:"migrations_succeeded"`
-	MigrationsFailed        int64              `json:"migrations_failed"`
+	Version                 string                  `json:"version"`
+	UptimeSeconds           int64                   `json:"uptime_seconds"`
+	Migrating               bool                    `json:"migrating"`
+	MigrationID             string                  `json:"migration_id,omitempty"`
+	MigrationElapsedSeconds int64                   `json:"migration_elapsed_seconds,omitempty"`
+	MigrationProgress       *MigrationProgress      `json:"migration_progress,omitempty"`
+	LastMigrationResult     string                  `json:"last_migration_result,omitempty"`
+	LastMigrationError      string                  `json:"last_migration_error,omitempty"`
+	MigrationsStarted       int64                   `json:"migrations_started"`
+	MigrationsSucceeded     int64                   `json:"migrations_succeeded"`
+	MigrationsFailed        int64                   `json:"migrations_failed"`
 	History                 []MigrationHistoryEntry `json:"history"`
-	LoadgenRunning          bool               `json:"loadgen_running"`
-	LoadgenType             string             `json:"loadgen_type,omitempty"`
-	Logs                    []string           `json:"logs"`
-	LogsNext                int64              `json:"logs_next"`
-	LogsReset               bool               `json:"logs_reset"`
-	Pings                   []PingData         `json:"pings"`
-	PingsNext               int64              `json:"pings_next"`
-	PingsReset              bool               `json:"pings_reset"`
+	LoadgenRunning          bool                    `json:"loadgen_running"`
+	LoadgenType             string                  `json:"loadgen_type,omitempty"`
+	Logs                    []string                `json:"logs"`
+	LogsNext                int64                   `json:"logs_next"`
+	LogsReset               bool                    `json:"logs_reset"`
+	Pings                   []PingData              `json:"pings"`
+	PingsNext               int64                   `json:"pings_next"`
+	PingsReset              bool                    `json:"pings_reset"`
 }
 
 type App struct {

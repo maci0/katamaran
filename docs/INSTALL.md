@@ -153,8 +153,8 @@ The controller exposes operational endpoints on port `8081`:
 |------|-------------|
 | `/healthz`     | Kubelet liveness probe |
 | `/readyz`      | Kubelet readiness probe |
-| `/metrics`     | Prometheus text-format counters: `katamaran_migrations_dispatched_total`, `_succeeded_total`, `_failed_total`, `_recovered_total`, `_deleted_total`, `_inflight`, `_reconcile_errors_total`, `_watch_lost_total` |
-| `/debug/vars`  | Same counters via Go expvar JSON, plus runtime memstats |
+| `/metrics`     | Prometheus text-format controller counters (`katamaran_migrations_*`) plus per-migration gauges for RAM, phase, downtime, applied downtime, and RTT |
+| `/debug/vars`  | Same controller counters via Go expvar JSON, plus runtime memstats |
 
 Point a Prometheus scrape at the `katamaran-mgr` pod's `:8081/metrics`
 to ingest the migration counters. No `prometheus/client_golang` runtime

@@ -30,6 +30,8 @@ import (
 	"expvar"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,9 +46,10 @@ import (
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
-// Process-wide expvar counters surfaced by katamaran-mgr's /debug/vars
-// endpoint. Plain expvar (no Prometheus dep) keeps the mgr image small;
-// users can scrape /debug/vars or wrap it with prom-exporter sidecars.
+// Process-wide expvar counters surfaced by katamaran-mgr's /metrics
+// (Prometheus text-format) and /debug/vars (JSON) endpoints. Plain
+// expvar (no Prometheus client dep) keeps the mgr image small; the
+// /metrics handler walks the expvar registry in-process.
 var (
 	mDispatched      = expvar.NewInt("katamaran_migrations_dispatched_total")
 	mSucceeded       = expvar.NewInt("katamaran_migrations_succeeded_total")
@@ -56,14 +59,16 @@ var (
 	mDeleted         = expvar.NewInt("katamaran_migrations_deleted_total")
 	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
 	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
+	mStatusPatchErrs = expvar.NewInt("katamaran_migrations_status_patch_errors_total")
 	mWatchLost       = expvar.NewInt("katamaran_migrations_watch_lost_total")
+	mWorkerPanics    = expvar.NewInt("katamaran_migrations_worker_panics_total")
 )
 
-// migrationMetrics tracks per-migration progress for Prometheus export.
+// migrationProgress tracks per-migration progress for Prometheus export.
 // Keyed by migration ID. Entries are added on dispatch and removed when
-// the watch channel closes. The /metrics handler iterates this map and
-// emits labeled gauges.
-var migrationProgress sync.Map // map[string]*MigrationProgressEntry
+// the dispatch goroutine exits. The /metrics handler iterates this map
+// via MigrationProgressSnapshot and emits labeled gauges.
+var migrationProgress sync.Map // map[string]MigrationProgressEntry
 
 // MigrationProgressEntry holds per-migration metrics for Prometheus export.
 type MigrationProgressEntry struct {
@@ -80,8 +85,10 @@ func updateProgressMetrics(u orchestrator.StatusUpdate) {
 	if id == "" {
 		return
 	}
-	v, _ := migrationProgress.LoadOrStore(id, &MigrationProgressEntry{})
-	e := v.(*MigrationProgressEntry)
+	var e MigrationProgressEntry
+	if v, ok := migrationProgress.Load(id); ok {
+		e = v.(MigrationProgressEntry)
+	}
 	e.Phase = string(u.Phase)
 	if u.RAMTransferred > 0 {
 		e.RAMTransferred = u.RAMTransferred
@@ -98,6 +105,7 @@ func updateProgressMetrics(u orchestrator.StatusUpdate) {
 	if u.RTTMS > 0 {
 		e.RTTMS = u.RTTMS
 	}
+	migrationProgress.Store(id, e)
 }
 
 // MigrationProgressSnapshot returns a point-in-time copy of all tracked
@@ -105,7 +113,7 @@ func updateProgressMetrics(u orchestrator.StatusUpdate) {
 func MigrationProgressSnapshot() map[string]MigrationProgressEntry {
 	out := make(map[string]MigrationProgressEntry)
 	migrationProgress.Range(func(k, v any) bool {
-		out[k.(string)] = *v.(*MigrationProgressEntry)
+		out[k.(string)] = v.(MigrationProgressEntry)
 		return true
 	})
 	return out
@@ -169,11 +177,24 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := r.reconcileAll(ctx); err != nil {
-				mReconcileErrors.Add(1)
-				slog.Error("reconcile loop failed", "error", err)
-			}
+			r.tickOnce(ctx)
 		}
+	}
+}
+
+// tickOnce runs a single reconcileAll pass with panic recovery. A panic in
+// the reconcile loop would otherwise kill the goroutine and the controller
+// would silently stop reconciling without any liveness signal change.
+func (r *Reconciler) tickOnce(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			mWorkerPanics.Add(1)
+			slog.Error("reconcile tick panic", "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := r.reconcileAll(ctx); err != nil {
+		mReconcileErrors.Add(1)
+		slog.Error("reconcile loop failed", "error", err)
 	}
 }
 
@@ -262,6 +283,12 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	mInflight.Add(1)
 	defer mInflight.Add(-1)
 	defer r.untrack(key)
+	defer func() {
+		if rec := recover(); rec != nil {
+			mWorkerPanics.Add(1)
+			slog.Error("Migration dispatch panic", "migration", key, "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
 
 	slog.Info("Dispatching new Migration", "migration", key)
 	req, err := specToRequest(obj.Object)
@@ -342,6 +369,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	}
 	mDispatched.Add(1)
 	r.updateTrack(key, id, cancel)
+	defer migrationProgress.Delete(string(id))
 	slog.Info("Migration submitted", "migration", key, "migration_id", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
 	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
 
@@ -405,16 +433,16 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			// If auto-scheduled, resolve dest node from the dest job
 			if destNode == "" {
 				// Try to find the dest job's node
-				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption")
+				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption", "migration", key, "migration_id", id)
 			} else {
 				// Wait for the factory to load VMConfig from the migration
 				// state or a sandbox persist.json before creating the pod.
-				slog.Info("Waiting for factory VMConfig before adoption", "delay", "5s")
+				slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", "5s")
 				time.Sleep(5 * time.Second)
 				if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
-					slog.Warn("Failed to create adoption pod", "name", adoptName, "node", destNode, "error", err)
+					slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
 				} else {
-					slog.Info("Adoption pod created", "name", adoptName, "node", destNode)
+					slog.Info("Adoption pod created", "migration", key, "migration_id", id, "name", adoptName, "node", destNode)
 				}
 			}
 		}
@@ -431,6 +459,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 	mInflight.Add(1)
 	defer mInflight.Add(-1)
 	defer r.untrack(key)
+	defer func() {
+		if rec := recover(); rec != nil {
+			mWorkerPanics.Add(1)
+			slog.Error("Migration recover panic", "migration", key, "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
 
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
 	slog.Info("Recovering in-flight Migration after controller restart", "migration", key, "migration_id", id)
@@ -482,14 +516,18 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				return
 			} else if cond == batchv1.JobFailed {
-				slog.Error("Recovery failed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
-				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", "")
+				detail, attrs := jobFailureDetails(dest)
+				attrs = append([]any{"migration", key, "migration_id", id, "dest_job", dest.Name}, attrs...)
+				slog.Error("Recovery failed from destination job", attrs...)
+				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
 				return
 			}
 		}
 		if dest == nil && src != nil && orchestrator.TerminalJobCondition(src) == batchv1.JobFailed {
-			slog.Error("Recovery failed from source job before destination started", "migration", key, "migration_id", id, "source_job", src.Name)
-			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", "")
+			detail, attrs := jobFailureDetails(src)
+			attrs = append([]any{"migration", key, "migration_id", id, "source_job", src.Name}, attrs...)
+			slog.Error("Recovery failed from source job before destination started", attrs...)
+			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
 			return
 		}
 		// Source still running but dest never got created — orchestrator
@@ -525,6 +563,24 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			return
 		}
 	}
+}
+
+func jobFailureDetails(job *batchv1.Job) (string, []any) {
+	cond, ok := orchestrator.LatestTerminalJobCondition(job)
+	if !ok {
+		return "", nil
+	}
+	details := make([]string, 0, 2)
+	attrs := make([]any, 0, 4)
+	if cond.Reason != "" {
+		details = append(details, "reason="+cond.Reason)
+		attrs = append(attrs, "reason", cond.Reason)
+	}
+	if cond.Message != "" {
+		details = append(details, "message="+cond.Message)
+		attrs = append(attrs, "message", cond.Message)
+	}
+	return strings.Join(details, " "), attrs
 }
 
 // handleDeletion runs when the user has issued `kubectl delete migration`.
@@ -708,6 +764,7 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 	}
 	_, err = r.Dynamic.Resource(MigrationGVR).Namespace(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 	if err != nil {
+		mStatusPatchErrs.Add(1)
 		slog.Error("patch status failed", "migration", key, "error", err)
 	}
 	return err

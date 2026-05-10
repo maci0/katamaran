@@ -246,7 +246,14 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 				MinVersion: tls.VersionTLS12,
 			},
 		},
+		// Refuse to follow redirects: the in-cluster apiserver does not
+		// redirect on the happy path, and a redirect away from it could
+		// divert the bearer token to an untrusted host.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
+	defer client.CloseIdleConnections()
 
 	// Escape ns/name as single path segments: callers may pass values with
 	// '/' (the orchestrator validation allowlist permits it for legitimate
@@ -303,7 +310,7 @@ func lookupPodIPOnce(ctx context.Context, client *http.Client, endpoint, token s
 	}
 
 	var ps podStatusResp
-	if err := json.NewDecoder(resp.Body).Decode(&ps); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ps); err != nil {
 		return "", fmt.Errorf("decode pod response: %w", err)
 	}
 	return ps.Status.PodIP, nil

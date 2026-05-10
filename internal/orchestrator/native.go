@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,9 +35,9 @@ import (
 //     destination Job reaches condition=Complete, and PhaseFailed when the
 //     destination fails or the source fails without a successful handover.
 //
-// Limitations: only structured KATAMARAN_PROGRESS / KATAMARAN_RESULT marker
-// lines are tailed from the source pod. Full per-pod log streaming for the
-// dashboard log pane is not implemented.
+// Limitations: only structured KATAMARAN_PROGRESS / KATAMARAN_RESULT /
+// KATAMARAN_DOWNTIME_LIMIT marker lines are tailed from the source pod. Full
+// per-pod log streaming for the dashboard log pane is not implemented.
 //
 // ReplayCmdline support: when the request has ReplayCmdline=true, the
 // orchestrator submits the source Job first, waits for its pod to be
@@ -155,12 +157,21 @@ func SetPodWaitTimeout(o Orchestrator, d time.Duration) {
 	}
 }
 
+// cleanupDestJob best-effort deletes the dest Job after a setup error and
+// logs a warning if the delete itself fails. Consolidates the cleanup
+// branches scattered through the auto-select and dest-first code paths.
+func (n *native) cleanupDestJob(ctx context.Context, destJobName, reason string) {
+	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJobName, metav1.DeleteOptions{}); err != nil {
+		slog.Warn("failed to clean up dest job", "reason", reason, "dest_job", destJobName, "namespace", n.namespace, "error", err)
+	}
+}
+
 // Apply renders both Job manifests, submits them, and returns a fresh ID.
 // Status polling starts immediately in a goroutine.
 //
-// In ReplayCmdline mode the dest Job is held back until the source has
-// emitted the QEMU cmdline marker, so the cmdline file is staged on the
-// destination node before katamaran-dest starts.
+// In ReplayCmdline mode the dest Job is held back until the source pod is
+// up; the dest binary then scrapes the KATAMARAN_CMDLINE_B64 marker from
+// the source pod log via the apiserver.
 func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if err := Validate(req); err != nil {
 		return "", err
@@ -207,42 +218,31 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 
 		destNodeName, err := n.waitForDestNodeName(ctx, destJob.Name, req.PodWaitTimeoutSeconds)
 		if err != nil {
-			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
-				slog.Warn("failed to clean up dest job after scheduling wait failed", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
-			}
+			n.cleanupDestJob(ctx, destJob.Name, "scheduling wait failed")
 			return "", fmt.Errorf("wait for dest pod scheduling: %w", err)
 		}
 		if destNodeName == req.SourceNode {
-			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
-				slog.Warn("failed to clean up dest job after same-node scheduling", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
-			}
+			n.cleanupDestJob(ctx, destJob.Name, "same-node scheduling")
 			return "", fmt.Errorf("dest pod scheduled on source node %s; cannot migrate to same node", destNodeName)
 		}
 		disc := &nativeDiscoverer{client: n.client}
 		destIP, err := disc.LookupNodeInternalIP(ctx, destNodeName)
 		if err != nil {
-			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
-				slog.Warn("failed to clean up dest job after IP lookup failed", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
-			}
+			n.cleanupDestJob(ctx, destJob.Name, "IP lookup failed")
 			return "", fmt.Errorf("resolve dest node IP: %w", err)
 		}
 		req.DestNode = destNodeName
 		req.DestIP = destIP
 		slog.Info("Auto-select: dest pod scheduled", "migration_id", id, "dest_node", destNodeName, "dest_ip", destIP)
 
-		// Re-render the source job now that we know DestIP.
-		srcExtra := buildExtraArgs(req)
-		if req.ReplayCmdline {
-			srcExtra = strings.TrimSpace(srcExtra + " --emit-cmdline-to " + cmdlinePath)
-		}
-		srcJob, err = renderSourceJob(req, id, srcExtra)
+		// Re-render the source job now that we know DestIP. ReplayCmdline
+		// takes the earlier branch, so no --emit-cmdline-to is needed here.
+		srcJob, err = renderSourceJob(req, id, buildExtraArgs(req))
 		if err != nil {
 			return "", fmt.Errorf("re-render source job: %w", err)
 		}
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
-				slog.Warn("failed to clean up dest job after source create failed; manual cleanup may be required", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
-			}
+			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
 			return "", fmt.Errorf("create source job: %w", err)
 		}
 		slog.Info("Auto-select: migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "source_node", req.SourceNode, "dest_node", req.DestNode, "namespace", n.namespace)
@@ -252,9 +252,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			return "", fmt.Errorf("create dest job: %w", err)
 		}
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-			if delErr := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJob.Name, metav1.DeleteOptions{}); delErr != nil {
-				slog.Warn("failed to clean up dest job after source create failed; manual cleanup may be required", "dest_job", destJob.Name, "namespace", n.namespace, "error", delErr)
-			}
+			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
 			return "", fmt.Errorf("create source job: %w", err)
 		}
 		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
@@ -278,7 +276,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if req.ReplayCmdline {
 		// Stage cmdline + create dest job in a goroutine so Apply returns
 		// promptly. Status updates flow through the same channel.
-		go n.stageThenStartDest(runCtx, id, run, req, destJob)
+		go n.stageThenStartDest(runCtx, id, run, destJob)
 	}
 	go n.poll(runCtx, id, run)
 	go n.tailProgress(runCtx, id, run)
@@ -296,6 +294,11 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // RESULT line lands a few ms after — so we keep polling until RESULT
 // arrives or the run is torn down.
 func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("tailProgress panic", "migration_id", id, "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob, run.podWaitTimeoutSeconds)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -313,6 +316,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		// per-tick payload small even on long-running migrations (without
 		// SinceSeconds the entire log is re-streamed every poll).
 		logFetchOverlapSec int64 = 30
+		logFetchLimitBytes int64 = 4 * 1024 * 1024
 	)
 	seen := map[string]bool{} // dedupe identical marker lines within the SinceSeconds window
 	ticker := time.NewTicker(2 * time.Second)
@@ -331,6 +335,10 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		return true
 	}
 	overlap := logFetchOverlapSec
+	limitBytes := logFetchLimitBytes
+	// Hoisted outside the loop: same value every tick, no need to re-allocate.
+	logOpts := &corev1.PodLogOptions{Container: "katamaran", SinceSeconds: &overlap, LimitBytes: &limitBytes}
+	var consecStreamErrors int
 	for {
 		select {
 		case <-ctx.Done():
@@ -343,16 +351,26 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		// recur, so anything beyond it is dead weight. Resetting periodically
 		// keeps memory bounded on multi-hour migrations.
 		if len(seen) > 1024 {
-			seen = map[string]bool{}
+			clear(seen)
 		}
-		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, &corev1.PodLogOptions{Container: "katamaran", SinceSeconds: &overlap})
+		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, logOpts)
 		stream, err := req.Stream(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Debug("tailProgress: opening source pod log stream failed", "migration_id", id, "pod", srcPod, "error", err)
+				consecStreamErrors++
+				attrs := []any{"migration_id", id, "pod", srcPod, "error", err, "consecutive_errors", consecStreamErrors}
+				// Persistent failures (apiserver flapping, RBAC drop) leave the
+				// caller without progress markers indefinitely; escalate so the
+				// blind window is visible without raising the global log level.
+				if consecStreamErrors == 10 || consecStreamErrors%30 == 0 {
+					slog.Warn("tailProgress: opening source pod log stream failing repeatedly", attrs...)
+				} else {
+					slog.Debug("tailProgress: opening source pod log stream failed", attrs...)
+				}
 			}
 			continue
 		}
+		consecStreamErrors = 0
 		// Stream line-by-line instead of materializing the whole 30s log
 		// window as a single string + slice; per-tick payload can be hundreds
 		// of KB on chatty migrations.
@@ -361,11 +379,17 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		done := false
 		for scanner.Scan() {
 			line := scanner.Text()
+			// Fast path: chatty pods produce many non-marker lines per tick
+			// (a 4MB / 30s window can be tens of thousands of lines). Skip
+			// them with a single substring scan before the dedup map lookup
+			// and three per-marker Index calls below.
+			if !strings.Contains(line, "KATAMARAN_") {
+				continue
+			}
 			if seen[line] {
 				continue
 			}
 			if i := strings.Index(line, resultMarker); i >= 0 {
-				seen[line] = true
 				fields := parseProgressFields(line[i+len(resultMarker):])
 				run.resultMu.Lock()
 				run.resultDowntime = parseInt64(fields["downtime_ms"])
@@ -495,16 +519,22 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 	return u
 }
 
-// scrapeResultMarker does a one-shot fetch of the source pod's full log
-// and returns the latest KATAMARAN_RESULT marker's downtime / transferred
-// / total fields. Returns ok=false if no source pod exists, the log
-// stream fails, or no marker is present in the captured log window.
+// scrapeResultMarker does a one-shot bounded fetch of the source pod's recent
+// log tail and returns the latest KATAMARAN_RESULT marker's downtime /
+// transferred / total fields. Returns ok=false if no source pod exists, the
+// log stream fails, or no marker is present in the captured log window.
 func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtimeMS, ramXfer, ramTotal int64, ok bool) {
 	pod, err := n.firstSourcePod(ctx, srcJob, 0)
 	if err != nil {
 		return 0, 0, 0, false
 	}
-	stream, err := n.client.CoreV1().Pods(n.namespace).GetLogs(pod, &corev1.PodLogOptions{Container: "katamaran"}).Stream(ctx)
+	tailLines := int64(200)
+	limitBytes := int64(1024 * 1024)
+	stream, err := n.client.CoreV1().Pods(n.namespace).GetLogs(pod, &corev1.PodLogOptions{
+		Container:  "katamaran",
+		TailLines:  &tailLines,
+		LimitBytes: &limitBytes,
+	}).Stream(ctx)
 	if err != nil {
 		return 0, 0, 0, false
 	}
@@ -530,27 +560,56 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 }
 
 func parseInt64(s string) int64 {
-	if s == "" {
-		return 0
-	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0
-	}
+	v, _ := strconv.ParseInt(s, 10, 64)
 	return v
+}
+
+func jobConditionAttrs(cond batchv1.JobCondition) []any {
+	attrs := make([]any, 0, 4)
+	if cond.Reason != "" {
+		attrs = append(attrs, "reason", cond.Reason)
+	}
+	if cond.Message != "" {
+		attrs = append(attrs, "message", cond.Message)
+	}
+	return attrs
+}
+
+func jobFailedError(base string, cond batchv1.JobCondition) error {
+	details := make([]string, 0, 2)
+	if cond.Reason != "" {
+		details = append(details, "reason="+cond.Reason)
+	}
+	if cond.Message != "" {
+		details = append(details, "message="+cond.Message)
+	}
+	if len(details) == 0 {
+		return errors.New(base)
+	}
+	return fmt.Errorf("%s: %s", base, strings.Join(details, " "))
+}
+
+func logTransientJobStatusError(message string, id MigrationID, jobName, namespace string, err error, consecutive int) {
+	attrs := []any{"migration_id", id, "job", jobName, "namespace", namespace, "error", err, "consecutive_errors", consecutive}
+	if consecutive == 10 || consecutive%30 == 0 {
+		slog.Warn(message, attrs...)
+		return
+	}
+	slog.Debug(message, attrs...)
 }
 
 // stageThenStartDest resolves the source pod's name (so the dest binary
 // can fetch the source's cmdline directly from its pod log) and submits
 // the dest Job with --replay-cmdline-from-pod=<ns>/<podname> appended
-// to its EXTRA_ARGS.
-//
-// Previously this function did SPDY exec + stager-pod + hostPath
-// shuffling to land the cmdline file on the dest node. The dest binary
-// now reads the source pod's log via the in-cluster apiserver instead,
-// so the only thing that has to happen between source-job creation and
-// dest-job creation is "wait for the source pod to exist".
-func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, req Request, destJob *batchv1.Job) {
+// to its EXTRA_ARGS. The only synchronisation between source-job
+// creation and dest-job creation is "wait for the source pod to exist".
+func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, destJob *batchv1.Job) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("stageThenStartDest panic", "migration_id", id, "panic", rec, "stack", string(debug.Stack()))
+			run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("dest staging panic: %v", rec)})
+		}
+	}()
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob, run.podWaitTimeoutSeconds)
 	if err != nil {
 		slog.Error("Cmdline replay failed: source pod not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
@@ -574,6 +633,12 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 	slog.Info("Replay-from-pod wired; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 }
 
+// dns1123LabelRe matches a single DNS-1123 label (lowercase alphanumerics
+// and hyphens, max 63 chars). Kubernetes pod and namespace names follow
+// DNS-1123 conventions; this regex is used as a defense-in-depth check
+// before either value is interpolated into a /bin/sh -c command string.
+var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
 // injectReplayFromPod returns a copy of destJob with
 // `--replay-cmdline-from-pod <ns>/<pod>` appended to the dest container's
 // command. The render path doesn't know the source pod name (it's only
@@ -583,6 +648,12 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	if destJob == nil || len(destJob.Spec.Template.Spec.Containers) == 0 {
 		return nil, fmt.Errorf("dest job has no containers")
 	}
+	if len(ns) == 0 || len(ns) > 253 || !dns1123LabelRe.MatchString(ns) {
+		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", ns)
+	}
+	if len(srcPod) == 0 || len(srcPod) > 253 || !dns1123LabelRe.MatchString(srcPod) {
+		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 label", srcPod)
+	}
 	out := destJob.DeepCopy()
 	cs := out.Spec.Template.Spec.Containers
 	for i := range cs {
@@ -591,14 +662,13 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 		}
 		// The dest job template invokes /bin/sh -c "<full command>"; the
 		// last element of cs[i].Command is that command string. We append
-		// the new flag to it so the source binary's flag.Parse picks it
+		// the new flag to it so the dest binary's flag.Parse picks it
 		// up alongside the existing --mode dest --qmp ... etc.
 		if len(cs[i].Command) == 0 {
 			return nil, fmt.Errorf("katamaran container has empty command")
 		}
 		last := len(cs[i].Command) - 1
-		cs[i].Command[last] = cs[i].Command[last] + fmt.Sprintf(" --replay-cmdline-from-pod %s/%s", ns, srcPod)
-		out.Spec.Template.Spec.Containers = cs
+		cs[i].Command[last] += fmt.Sprintf(" --replay-cmdline-from-pod %s/%s", ns, srcPod)
 		return out, nil
 	}
 	return nil, fmt.Errorf("no katamaran container in dest job")
@@ -626,10 +696,12 @@ func (run *nativeRun) send(u StatusUpdate) {
 	}
 }
 
-// waitForDestNodeName waits for the destination Job's pod to be scheduled
-// (i.e. have a non-empty spec.nodeName) and returns the assigned node name.
-// Used in auto-select mode to discover which node Kubernetes chose.
-func (n *native) waitForDestNodeName(ctx context.Context, jobName string, reqTimeout int) (string, error) {
+// waitForJobPod polls until pick returns a non-empty value for any pod under
+// jobName, then returns it. Shared backbone for firstSourcePod (returns the
+// first pod name as soon as any pod appears) and waitForDestNodeName (returns
+// the assigned node name once the dest pod is scheduled). desc shapes the
+// timeout error and the retry-log message.
+func (n *native) waitForJobPod(ctx context.Context, jobName, desc string, reqTimeout int, pick func(corev1.Pod) string) (string, error) {
 	timeout := n.podWaitTimeout
 	if reqTimeout > 0 {
 		timeout = time.Duration(reqTimeout) * time.Second
@@ -637,62 +709,49 @@ func (n *native) waitForDestNodeName(ctx context.Context, jobName string, reqTim
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastListErr error
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	for {
 		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
 			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
 		})
 		if err == nil {
 			for _, p := range pods.Items {
-				if p.Spec.NodeName != "" {
-					return p.Spec.NodeName, nil
+				if v := pick(p); v != "" {
+					return v, nil
 				}
 			}
 		} else if deadline.Err() == nil {
 			lastListErr = err
-			slog.Debug("waitForDestNodeName: list pods failed, will retry", "job", jobName, "namespace", n.namespace, "error", err)
+			slog.Debug("waitForJobPod: list pods failed, will retry", "desc", desc, "job", jobName, "namespace", n.namespace, "error", err)
 		}
 		select {
 		case <-deadline.Done():
 			if lastListErr != nil {
-				return "", fmt.Errorf("waiting for dest pod scheduling of job %s: %w (last list error: %v)", jobName, deadline.Err(), lastListErr)
+				return "", fmt.Errorf("waiting for %s of job %s: %w (last list error: %v)", desc, jobName, deadline.Err(), lastListErr)
 			}
-			return "", fmt.Errorf("waiting for dest pod scheduling of job %s: %w", jobName, deadline.Err())
-		case <-time.After(2 * time.Second):
+			return "", fmt.Errorf("waiting for %s of job %s: %w", desc, jobName, deadline.Err())
+		case <-ticker.C:
 		}
 	}
+}
+
+// waitForDestNodeName waits for the destination Job's pod to be scheduled
+// (i.e. have a non-empty spec.nodeName) and returns the assigned node name.
+// Used in auto-select mode to discover which node Kubernetes chose.
+func (n *native) waitForDestNodeName(ctx context.Context, jobName string, reqTimeout int) (string, error) {
+	return n.waitForJobPod(ctx, jobName, "dest pod scheduling", reqTimeout, func(p corev1.Pod) string {
+		return p.Spec.NodeName
+	})
 }
 
 // firstSourcePod waits for the source Job's pod to be created and returns
 // its name. The timeout is determined by the per-request override
 // (PodWaitTimeoutSeconds), falling back to the orchestrator-level default.
 func (n *native) firstSourcePod(ctx context.Context, jobName string, reqTimeout int) (string, error) {
-	timeout := n.podWaitTimeout
-	if reqTimeout > 0 {
-		timeout = time.Duration(reqTimeout) * time.Second
-	}
-	deadline, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var lastListErr error
-	for {
-		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
-			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
-		})
-		if err == nil && len(pods.Items) > 0 {
-			return pods.Items[0].Name, nil
-		}
-		if err != nil && deadline.Err() == nil {
-			lastListErr = err
-			slog.Debug("firstSourcePod: list pods failed, will retry", "job", jobName, "namespace", n.namespace, "error", err)
-		}
-		select {
-		case <-deadline.Done():
-			if lastListErr != nil {
-				return "", fmt.Errorf("waiting for source pod of job %s: %w (last list error: %v)", jobName, deadline.Err(), lastListErr)
-			}
-			return "", fmt.Errorf("waiting for source pod of job %s: %w", jobName, deadline.Err())
-		case <-time.After(2 * time.Second):
-		}
-	}
+	return n.waitForJobPod(ctx, jobName, "source pod", reqTimeout, func(p corev1.Pod) string {
+		return p.Name
+	})
 }
 
 // Watch returns the channel of status updates for id. ErrUnknownID if the
@@ -807,12 +866,18 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 		delete(n.inflight, id)
 		n.mu.Unlock()
 	}()
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("poll panic", "migration_id", id, "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
 	const interval = 2 * time.Second
 	const sourceFailGrace = 90 * time.Second // how long to wait for dest after source dies
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	announcedTransferring := false
 	var sourceFailedAt time.Time
+	var destStatusErrors, srcStatusErrors int
 	for {
 		select {
 		case <-ctx.Done():
@@ -825,17 +890,23 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 
 			// Dest=Complete → success, even if source failed.
 			if destErr == nil {
-				if cond := TerminalJobCondition(destJob); cond == batchv1.JobComplete {
+				destStatusErrors = 0
+				if cond, ok := LatestTerminalJobCondition(destJob); ok && cond.Type == batchv1.JobComplete {
 					slog.Info("Migration destination job completed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
 					run.updates <- n.succeededUpdate(ctx, id, run)
 					return
-				} else if cond == batchv1.JobFailed {
-					slog.Error("Migration destination job failed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("dest job failed")}
+				} else if ok && cond.Type == batchv1.JobFailed {
+					attrs := []any{"migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob}
+					attrs = append(attrs, jobConditionAttrs(cond)...)
+					slog.Error("Migration destination job failed", attrs...)
+					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("dest job failed", cond)}
 					return
 				}
 			} else if !apierrors.IsNotFound(destErr) {
-				slog.Debug("Migration destination job status unavailable", "migration_id", id, "dest_job", run.destJob, "error", destErr)
+				destStatusErrors++
+				logTransientJobStatusError("Migration destination job status unavailable", id, run.destJob, n.namespace, destErr, destStatusErrors)
+			} else {
+				destStatusErrors = 0
 			}
 
 			// Source job state.
@@ -845,18 +916,23 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job disappeared")}
 					return
 				}
-				slog.Debug("Migration source job status unavailable", "migration_id", id, "source_job", run.srcJob, "error", srcErr)
+				srcStatusErrors++
+				logTransientJobStatusError("Migration source job status unavailable", id, run.srcJob, n.namespace, srcErr, srcStatusErrors)
 				continue
 			}
-			srcCond := TerminalJobCondition(srcJob)
-			if srcCond == batchv1.JobFailed {
+			srcStatusErrors = 0
+			if srcCond, ok := LatestTerminalJobCondition(srcJob); ok && srcCond.Type == batchv1.JobFailed {
 				if sourceFailedAt.IsZero() {
 					sourceFailedAt = time.Now()
-					slog.Warn("Migration source job failed; waiting for destination grace window", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace)
+					attrs := []any{"migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace}
+					attrs = append(attrs, jobConditionAttrs(srcCond)...)
+					slog.Warn("Migration source job failed; waiting for destination grace window", attrs...)
 				}
 				if time.Since(sourceFailedAt) > sourceFailGrace {
-					slog.Error("Migration source job failed and destination did not complete", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace)
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job failed and dest did not complete within grace window")}
+					attrs := []any{"migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace}
+					attrs = append(attrs, jobConditionAttrs(srcCond)...)
+					slog.Error("Migration source job failed and destination did not complete", attrs...)
+					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("source job failed and dest did not complete within grace window", srcCond)}
 					return
 				}
 				continue // give dest time to land RESUME and exit 0
@@ -869,10 +945,10 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	}
 }
 
-// buildExtraArgs assembles the EXTRA_ARGS string the source/dest containers
-// receive. Mirrors the bash logic in deploy/migrate.sh's SRC_EXTRA_ARGS /
-// DEST_EXTRA_ARGS construction (minus the shipped-cmdline flags, which are
-// only applicable in ReplayCmdline mode).
+// buildExtraArgs assembles the EXTRA_ARGS string appended to both rendered
+// source and dest container commands. Mode-specific flags may appear in this
+// shared string; the katamaran CLI warns and ignores flags that do not apply
+// to the current mode. Replay cmdline delivery flags are appended separately.
 func buildExtraArgs(req Request) string {
 	var args []string
 	if req.SharedStorage {

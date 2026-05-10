@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"time"
@@ -21,11 +22,17 @@ var migrateFormKeys = []string{
 	"replay_cmdline", "tunnel_mode", "auto_downtime",
 }
 
+var migrateFormKeySet = formFieldSet(migrateFormKeys...)
+
+// migrateBoolFormKeys is the subset of /api/migrate fields whose value, when
+// supplied, must be the literal string "true" or "false".
+var migrateBoolFormKeys = []string{"shared_storage", "replay_cmdline", "auto_downtime"}
+
 // formToOrchestratorRequest reads the (already-validated) form fields and
 // builds an orchestrator.Request. resolvedSrcNode and resolvedDestIP are the
 // values handleMigrate looked up via the Discoverer when the form is in pod
 // mode; pass empty strings in legacy mode.
-func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, resolvedDestIP, downtimeArg string) orchestrator.Request {
+func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, resolvedDestIP string, downtimeMS int) orchestrator.Request {
 	req := orchestrator.Request{
 		DestNode:      r.PostFormValue("dest_node"),
 		Image:         r.PostFormValue("image"),
@@ -34,6 +41,11 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 		AutoDowntime:  r.PostFormValue("auto_downtime") == "true",
 		TapNetns:      r.PostFormValue("tap_netns"),
 		TunnelMode:    r.PostFormValue("tunnel_mode"),
+		SourceQMP:     r.PostFormValue("qmp_source"),
+		DestQMP:       r.PostFormValue("qmp_dest"),
+		VMIP:          r.PostFormValue("vm_ip"),
+		TapIface:      r.PostFormValue("tap"),
+		DowntimeMS:    downtimeMS,
 	}
 	if podMode {
 		req.SourceNode = resolvedSrcNode
@@ -42,11 +54,6 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 			Namespace: r.PostFormValue("source_pod_namespace"),
 			Name:      r.PostFormValue("source_pod_name"),
 		}
-		// Advanced overrides — apply only when non-empty.
-		req.SourceQMP = r.PostFormValue("qmp_source")
-		req.DestQMP = r.PostFormValue("qmp_dest")
-		req.VMIP = r.PostFormValue("vm_ip")
-		req.TapIface = r.PostFormValue("tap")
 		if dpNS := r.PostFormValue("dest_pod_namespace"); dpNS != "" {
 			req.DestPod = &orchestrator.PodRef{
 				Namespace: dpNS,
@@ -56,13 +63,6 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 	} else {
 		req.SourceNode = r.PostFormValue("source_node")
 		req.DestIP = r.PostFormValue("dest_ip")
-		req.SourceQMP = r.PostFormValue("qmp_source")
-		req.DestQMP = r.PostFormValue("qmp_dest")
-		req.VMIP = r.PostFormValue("vm_ip")
-		req.TapIface = r.PostFormValue("tap")
-	}
-	if d, err := strconv.Atoi(downtimeArg); err == nil && d > 0 {
-		req.DowntimeMS = d
 	}
 	return req
 }
@@ -73,6 +73,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// ParseForm silently ignores non-form bodies (e.g. JSON), and all fields
 	// appear empty — producing confusing "Missing required field" errors.
 	if !parseFormPOST(w, r, "Migration request") {
+		return
+	}
+	if !rejectUnknownPostFormFields(w, r, migrateFormKeySet, "Migration request") {
 		return
 	}
 
@@ -86,7 +89,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate boolean form fields if present.
-	for _, key := range []string{"shared_storage", "replay_cmdline", "auto_downtime"} {
+	for _, key := range migrateBoolFormKeys {
 		if v := r.PostFormValue(key); v != "" && v != "true" && v != "false" {
 			slog.Warn("Rejected invalid boolean form value", "field", key, "request_id", requestIDFromContext(r.Context()))
 			jsonError(w, fmt.Sprintf("Invalid value for %s (must be 'true' or 'false')", key), http.StatusBadRequest)
@@ -107,7 +110,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// from the dropdown and we resolve source_node + dest_ip via the
 	// Discoverer; the legacy explicit-fields path stays unchanged for
 	// backward compat.
-	podMode := r.PostFormValue("source_pod_name") != ""
+	podMode := r.PostFormValue("source_pod_name") != "" || r.PostFormValue("source_pod_namespace") != ""
 	required := []string{"image"}
 	if podMode {
 		required = append(required, "source_pod_namespace", "source_pod_name", "dest_node")
@@ -121,18 +124,30 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	destPodNS := r.PostFormValue("dest_pod_namespace")
+	destPodName := r.PostFormValue("dest_pod_name")
+	if destPodNS == "" && destPodName != "" {
+		slog.Warn("Migration request rejected: missing paired dest pod field", "field", "dest_pod_namespace", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "dest_pod_namespace is required when dest_pod_name is set", http.StatusBadRequest)
+		return
+	}
+	if destPodNS != "" && destPodName == "" {
+		slog.Warn("Migration request rejected: missing paired dest pod field", "field", "dest_pod_name", "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "dest_pod_name is required when dest_pod_namespace is set", http.StatusBadRequest)
+		return
+	}
 
 	// Validate optional fields before acquiring the migration lock to avoid
 	// needing state rollback on validation failure.
-	var downtimeArg string
+	var downtimeMS int
 	if dt := r.PostFormValue("downtime"); dt != "" {
 		d, err := strconv.Atoi(dt)
 		if err != nil || d < 1 || d > 60000 {
 			slog.Warn("Migration request rejected: invalid downtime value", "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Invalid downtime value (must be between 1 and 60000)", http.StatusBadRequest)
+			jsonError(w, "Invalid downtime value (must be between 1 and 60000 milliseconds)", http.StatusBadRequest)
 			return
 		}
-		downtimeArg = strconv.Itoa(d)
+		downtimeMS = d
 	}
 
 	// Resolve pod-picker fields via the Discoverer up front, before
@@ -153,18 +168,18 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		resolvedSrcNode, err = disc.LookupPodNode(r.Context(), ns, pod)
 		if err != nil {
 			slog.Warn("Migration request rejected: source pod lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "lookup source pod: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, "Source pod lookup failed", http.StatusBadRequest)
 			return
 		}
 		resolvedDestIP, err = disc.LookupNodeInternalIP(r.Context(), dest)
 		if err != nil {
 			slog.Warn("Migration request rejected: destination node lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "lookup dest node: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, "Destination node lookup failed", http.StatusBadRequest)
 			return
 		}
 		if resolvedSrcNode == dest {
 			slog.Warn("Migration request rejected: source pod already on destination node", "source_pod", ns+"/"+pod, "node", dest, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "source and dest node must differ", http.StatusBadRequest)
+			jsonError(w, "Source and dest node must differ", http.StatusBadRequest)
 			return
 		}
 	}
@@ -174,7 +189,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// before Validate, so a bad request polluted /api/status's
 	// last_migration_* fields and the lifetime "failed" counter even though
 	// no migration ever ran.
-	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeArg)
+	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeMS)
 	if err := orchestrator.Validate(req); err != nil {
 		slog.Warn("Migration request rejected: invalid orchestrator request", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
@@ -239,10 +254,20 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		dashboardMigrationsActive.Add(-1)
 		recordMigrationDuration(time.Since(start), outcome)
 	}()
+	defer func() {
+		if rec := recover(); rec != nil {
+			dashboardMigrationWorkerPanicsTotal.Add(1)
+			msg := fmt.Sprintf("migration worker panic: %v", rec)
+			logger.Error("Migration worker panic", "panic", rec, "stack", string(debug.Stack()))
+			a.appendLog("Error: internal migration worker panic")
+			a.setMigrationResult("error", msg)
+		}
+	}()
 
 	a.appendLog(">>> Submitting migration via Native orchestrator…")
 	id, err := orch.Apply(ctx, req)
 	if err != nil {
+		dashboardMigrationApplyErrorsTotal.Add(1)
 		logger.Error("Migration apply failed", "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
@@ -251,6 +276,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 	a.appendLog(">>> Migration submitted, id=" + string(id))
 	updates, err := orch.Watch(ctx, id)
 	if err != nil {
+		dashboardMigrationWatchErrorsTotal.Add(1)
 		logger.Error("Migration watch failed", "orchestrator_id", string(id), "error", err)
 		a.appendLog("Error: " + err.Error())
 		a.setMigrationResult("error", err.Error())
@@ -350,6 +376,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	default:
 		msg := "watch closed without terminal status"
+		dashboardMigrationWatchLostTotal.Add(1)
 		a.setMigrationResult("error", msg)
 		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	}
@@ -432,7 +459,10 @@ func (a *App) setMigrationResult(result, errMsg string) {
 	}
 	a.migrationHistory = append(a.migrationHistory, entry)
 	if len(a.migrationHistory) > maxHistoryEntries {
-		a.migrationHistory = a.migrationHistory[1:]
+		// slices.Delete zeroes the dropped slot before shrinking, freeing the
+		// dropped entry's MigrationID/Error string headers for GC. A bare
+		// re-slice (`[1:]`) would keep them alive in the underlying array.
+		a.migrationHistory = slices.Delete(a.migrationHistory, 0, len(a.migrationHistory)-maxHistoryEntries)
 	}
 }
 

@@ -112,6 +112,12 @@ spec:
         app: katamaran-dashboard
     spec:
       serviceAccountName: katamaran-dashboard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: dashboard
         image: localhost/katamaran-dashboard:dev
@@ -169,7 +175,9 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-  - port: 8080
+  - name: http
+    port: 8080
     targetPort: 8080
+    protocol: TCP
   selector:
     app: katamaran-dashboard

@@ -5,8 +5,7 @@ import "fmt"
 // cmdlineHostDir is the hostPath mount the source job uses to capture
 // /proc/<qemu>/cmdline locally before emitting it to its pod log as a
 // KATAMARAN_CMDLINE_B64 marker. The dest binary scrapes that marker
-// via the apiserver instead of mounting the host directory itself —
-// the previous SPDY-exec / stager-pod / hostPath shuffle is gone.
+// via the apiserver instead of mounting the host directory itself.
 const cmdlineHostDir = "/tmp/katamaran-cmdlines"
 
 // cmdlinePathFor returns the per-migration cmdline file path inside

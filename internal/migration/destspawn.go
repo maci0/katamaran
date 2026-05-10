@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -28,24 +31,25 @@ var (
 	// root for the production /run path.
 	kataSharedSandboxRoot = "/run/kata-containers/shared/sandboxes"
 
-	// destReplayDefaultQEMU is the fallback QEMU binary path. Kata's bundled
-	// QEMU lives here. Used only when the captured cmdline's argv[0] is not a
-	// usable absolute path (defensive — argv[0] from /proc/<pid>/cmdline is
-	// effectively always absolute for QEMU).
+	// destReplayDefaultQEMU is the QEMU binary path used to spawn the
+	// destination QEMU when DestConfig.QEMUBinary is empty. The captured
+	// cmdline's argv[0] is intentionally NOT used: a compromised source pod
+	// could write an arbitrary path there and exec a non-QEMU binary on the
+	// dest node (see spawnReplayedQEMU).
 	destReplayDefaultQEMU = "/opt/kata/bin/qemu-system-x86_64"
 
-	// destReplayVirtiofsd is the virtiofsd binary path. Mirrors e2e.sh:518.
+	// destReplayVirtiofsd is the virtiofsd binary path Kata installs.
 	destReplayVirtiofsd = "/opt/kata/libexec/virtiofsd"
 
 	// destReplaySocketWaitTotal bounds how long we wait for the QEMU QMP
-	// socket to appear after spawning QEMU. e2e.sh:564 polls 15 × 1s.
+	// socket to appear after spawning QEMU.
 	destReplaySocketWaitTotal = 15 * time.Second
 
 	// destReplaySocketPollInterval is the polling cadence for the QMP socket.
 	destReplaySocketPollInterval = 1 * time.Second
 
-	// destReplayVirtiofsdSettleDelay matches e2e.sh:519 (sleep 2 after spawn).
-	// virtiofsd needs a beat to bind its UNIX socket before QEMU connects.
+	// destReplayVirtiofsdSettleDelay gives virtiofsd a beat to bind its
+	// UNIX socket before QEMU connects.
 	destReplayVirtiofsdSettleDelay = 2 * time.Second
 
 	// destReplaySleep is the fixed wait the source uses (in replay mode) for
@@ -62,16 +66,32 @@ var (
 // guest RAM backing file (also a memory-backend-file), not the nvdimm image.
 var memPathRegex = regexp.MustCompile(`mem-path=([^,]+)`)
 
+// nvdimmPathAllowedPrefixes constrains the source-supplied nvdimm image path
+// to roots where Kata stages its rootfs images. The captured cmdline travels
+// from a source pod we may not fully trust (a compromised source could craft
+// an arbitrary path here); without this allowlist the dest would copy any
+// node-local file the dest pod can read into the migrated guest's nvdimm,
+// turning the replay channel into an arbitrary-file-read primitive on the
+// dest node. Paths outside these prefixes (or containing ".." traversal) are
+// dropped — the caller falls back to replay without an nvdimm copy.
+var nvdimmPathAllowedPrefixes = []string{
+	"/opt/kata/",
+	"/usr/share/kata-containers/",
+	"/var/lib/kata/",
+	"/run/kata-containers/",
+}
+
 // readonlyRegex strips `,readonly=on` and `,readonly=true` clauses from a
 // device argument. The source uses readonly=on for the nvdimm image; the
 // destination must accept writes during migration so QEMU can apply the
-// transferred nvdimm pages. Equivalent to e2e.sh:539's two sed substitutions.
+// transferred nvdimm pages.
 var readonlyRegex = regexp.MustCompile(`,readonly=(?:on|true)`)
 
 // extractNvdimmPath finds the nvdimm image path in the captured cmdline.
-// It returns the first mem-path= value that is not under /dev/shm. Returns
-// the empty string if no candidate is found (in which case the caller skips
-// the writable-copy step).
+// It returns the first mem-path= value that is not under /dev/shm and that
+// lives under a known Kata image root (see nvdimmPathAllowedPrefixes).
+// Returns the empty string if no safe candidate is found (in which case the
+// caller skips the writable-copy step).
 func extractNvdimmPath(args []string) string {
 	for _, a := range args {
 		if !strings.Contains(a, "mem-path=") {
@@ -82,10 +102,33 @@ func extractNvdimmPath(args []string) string {
 			if strings.HasPrefix(p, "/dev/shm") {
 				continue
 			}
+			if !isAllowedNvdimmPath(p) {
+				slog.Warn("Rejected nvdimm mem-path outside allowed Kata roots; skipping writable-copy",
+					"mem_path", p, "allowed_prefixes", nvdimmPathAllowedPrefixes)
+				continue
+			}
 			return p
 		}
 	}
 	return ""
+}
+
+// isAllowedNvdimmPath enforces that a captured nvdimm image path is absolute,
+// has no ".." traversal, and lives under one of the prefixes Kata uses for
+// rootfs images.
+func isAllowedNvdimmPath(p string) bool {
+	if p == "" || !filepath.IsAbs(p) {
+		return false
+	}
+	if filepath.Clean(p) != p {
+		return false
+	}
+	for _, pref := range nvdimmPathAllowedPrefixes {
+		if strings.HasPrefix(p, pref) {
+			return true
+		}
+	}
+	return false
 }
 
 // transformCmdline rewrites a captured source QEMU cmdline so it can run on
@@ -94,13 +137,13 @@ func extractNvdimmPath(args []string) string {
 // args is the full /proc/<src_qemu>/cmdline split on NUL. The first element
 // is argv[0] (the QEMU binary itself) and is consumed as the spawn target.
 //
-// Substitutions performed (mirrors scripts/e2e.sh:496-559):
+// Substitutions performed:
 //   - srcSandboxDir → dstSandboxDir (typically /run/vc/vm/<src> → /run/vc/vm/<dst>)
 //   - sandbox-<srcID> → sandbox-<dstID> (kata-agent / virtiofs share-dir paths)
 //   - srcNvdimmPath → dstNvdimmPath (writable copy)
 //   - strip ,readonly=on / ,readonly=true on the nvdimm backend
 //   - drop existing -daemonize and -incoming <arg>
-//   - append -incoming defer -daemonize
+//   - append -incoming defer (QEMU runs in the foreground; see body for why)
 //
 // The returned slice is the QEMU argv (without argv[0], which is returned
 // separately so the caller can wrap it in nsenter or similar). Returns an
@@ -200,7 +243,7 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 	return binary, out, nil
 }
 
-// stripFDKeys removes vhostfd, vhostfds, and fds key=value pairs from a
+// stripFDKeys removes fd, fds, vhostfd, and vhostfds key=value pairs from a
 // comma-separated QEMU arg value. Used when respawning a captured cmdline:
 // fd= references point at file descriptors inherited from the kata-shim
 // parent and are invalid in a fresh exec.
@@ -224,13 +267,10 @@ func stripFDKeys(v string) string {
 	return strings.Join(out, ",")
 }
 
-// readCmdlineFile loads a captured QEMU cmdline file. The file is the result
-// of `cat /proc/<pid>/cmdline | tr '\0' '\n'`: one argument per line, no
-// trailing newline expected (but tolerated). Returns the argv slice including
-// argv[0].
-//
-// We split on '\n' rather than '\x00' because the orchestrator transports the
-// file in textual form (kubectl cp / ConfigMap) which mangles NUL bytes.
+// readCmdlineFile loads a captured QEMU cmdline file and returns the argv
+// slice (including argv[0]). The file is typically newline-delimited (see
+// captureSourceCmdline) but raw NUL-delimited /proc/<pid>/cmdline content is
+// also accepted; see parseCmdlineBytes for the delimiter rule.
 func readCmdlineFile(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -245,11 +285,8 @@ func readCmdlineFile(path string) ([]string, error) {
 // on newline. Empty fields are dropped.
 func parseCmdlineBytes(data []byte) []string {
 	sep := byte('\n')
-	for _, b := range data {
-		if b == 0 {
-			sep = 0
-			break
-		}
+	if bytes.IndexByte(data, 0) >= 0 {
+		sep = 0
 	}
 	parts := strings.Split(string(data), string(sep))
 	out := make([]string, 0, len(parts))
@@ -264,8 +301,8 @@ func parseCmdlineBytes(data []byte) []string {
 
 // captureSourceCmdline reads /proc/<pid>/cmdline for the source QEMU and
 // writes it (NUL→newline) to outPath. The output directory is created if it
-// does not exist. Errors are returned to the caller; the source path emits
-// a `KATAMARAN_CMDLINE_AT=<path>` marker only on success.
+// does not exist. The caller (RunSource) emits the
+// KATAMARAN_CMDLINE_AT / KATAMARAN_CMDLINE_B64 markers on success.
 func captureSourceCmdline(qemuPID int, outPath string) error {
 	src := fmt.Sprintf("/proc/%d/cmdline", qemuPID)
 	raw, err := os.ReadFile(src)
@@ -278,7 +315,10 @@ func captureSourceCmdline(qemuPID int, outPath string) error {
 	}
 
 	if dir := filepath.Dir(outPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0o700 keeps the captured cmdline out of reach of other UIDs sharing
+		// the host /tmp via the cmdline-dir hostPath mount. Matches the dest
+		// side's writeCmdlineTempFile, which uses the same dir.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create cmdline output dir %s: %w", dir, err)
 		}
 	}
@@ -327,7 +367,8 @@ func findSrcSandboxDir(args []string, sandboxRoot string) (sandboxDir, sandboxID
 //  3. Copies the source nvdimm image to a writable temp file on dest.
 //  4. Starts virtiofsd with --migration-on-error=guest-error.
 //  5. Spawns the destination QEMU with the transformed cmdline plus
-//     -incoming defer -daemonize. QEMU runs in the current process's
+//     -incoming defer. QEMU stays in the foreground so its stderr keeps
+//     flowing to the dest pod's logger. It runs in the current process's
 //     network namespace (the dest job is intentionally not hostNetwork
 //     so it has its own pod IP).
 //  6. Waits for the QEMU QMP socket to appear under the dest sandbox dir.
@@ -444,11 +485,21 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 // SIGSEGV the dest QEMU on the first received nvdimm page (see the project
 // memory: "Fix 1: Writable nvdimm on destination").
 func copyNvdimmImage(src string) (string, error) {
-	in, err := os.Open(src)
+	// O_NOFOLLOW refuses to open the path if its final component is a symlink.
+	// Combined with isAllowedNvdimmPath's prefix allowlist this prevents a
+	// crafted source-pod cmdline from pointing dest at a symlink under
+	// /opt/kata/ (or another allowed root) that resolves to an arbitrary
+	// host file the dest process would otherwise read into the writable copy.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", src, err)
 	}
 	defer func() { _ = in.Close() }()
+	if fi, err := in.Stat(); err != nil {
+		return "", fmt.Errorf("stat %s: %w", src, err)
+	} else if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("nvdimm image %s is not a regular file (mode %s)", src, fi.Mode())
+	}
 
 	out, err := os.CreateTemp("/tmp", "kata-dst-nvdimm-*.img")
 	if err != nil {
@@ -537,13 +588,24 @@ var spawnDetachedProcess = func(_ context.Context, name string, args []string) e
 	cmd.Stdout = logWriter{name, "stdout"}
 	cmd.Stderr = logWriter{name, "stderr"}
 	cmd.Stdin = nil
+	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 	slog.Info("child process started", "process", name, "pid", cmd.Process.Pid)
 	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("child process monitor panic", "process", name, "pid", cmd.Process.Pid, "panic", rec, "stack", string(debug.Stack()))
+			}
+		}()
 		err := cmd.Wait()
-		slog.Warn("child process exited", "process", name, "pid", cmd.Process.Pid, "error", err)
+		elapsed := time.Since(start).Round(time.Millisecond)
+		if err != nil {
+			slog.Warn("child process exited with error", "process", name, "pid", cmd.Process.Pid, "elapsed", elapsed, "error", err)
+			return
+		}
+		slog.Info("child process exited", "process", name, "pid", cmd.Process.Pid, "elapsed", elapsed)
 	}()
 	return nil
 }

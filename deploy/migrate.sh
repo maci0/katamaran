@@ -5,13 +5,14 @@
 #   ./deploy/migrate.sh \
 #     --source-node <name> \
 #     --dest-node <name> \
-#     --tap <iface> \
-#     --qmp-source <path> \
-#     --qmp-dest <path> \
 #     --dest-ip <ip> \
-#     --vm-ip <ip> \
 #     --image <image:tag> \
+#     [--tap <iface>] \
 #     [--tap-netns <path>] \
+#     [--qmp-source <path> --qmp-dest <path> --vm-ip <ip>] \
+#     [--pod-name <name> --pod-namespace <ns>] \
+#     [--dest-pod-name <name> --dest-pod-namespace <ns>] \
+#     [--replay-cmdline] \
 #     [--shared-storage] \
 #     [--tunnel-mode ipip|gre|none] \
 #     [--downtime <ms>] \
@@ -67,6 +68,11 @@ export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 export JOB_SUFFIX="${JOB_SUFFIX:-default}"
 SOURCE_JOB_NAME="katamaran-source-${JOB_SUFFIX}"
 DEST_JOB_NAME="katamaran-dest-${JOB_SUFFIX}"
+# Track --replay-cmdline staging resources so the EXIT trap can clean them
+# up even on early-exit error paths (kubectl wait/cp failures otherwise leak
+# a privileged stager pod into kube-system).
+STAGER_POD=""
+LOCAL_CMDLINE_TMP=""
 
 usage() {
     local code="${1:-1}"
@@ -322,9 +328,9 @@ fi
 
 # When --replay-cmdline is set, both jobs need to know where the captured
 # cmdline file lives. Source writes it; dest reads it. Both mount the same
-# hostPath dir on their respective nodes (declared in deploy/job-*.yaml);
-# this script kubectl-cps the file from source pod to dest pod between the
-# two job startups.
+# hostPath dir on their respective nodes (declared in
+# internal/orchestrator/templates/job-*.yaml); this script kubectl-cps the
+# file from source pod to dest pod between the two job startups.
 if [[ "$REPLAY_CMDLINE" == "true" ]]; then
     if [[ -z "$POD_NAME" ]]; then
         echo "Error: --replay-cmdline requires --pod-name (the source QEMU PID is resolved from the pod)" >&2
@@ -344,6 +350,15 @@ fi
 
 # Cleanup trap
 cleanup() {
+    # Always tear down the cmdline-staging sandbox + tmp file regardless of
+    # KATAMARAN_KEEP_JOBS; they are scaffolding, not part of the migration
+    # debug surface.
+    if [[ -n "$STAGER_POD" ]]; then
+        "${KUBECTL[@]}" -n kube-system delete pod "$STAGER_POD" --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$LOCAL_CMDLINE_TMP" ]]; then
+        rm -f "$LOCAL_CMDLINE_TMP"
+    fi
     if [[ "${KATAMARAN_KEEP_JOBS:-}" == "true" ]]; then
         echo ">>> KATAMARAN_KEEP_JOBS set, keeping migration jobs."
         return
@@ -438,8 +453,8 @@ deploy_source_job() {
 # dest job itself can't be used as the kubectl-cp target because it hasn't
 # been deployed yet (the dest job needs the cmdline file to start QEMU).
 ship_cmdline_to_dest() {
-    local local_tmp src_pod
-    local_tmp="$(mktemp)"
+    local src_pod
+    LOCAL_CMDLINE_TMP="$(mktemp)"
 
     echo ">>> Waiting for source job to capture QEMU cmdline..."
     src_pod=""
@@ -457,23 +472,24 @@ ship_cmdline_to_dest() {
     fi
 
     echo ">>> Copying cmdline file from source pod $src_pod to local tmp..."
-    "${KUBECTL[@]}" -n kube-system cp "$src_pod:${CMDLINE_PATH}" "$local_tmp"
-    if [[ ! -s "$local_tmp" ]]; then
+    "${KUBECTL[@]}" -n kube-system cp "$src_pod:${CMDLINE_PATH}" "$LOCAL_CMDLINE_TMP"
+    if [[ ! -s "$LOCAL_CMDLINE_TMP" ]]; then
         echo "Error: cmdline file from source pod is empty." >&2
-        rm -f "$local_tmp"
         exit 1
     fi
 
     echo ">>> Pre-staging cmdline file on dest node $DEST_NODE..."
-    # Use a one-shot privileged debug pod on the dest node to drop the file
-    # into the dest hostPath dir before we start the dest katamaran job.
-    local stager="katamaran-cmdline-stager-${KATAMARAN_MIGRATION_ID}"
-    "${KUBECTL[@]}" -n kube-system delete pod "$stager" --ignore-not-found --force --grace-period=0 2>/dev/null || true
+    # Use a one-shot sandbox pod on the dest node to drop the file into the
+    # dest hostPath dir before we start the dest katamaran job. Tracked in
+    # STAGER_POD so the EXIT trap can reap it even if the apply/wait/cp
+    # below fails partway through.
+    STAGER_POD="katamaran-cmdline-stager-${KATAMARAN_MIGRATION_ID}"
+    "${KUBECTL[@]}" -n kube-system delete pod "$STAGER_POD" --ignore-not-found --force --grace-period=0 2>/dev/null || true
     cat <<EOF | "${KUBECTL[@]}" apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ${stager}
+  name: ${STAGER_POD}
   namespace: kube-system
 spec:
   nodeName: ${DEST_NODE}
@@ -493,8 +509,11 @@ spec:
         memory: 32Mi
     securityContext:
       allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
       capabilities:
         drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
     volumeMounts:
     - name: cmdline-dir
       mountPath: ${CMDLINE_HOST_DIR}
@@ -504,17 +523,20 @@ spec:
       path: ${CMDLINE_HOST_DIR}
       type: DirectoryOrCreate
 EOF
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready "pod/${stager}" --timeout=120s
-    "${KUBECTL[@]}" -n kube-system cp "$local_tmp" "${stager}:${CMDLINE_PATH}"
-    "${KUBECTL[@]}" -n kube-system delete pod "$stager" --ignore-not-found --force --grace-period=0 2>/dev/null || true
-    rm -f "$local_tmp"
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=Ready "pod/${STAGER_POD}" --timeout=120s
+    "${KUBECTL[@]}" -n kube-system cp "$LOCAL_CMDLINE_TMP" "${STAGER_POD}:${CMDLINE_PATH}"
+    # Best-effort early teardown; the EXIT trap will reap on failure.
+    "${KUBECTL[@]}" -n kube-system delete pod "$STAGER_POD" --ignore-not-found --force --grace-period=0 2>/dev/null || true
+    STAGER_POD=""
+    rm -f "$LOCAL_CMDLINE_TMP"
+    LOCAL_CMDLINE_TMP=""
     echo ">>> Cmdline file staged at ${DEST_NODE}:${CMDLINE_PATH}"
 }
 
 if [[ "$REPLAY_CMDLINE" == "true" ]]; then
-    # Source-first ordering: source captures and emits cmdline, then blocks
-    # waiting for dest TCP. We ship the file, start dest, dest spawns QEMU,
-    # source detects dest readiness and proceeds with migration.
+    # Source-first ordering: source captures and emits cmdline, then waits a
+    # fixed replay window. We ship the file and start dest so QEMU's incoming
+    # listener is ready before the source issues the real migrate command.
     deploy_source_job
     ship_cmdline_to_dest
     deploy_dest_job

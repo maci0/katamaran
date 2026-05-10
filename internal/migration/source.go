@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -79,8 +78,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		resolvedQEMUPID = res.PID
 		// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
 		// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
-		// TCP migration stream. Mirrors scripts/e2e.sh:454. Best-effort: a pod
-		// without the filter (e.g. host-network) is fine.
+		// TCP migration stream. Best-effort: a pod without the filter (e.g.
+		// host-network) is fine.
 		netnsPath := fmt.Sprintf("/proc/%d/ns/net", res.PID)
 		if err := runCmd(ctx, "nsenter", "--net="+netnsPath, "tc", "filter", "del", "dev", "eth0", "ingress"); err != nil {
 			slog.Warn("tc filter del eth0 ingress failed (probably already absent)", "error", err)
@@ -91,9 +90,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 
 	// Capture the QEMU cmdline for the dest job to replay with -incoming defer.
 	// Done after pod resolution (when the QEMU PID is known) and before any
-	// QMP work, so the orchestrator can ship the file to the dest node while
-	// the dest job is still starting up. Failure here is fatal: a downstream
-	// dest job in replay mode will be unable to start QEMU without this file.
+	// QMP work. File-based replay paths stage this file on the dest node; the
+	// Native orchestrator consumes the base64 marker emitted below. Failure is
+	// fatal because replay-mode dest jobs cannot start QEMU without the cmdline.
 	if cfg.EmitCmdlineTo != "" {
 		if resolvedQEMUPID == 0 {
 			return fmt.Errorf("--emit-cmdline-to requires pod-mode (--pod-name) so the QEMU PID can be resolved")
@@ -106,8 +105,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		fmt.Printf("KATAMARAN_CMDLINE_AT=%s\n", cfg.EmitCmdlineTo)
 		// Also emit the cmdline file's contents as a single base64 line on
 		// stdout. The dest binary scrapes the source pod's log via the
-		// apiserver (--replay-cmdline-from-pod) so we no longer need a
-		// stager pod + SPDY exec to ship the file across nodes.
+		// apiserver (--replay-cmdline-from-pod), avoiding a separate file
+		// staging step for in-cluster orchestration.
 		if cmdlineBytes, err := os.ReadFile(cfg.EmitCmdlineTo); err != nil {
 			slog.Warn("Failed to read captured cmdline for KATAMARAN_CMDLINE_B64; in-pod-log replay will fail", "error", err, "path", cfg.EmitCmdlineTo)
 		} else {
@@ -154,18 +153,14 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	defer cancel()
 
 	// In replay-cmdline mode the dest job starts AFTER us (the orchestrator
-	// needs our captured cmdline to spawn dest QEMU). Block here until the
-	// dest's RAM-migration TCP port becomes connectable, otherwise the very
-	// first migrate-incoming-driven QMP we issue would race the dest pod's
-	// startup and fail. The wait is bounded so a botched orchestration does
-	// not hang the source job indefinitely.
+	// needs our captured cmdline to spawn dest QEMU), so the first migrate
+	// connection we make would otherwise race the dest pod's startup.
+	// We can't fast-fail-probe dest:4444: dest QEMU's incoming-migration
+	// listener peeks for the migration magic on every connection, sees EOF
+	// from a probe, and dies with "Failed to peek at channel". Instead,
+	// sleep a fixed conservative window and let the QMP `migrate` command
+	// be the first connection.
 	if cfg.EmitCmdlineTo != "" {
-		// In replay-cmdline mode we cannot TCP-probe dest:4444: the probe
-		// connects, sends nothing, closes. Dest QEMU's incoming-migration
-		// listener peeks for the migration magic on every connection, sees
-		// EOF, and dies with "Failed to peek at channel". Instead, sleep a
-		// fixed conservative window for dest QEMU to come up, then let the
-		// QMP `migrate` command be the first connection.
 		slog.Info("Waiting (sleep) for dest QEMU to come up",
 			"sleep", destReplaySleep)
 		select {
@@ -273,9 +268,6 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		} else {
 			rttMS = rtt.Milliseconds()
 			calculatedDowntime := int(rttMS*rttMultiplier) + floorMS
-			if calculatedDowntime < floorMS {
-				calculatedDowntime = floorMS
-			}
 			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS, "floor_ms", floorMS)
 			downtimeLimitMS = calculatedDowntime
 		}
@@ -284,12 +276,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// source actually programmed into QEMU (post auto-calc, post fallback)
 	// so the orchestrator can stamp it on the StatusUpdate / Migration CR
 	// before the cutover even starts.
-	autoFlag := false
-	if cfg.AutoDowntime {
-		autoFlag = true
-	}
 	fmt.Printf("KATAMARAN_DOWNTIME_LIMIT applied_ms=%d rtt_ms=%d auto=%t\n",
-		downtimeLimitMS, rttMS, autoFlag)
+		downtimeLimitMS, rttMS, cfg.AutoDowntime)
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
@@ -325,21 +313,13 @@ stopLoop:
 			raw, qerr := client.Execute(ctx, "query-migrate", nil)
 			if qerr != nil {
 				queryErrors++
-				lvl := slog.LevelDebug
-				if queryErrors >= 10 {
-					lvl = slog.LevelWarn
-				}
-				slog.Log(ctx, lvl, "Transient query-migrate error during STOP polling", "error", qerr, "consecutive_errors", queryErrors)
+				logTransientQueryError(ctx, "Transient query-migrate error during STOP polling", qerr, queryErrors)
 				continue
 			}
 			var info qmp.MigrateInfo
 			if err := json.Unmarshal(raw, &info); err != nil {
 				queryErrors++
-				lvl := slog.LevelDebug
-				if queryErrors >= 10 {
-					lvl = slog.LevelWarn
-				}
-				slog.Log(ctx, lvl, "Failed to parse query-migrate response", "error", err, "consecutive_errors", queryErrors)
+				logTransientQueryError(ctx, "Failed to parse query-migrate response", err, queryErrors)
 				continue
 			}
 			queryErrors = 0
@@ -474,6 +454,11 @@ var measureRTTFunc = measureRTT
 // channel" once the real migration handshake arrived. ICMP is non-disruptive.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	const samples = 3
+	// maxUnrelatedReplies bounds how many foreign ICMP packets we tolerate
+	// across the whole measurement before bailing. Without a cap the retry
+	// loop (i--) can spin forever on a busy network where most replies do
+	// not match our id+seq.
+	const maxUnrelatedReplies = samples * 5
 	network := "ip4:icmp"
 	listenAddr := "0.0.0.0"
 	var icmpType icmp.Type = ipv4.ICMPTypeEcho
@@ -491,6 +476,7 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	dst := &net.IPAddr{IP: net.IP(destIP.AsSlice())}
 	id := os.Getpid() & 0xffff
 	var best time.Duration
+	unrelated := 0
 	for i := 0; i < samples; i++ {
 		msg := icmp.Message{
 			Type: icmpType,
@@ -530,6 +516,10 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 		}
 		echo, ok := parsed.Body.(*icmp.Echo)
 		if !ok || echo.ID != id || echo.Seq != i+1 {
+			unrelated++
+			if unrelated > maxUnrelatedReplies {
+				return 0, fmt.Errorf("RTT measurement abandoned after %d unrelated ICMP replies", unrelated)
+			}
 			i-- // not our reply, retry this sample
 			continue
 		}
@@ -541,6 +531,18 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 
 	slog.Info("RTT measurement complete", "best", best, "samples", samples)
 	return best, nil
+}
+
+// logTransientQueryError logs at Debug for the first few consecutive
+// query-migrate failures and escalates to Warn at >= 10 in a row, so a
+// flapping QMP socket surfaces in production logs without spamming on
+// every transient timeout.
+func logTransientQueryError(ctx context.Context, msg string, err error, consecutive int) {
+	lvl := slog.LevelDebug
+	if consecutive == 10 || consecutive%30 == 0 {
+		lvl = slog.LevelWarn
+	}
+	slog.Log(ctx, lvl, msg, "error", err, "consecutive_errors", consecutive)
 }
 
 // migrationTerminalError checks if a migration status indicates a terminal
@@ -600,16 +602,17 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 		if err = json.Unmarshal(raw, &jobs); err != nil {
 			return fmt.Errorf("unmarshaling block jobs: %w", err)
 		}
+		jobsByID := make(map[string]*qmp.BlockJobInfo, len(jobs))
+		for i := range jobs {
+			jobsByID[jobs[i].Device] = &jobs[i]
+		}
 
 		allReady := true
 		for jobID, js := range state {
 			if js.ready {
 				continue
 			}
-			var job *qmp.BlockJobInfo
-			if idx := slices.IndexFunc(jobs, func(j qmp.BlockJobInfo) bool { return j.Device == jobID }); idx != -1 {
-				job = &jobs[idx]
-			}
+			job := jobsByID[jobID]
 			if job == nil {
 				if js.seen {
 					return fmt.Errorf("block mirror job %q disappeared", jobID)
@@ -774,6 +777,9 @@ func emitVMConfig(qemuPID int) {
 		persistPath := filepath.Join(sbsDir, e.Name(), "persist.json")
 		raw, err := os.ReadFile(persistPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				slog.Warn("emitVMConfig: read sandbox persist.json failed", "path", persistPath, "error", err)
+			}
 			continue
 		}
 		var persist struct {
@@ -786,7 +792,8 @@ func emitVMConfig(qemuPID int) {
 				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
 			} `json:"Config"`
 		}
-		if json.Unmarshal(raw, &persist) != nil {
+		if err := json.Unmarshal(raw, &persist); err != nil {
+			slog.Warn("Failed to parse Kata persist.json for VMConfig emission", "path", persistPath, "error", err)
 			continue
 		}
 		if persist.HypervisorState.Pid != qemuPID {

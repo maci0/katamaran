@@ -5,12 +5,11 @@
 //
 // The server listens on a Unix socket and polls a configurable
 // directory for migration-meta.json files produced by the destination
-// QEMU process.
+// katamaran process after migration completes.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -19,17 +18,33 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
-	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/factory"
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"github.com/maci0/katamaran/internal/logging"
 )
+
+// recoverUnaryInterceptor catches panics in gRPC handlers, logs them with a
+// stack trace, and returns Internal so the peer sees a clean error instead
+// of a torn TCP connection. Without this, a single handler panic kills the
+// whole factory process and the watcher goroutine with it.
+func recoverUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("gRPC handler panic", "method", info.FullMethod, "panic", rec, "stack", string(debug.Stack()))
+			err = status.Errorf(codes.Internal, "internal server error")
+		}
+	}()
+	return handler(ctx, req)
+}
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, `katamaran-factory — gRPC VM cache server for Kata Containers live migration
@@ -92,6 +107,16 @@ func main() {
 		printUsage(os.Stderr)
 		os.Exit(2)
 	}
+	if *listen == "" {
+		fmt.Fprintf(os.Stderr, "Error: --listen must not be empty\n\n")
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+	if *watchDir == "" {
+		fmt.Fprintf(os.Stderr, "Error: --watch-dir must not be empty\n\n")
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
 
 	*logFormat = strings.ToLower(*logFormat)
 	*logLevel = strings.ToLower(*logLevel)
@@ -117,14 +142,28 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("listen on %s: %w", *listen, err))
 	}
+	// Restrict socket to the owning UID. Without this, the socket inherits
+	// the process umask and may end up world-connectable on a host shared
+	// with untrusted pods. The factory's Quit RPC and GetBaseVM are
+	// unauthenticated; any connecting peer could shut the factory down or
+	// drain a queued migrated VM.
+	if err := os.Chmod(*listen, 0o600); err != nil {
+		_ = lis.Close()
+		fail(fmt.Errorf("chmod socket %s: %w", *listen, err))
+	}
 
 	srv := factory.NewServer()
 	loadVMConfig(srv, *watchDir)
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(recoverUnaryInterceptor))
 	cachepb.RegisterCacheServiceServer(grpcServer, srv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		stop() // A second signal will now force exit.
+	}()
 
 	// Start the directory watcher.
 	watcher := factory.NewWatcher(*watchDir, srv)
@@ -157,63 +196,4 @@ func main() {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	os.Exit(1)
-}
-
-// loadVMConfig tries multiple sources for the VMConfig needed by the
-// Config() RPC. Checked in order:
-//  1. Existing Kata sandbox persist.json (from a running Kata pod)
-//  2. Retry periodically in the background until found
-func loadVMConfig(srv *factory.Server, watchDir string) {
-	sbsDir := filepath.Join(filepath.Dir(strings.TrimRight(watchDir, "/")), "sbs")
-	if tryLoadFromSandbox(srv, sbsDir) {
-		return
-	}
-	// No sandbox yet — start background poller that checks every 10s.
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			if tryLoadFromSandbox(srv, sbsDir) {
-				return
-			}
-		}
-	}()
-}
-
-func tryLoadFromSandbox(srv *factory.Server, sbsDir string) bool {
-	entries, err := os.ReadDir(sbsDir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		persistPath := filepath.Join(sbsDir, entry.Name(), "persist.json")
-		raw, err := os.ReadFile(persistPath)
-		if err != nil {
-			continue
-		}
-		var persist struct {
-			Config struct {
-				HypervisorType   string          `json:"HypervisorType"`
-				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
-				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
-			} `json:"Config"`
-		}
-		if err := json.Unmarshal(raw, &persist); err != nil {
-			continue
-		}
-		// Data must contain the full VMConfig (HypervisorType + HypervisorConfig + AgentConfig)
-		// matching what Kata's VMConfig.ToGrpc() produces via json.Marshal(&VMConfig{}).
-		vmCfg, _ := json.Marshal(map[string]any{
-			"HypervisorType":   persist.Config.HypervisorType,
-			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
-			"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
-		})
-		srv.SetConfig(vmCfg, persist.Config.KataAgentConfig)
-		slog.Info("VMConfig loaded from sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
-		return true
-	}
-	return false
 }

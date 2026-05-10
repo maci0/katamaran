@@ -153,6 +153,22 @@ func TestRun_SourceNegativeAutoDowntimeFloor(t *testing.T) {
 	}
 }
 
+func TestRun_SourceNegativeCNIConvergenceDelay(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "source",
+		"--dest-ip", "10.0.0.1",
+		"--vm-ip", "10.0.0.2",
+		"--cni-convergence-delay", "-1s",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--cni-convergence-delay") {
+		t.Fatalf("expected cni-convergence-delay error, got: %s", stderr.String())
+	}
+}
+
 func TestRun_SourceMissingRequiredFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1"}, &stdout, &stderr)
@@ -175,11 +191,10 @@ func TestRun_SourcePodFlagsAccepted(t *testing.T) {
 		"--pod-name", "foo", "--pod-namespace", "bar",
 		"--tunnel-mode", "none",
 	}, &stdout, &stderr)
-	// The XOR check must pass; downstream code will fail (no kube/QMP available),
-	// so we expect a non-2 exit (validation succeeded), and stderr must NOT
-	// contain the XOR error message.
-	if code == 2 {
-		t.Fatalf("exit code 2 means flag validation rejected pod flags; stderr: %s", stderr.String())
+	// The XOR check must pass; downstream code fails because no Kubernetes
+	// service-account context is available in the unit test.
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 (validation accepted pod flags, runtime lookup failed); stderr: %s", code, stderr.String())
 	}
 	if strings.Contains(stderr.String(), "exactly one of") {
 		t.Fatalf("XOR error fired despite valid pod flags, got: %s", stderr.String())
@@ -334,11 +349,56 @@ func TestRun_DestIgnoredSourceFlags(t *testing.T) {
 		"--pod-namespace", "default",
 		"--qmp", "/nonexistent/qmp.sock",
 	}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("expected non-zero exit code for bad socket")
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 for bad socket; stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "ignored in dest mode") {
 		t.Fatalf("expected warning about ignored source flags, got stderr: %s", stderr.String())
+	}
+}
+
+func TestRun_DestSourcePodFlagsAcceptedWithoutIgnoredWarning(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "dest",
+		"--pod-name", "source-pod",
+		"--pod-namespace", "default",
+		"--qmp", "/nonexistent/qmp.sock",
+	}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 for bad socket; stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "ignored in dest mode") {
+		t.Fatalf("source pod flags should be meaningful in dest mode, got stderr: %s", stderr.String())
+	}
+}
+
+func TestRun_DestPartialSourcePodFlagsRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "dest",
+		"--pod-name", "source-pod",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--pod-name and --pod-namespace must be supplied together") {
+		t.Fatalf("expected source pod pair error, got: %s", stderr.String())
+	}
+}
+
+func TestRun_DestRejectsReplayCmdlineConflict(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "dest",
+		"--replay-cmdline", "/tmp/source-qemu.cmdline",
+		"--replay-cmdline-from-pod", "default/source-pod",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("expected replay-cmdline conflict error, got: %s", stderr.String())
 	}
 }
 
@@ -353,8 +413,8 @@ func TestRun_SourceIgnoredDestFlags(t *testing.T) {
 		"--qmp", "/nonexistent/qmp.sock",
 		"--tunnel-mode", "none",
 	}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("expected non-zero exit code for bad socket")
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 for bad socket; stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "ignored in source mode") {
 		t.Fatalf("expected warning about ignored dest flags, got stderr: %s", stderr.String())
@@ -388,8 +448,8 @@ func TestRun_AutoDowntimeOverridesDowntimeWarning(t *testing.T) {
 	// Bad QMP socket must surface as exit 1 — guarantees the warning was
 	// emitted on the path through to migration, not because validation
 	// short-circuited before the auto-downtime check ran.
-	if code == 0 {
-		t.Fatalf("expected non-zero exit (bad QMP socket), got 0; stderr: %s", stderr.String())
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 for bad QMP socket; stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--auto-downtime overrides --downtime") {
 		t.Fatalf("expected warning about --auto-downtime overriding --downtime, got stderr: %s", stderr.String())
@@ -405,8 +465,8 @@ func TestRun_AutoDowntimeFloorWithoutAutoWarning(t *testing.T) {
 		"--qmp", "/nonexistent/qmp.sock",
 		"--tunnel-mode", "none",
 	}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("expected non-zero exit (bad QMP socket), got 0; stderr: %s", stderr.String())
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1 for bad QMP socket; stderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--auto-downtime-floor-ms is ignored without --auto-downtime") {
 		t.Fatalf("expected warning about ignored auto-downtime floor, got stderr: %s", stderr.String())

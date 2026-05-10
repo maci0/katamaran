@@ -115,13 +115,13 @@ spec:
         args:
           - |
             echo "katamaran node setup complete"
-            trap 'rm -f /host-bin/katamaran; echo "katamaran binary removed"' TERM
+            trap 'rm -f /host-bin/katamaran /host-bin/katamaran-factory; echo "katamaran binaries removed"' TERM
             sleep infinity &
             wait $!
         lifecycle:
           preStop:
             exec:
-              command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran"]
+              command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran /host-bin/katamaran-factory"]
         volumeMounts:
         - name: host-root
           mountPath: /host-bin
@@ -149,6 +149,24 @@ spec:
           - "/var/run/katamaran/factory.sock"
           - "--watch-dir"
           - "/run/vc/vm/"
+        # Probe the unix socket the factory listens on. A missing socket
+        # means the factory has not bound (startup) or has crashed; either
+        # way kubelet should restart the container so Kata's vm_cache_endpoint
+        # has something to talk to.
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "test -S /var/run/katamaran/factory.sock"]
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "test -S /var/run/katamaran/factory.sock"]
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
         volumeMounts:
         - name: run-vc
           mountPath: /run/vc

@@ -31,6 +31,7 @@ readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deplo
 
 PROVIDER="minikube"
 KATA_VERSION="3.24.0"
+FLANNEL_VERSION="${FLANNEL_VERSION:-v0.28.4}"
 CNI="auto"
 STORAGE="none"
 METHOD="job"
@@ -294,7 +295,7 @@ elif [[ "${CNI}" == "cilium" ]]; then
         --set operator.replicas=1 --wait
 elif [[ "${CNI}" == "flannel" ]]; then
     log "Deploying Flannel..."
-    kubectl --context "${CTX}" apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+    kubectl --context "${CTX}" apply -f "https://github.com/flannel-io/flannel/releases/download/${FLANNEL_VERSION}/kube-flannel.yml"
     kubectl --context "${CTX}" -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=300s
 fi
 

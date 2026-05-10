@@ -135,7 +135,10 @@ func FuzzClientProtocol(f *testing.F) {
 		socketPath := filepath.Join(t.TempDir(), "qmp.sock")
 		l, err := net.Listen("unix", socketPath)
 		if err != nil {
-			t.Skip("cannot create socket")
+			// Path may exceed sun_path limit (108) under deeply-nested
+			// fuzz test dirs; surface the actual error so a regression
+			// causing every iteration to skip is visible.
+			t.Skipf("cannot create socket at %s: %v", socketPath, err)
 		}
 		defer l.Close()
 

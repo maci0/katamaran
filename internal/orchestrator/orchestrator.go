@@ -10,8 +10,8 @@
 // by the dashboard, the Migration CRD controller, and the
 // katamaran-orchestrator CLI.
 //
-// A previous Script wrapper around deploy/migrate.sh was removed —
-// migrate.sh stays in deploy/ for manual shell-driven testing only and
+// deploy/migrate.sh is a standalone bash wrapper for manual shell-driven
+// testing. It applies the same Job templates via envsubst + kubectl and
 // is not exercised through this package.
 //
 // The Request type is mode-agnostic: callers can specify either an explicit
@@ -64,6 +64,18 @@ func DestJobName(id MigrationID) string   { return "katamaran-dest-" + string(id
 // TerminalJobCondition returns the most recent terminal condition (Complete or Failed)
 // on a Job, or "" if neither is set yet. Shared between orchestrator and controller.
 func TerminalJobCondition(job *batchv1.Job) batchv1.JobConditionType {
+	cond, ok := LatestTerminalJobCondition(job)
+	if !ok {
+		return ""
+	}
+	return cond.Type
+}
+
+// LatestTerminalJobCondition returns the most recent terminal Job condition
+// (Complete or Failed) along with ok=false when no terminal condition is
+// present. Used by the controller to surface Reason/Message fields that the
+// type-only TerminalJobCondition discards.
+func LatestTerminalJobCondition(job *batchv1.Job) (batchv1.JobCondition, bool) {
 	var latest batchv1.JobCondition
 	found := false
 	for _, c := range job.Status.Conditions {
@@ -76,9 +88,9 @@ func TerminalJobCondition(job *batchv1.Job) batchv1.JobConditionType {
 		}
 	}
 	if !found {
-		return ""
+		return batchv1.JobCondition{}, false
 	}
-	return latest.Type
+	return latest, true
 }
 
 // DefaultJobNamespace is the namespace where the native orchestrator creates Jobs.

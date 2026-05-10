@@ -33,7 +33,7 @@ func TestInjectReplayFromPod_AppendsFlag(t *testing.T) {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name:    "katamaran",
-						Command: []string{"/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp /run/vc/vm/x/qmp.sock"},
+						Command: []string{"/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest --qmp \"/run/vc/vm/x/qmp.sock\""},
 					}},
 				},
 			},
@@ -109,7 +109,7 @@ func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	sourceCmd := jobCommand(t, src)
 	for _, want := range []string{
 		"--mode source",
-		"--dest-ip 10.0.0.20",
+		"--dest-ip \"10.0.0.20\"",
 		"--pod-name vm-a",
 		"--pod-namespace default",
 		"--multifd-channels 0",
@@ -123,6 +123,120 @@ func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 		if !strings.Contains(destCmd, want) {
 			t.Fatalf("dest command missing %q: %s", want, destCmd)
 		}
+	}
+}
+
+func TestNative_Apply_ReplayCmdlineStagesDestAfterSourcePodAppears(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		jobName, ok := jobNameFromPodListAction(action)
+		if !ok || !strings.HasPrefix(jobName, "katamaran-source-") {
+			return false, nil, nil
+		}
+		return true, &corev1.PodList{Items: []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName + "-pod",
+				Namespace: DefaultJobNamespace,
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			},
+		}}}, nil
+	})
+	n := NewFromClient(cs).(*native)
+	req := validRequest()
+	req.ReplayCmdline = true
+
+	id, err := n.Apply(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Stop(context.Background(), id) })
+
+	src, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), SourceJobName(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("source job not created: %v", err)
+	}
+	srcCmd := jobCommand(t, *src)
+	if !strings.Contains(srcCmd, "--emit-cmdline-to "+cmdlinePathFor(id)) {
+		t.Fatalf("source command missing replay capture flag: %s", srcCmd)
+	}
+
+	dest := waitForJob(t, cs, DestJobName(id))
+	destCmd := jobCommand(t, *dest)
+	wantReplayFlag := "--replay-cmdline-from-pod " + DefaultJobNamespace + "/" + SourceJobName(id) + "-pod"
+	if !strings.Contains(destCmd, wantReplayFlag) {
+		t.Fatalf("dest command missing %q: %s", wantReplayFlag, destCmd)
+	}
+}
+
+func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-b"},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{
+			Type:    corev1.NodeInternalIP,
+			Address: "10.0.0.30",
+		}}},
+	})
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		jobName, ok := jobNameFromPodListAction(action)
+		if !ok || !strings.HasPrefix(jobName, "katamaran-dest-") {
+			return false, nil, nil
+		}
+		return true, &corev1.PodList{Items: []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName + "-pod",
+				Namespace: DefaultJobNamespace,
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			},
+			Spec: corev1.PodSpec{NodeName: "worker-b"},
+		}}}, nil
+	})
+	n := NewFromClient(cs).(*native)
+	req := validRequest()
+	req.SourceNode = "worker-a"
+	req.DestNode = ""
+	req.DestIP = ""
+	req.DestNodeSelector = map[string]string{"katamaran.io/enabled": "true"}
+	req.DestTolerations = []corev1.Toleration{{
+		Key:      "katamaran",
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	}}
+
+	id, err := n.Apply(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Stop(context.Background(), id) })
+
+	dest, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), DestJobName(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("dest job not created: %v", err)
+	}
+	if dest.Spec.Template.Spec.NodeName != "" {
+		t.Fatalf("auto-selected dest job NodeName = %q, want empty", dest.Spec.Template.Spec.NodeName)
+	}
+	if got := dest.Spec.Template.Spec.NodeSelector["katamaran.io/enabled"]; got != "true" {
+		t.Fatalf("dest node selector = %v, want katamaran.io/enabled=true", dest.Spec.Template.Spec.NodeSelector)
+	}
+	if len(dest.Spec.Template.Spec.Tolerations) != 1 || dest.Spec.Template.Spec.Tolerations[0].Key != "katamaran" {
+		t.Fatalf("dest tolerations = %+v, want copied request toleration", dest.Spec.Template.Spec.Tolerations)
+	}
+	if dest.Spec.Template.Spec.Affinity == nil || dest.Spec.Template.Spec.Affinity.NodeAffinity == nil {
+		t.Fatalf("dest job missing source-node anti-affinity")
+	}
+
+	src, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), SourceJobName(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("source job not created after dest scheduling: %v", err)
+	}
+	if src.Spec.Template.Spec.NodeName != "worker-a" {
+		t.Fatalf("source job NodeName = %q, want worker-a", src.Spec.Template.Spec.NodeName)
+	}
+	srcCmd := jobCommand(t, *src)
+	if !strings.Contains(srcCmd, "--dest-ip \"10.0.0.30\"") {
+		t.Fatalf("source command missing resolved dest IP: %s", srcCmd)
 	}
 }
 
@@ -184,6 +298,66 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	}
 }
 
+func TestNative_Watch_DestFailedIncludesConditionDetails(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("get", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		ga, ok := action.(clienttesting.GetAction)
+		if !ok {
+			return false, nil, nil
+		}
+		name := ga.GetName()
+		switch {
+		case strings.HasPrefix(name, "katamaran-dest-"):
+			return true, &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system"},
+				Status: batchv1.JobStatus{
+					Conditions: []batchv1.JobCondition{{
+						Type:    batchv1.JobFailed,
+						Status:  corev1.ConditionTrue,
+						Reason:  "BackoffLimitExceeded",
+						Message: "pod crashed before opening migration listener",
+					}},
+				},
+			}, nil
+		case strings.HasPrefix(name, "katamaran-source-"):
+			return true, &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system"},
+				Status:     batchv1.JobStatus{Active: 1},
+			}, nil
+		default:
+			return false, nil, nil
+		}
+	})
+
+	n := NewFromClient(cs)
+	id, err := n.Apply(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := n.Watch(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := drainUpdates(updates, 10*time.Second)
+	if len(got) < 2 {
+		t.Fatalf("want >=2 updates, got %d: %+v", len(got), got)
+	}
+	last := got[len(got)-1]
+	if last.Phase != PhaseFailed {
+		t.Fatalf("last phase = %s, want %s", last.Phase, PhaseFailed)
+	}
+	if last.Error == nil {
+		t.Fatal("failed update missing error")
+	}
+	errText := last.Error.Error()
+	for _, want := range []string{"BackoffLimitExceeded", "pod crashed before opening migration listener"} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("failed update error %q missing %q", errText, want)
+		}
+	}
+}
+
 func TestNative_Stop_DeletesJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
@@ -218,6 +392,30 @@ func jobCommand(t *testing.T, job batchv1.Job) string {
 		t.Fatalf("job %s containers = %d, want 1", job.Name, len(job.Spec.Template.Spec.Containers))
 	}
 	return strings.Join(job.Spec.Template.Spec.Containers[0].Command, " ")
+}
+
+func jobNameFromPodListAction(action clienttesting.Action) (string, bool) {
+	la, ok := action.(clienttesting.ListAction)
+	if !ok {
+		return "", false
+	}
+	return strings.CutPrefix(la.GetListRestrictions().Labels.String(), "batch.kubernetes.io/job-name=")
+}
+
+func waitForJob(t *testing.T, cs *fake.Clientset, name string) *batchv1.Job {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		job, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		if err == nil {
+			return job
+		}
+		lastErr = err
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s was not created within timeout: %v", name, lastErr)
+	return nil
 }
 
 // TestSucceededUpdate_RecoversFromTailRace covers the race the

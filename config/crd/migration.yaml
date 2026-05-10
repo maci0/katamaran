@@ -42,8 +42,9 @@ spec:
               destPod:
                 description: |
                   Optional reference to a kata pod on the destination node whose
-                  sandbox QMP socket the dest job should connect to. Required when
-                  replayCmdline is false.
+                  sandbox QMP socket the dest job should connect to. Use this when
+                  replayCmdline is false unless a destination QMP socket is already
+                  available at the controller's default path.
                 type: object
                 required: [namespace, name]
                 properties:

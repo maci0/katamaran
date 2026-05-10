@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ import (
 )
 
 var pingRe = regexp.MustCompile(`time=([0-9.]+) ms`)
+
+var loadgenFormKeySet = formFieldSet("target")
 
 func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
@@ -99,6 +102,9 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 	if !parseFormPOST(w, r, "Ping load generator request") {
 		return
 	}
+	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, "Ping load generator request") {
+		return
+	}
 	target := r.FormValue("target")
 	if target == "" {
 		slog.Warn("Ping load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
@@ -130,6 +136,11 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer a.resetLoadgen()
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("Ping load generator panic", "target", pingTarget, "panic", rec, "stack", string(debug.Stack()), "request_id", reqID)
+			}
+		}()
 
 		cmd := exec.CommandContext(ctx, "ping", "-i", "0.2", pingTarget)
 		stdout, err := cmd.StdoutPipe()
@@ -175,11 +186,14 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 
 // addPing records a ping latency sample or error to the loadgen log buffer.
 func (a *App) addPing(lat float64, errStr string) {
+	// Format the timestamp outside the mutex so the lock-hold time stays
+	// proportional to the slice/append work, not RFC3339Nano formatting.
+	ts := time.Now().Format(time.RFC3339Nano)
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()
 	a.pingSeq++
 	a.pingLog = append(a.pingLog, PingData{
-		Time:    time.Now().Format(time.RFC3339Nano),
+		Time:    ts,
 		Latency: lat,
 		Error:   errStr,
 	})
@@ -191,6 +205,9 @@ func (a *App) addPing(lat float64, errStr string) {
 // handleHTTPStart processes a request to start the HTTP load generator.
 func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 	if !parseFormPOST(w, r, "HTTP load generator request") {
+		return
+	}
+	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, "HTTP load generator request") {
 		return
 	}
 	target := r.FormValue("target")
@@ -218,13 +235,24 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 			slog.Info("HTTP load generator stopped", "target", target, "request_id", reqID)
 			a.resetLoadgen()
 		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("HTTP load generator panic", "target", target, "panic", rec, "stack", string(debug.Stack()), "request_id", reqID)
+			}
+		}()
 
+		transport := &http.Transport{
+			Proxy:               nil,
+			DialContext:         safeDialContext,
+			MaxIdleConns:        2,
+			MaxIdleConnsPerHost: 1,
+			MaxConnsPerHost:     1,
+			IdleConnTimeout:     30 * time.Second,
+		}
+		defer transport.CloseIdleConnections()
 		client := &http.Client{
-			Timeout: httpClientTimeout,
-			Transport: &http.Transport{
-				Proxy:       nil,
-				DialContext: safeDialContext,
-			},
+			Timeout:   httpClientTimeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Block redirects to prevent SSRF bypass: an attacker-controlled
 				// target could redirect to internal/metadata IPs, bypassing the
@@ -237,20 +265,13 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 
 		// Wrap bare IPv6 addresses in brackets for valid URL construction.
 		// Without brackets, "http://2001:db8::1" is malformed (colons are
-		// ambiguous with port separators in URLs).
+		// ambiguous with port separators in URLs). ParseIP only succeeds for
+		// bare hosts (no port and no brackets), which is the only form that
+		// needs rewriting; targets that already include a port or brackets
+		// pass through unchanged.
 		urlTarget := target
-		host := target
-		port := ""
-		if h, p, err := net.SplitHostPort(target); err == nil {
-			host = h
-			port = p
-		}
-		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-			if port != "" {
-				urlTarget = net.JoinHostPort(host, port)
-			} else {
-				urlTarget = "[" + host + "]"
-			}
+		if ip := net.ParseIP(target); ip != nil && ip.To4() == nil {
+			urlTarget = "[" + target + "]"
 		}
 		targetURL := "http://" + urlTarget
 		for {

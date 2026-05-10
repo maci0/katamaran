@@ -54,8 +54,7 @@ func failingOrchestrator(t *testing.T) *fakeOrchestrator {
 }
 
 // LastRequest returns a snapshot of the Request the orchestrator was last
-// asked to Apply. Tests that previously asserted on migrate.sh argv use
-// this to assert on the structured Request shape instead.
+// asked to Apply. Tests use this to assert on the structured Request shape.
 func (f *fakeOrchestrator) LastRequest() orchestrator.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -110,11 +109,13 @@ func (f *fakeOrchestrator) Watch(_ context.Context, id orchestrator.MigrationID)
 
 func (f *fakeOrchestrator) Stop(_ context.Context, id orchestrator.MigrationID) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	run, ok := f.runs[id]
-	f.mu.Unlock()
 	if !ok {
 		return orchestrator.ErrUnknownID
 	}
+	// Hold the lock across the select+close: two concurrent Stop() calls
+	// would otherwise both fall through to default and double-close.
 	select {
 	case <-run.stop:
 	default:

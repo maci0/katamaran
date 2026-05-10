@@ -420,7 +420,11 @@ func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 	// Recovery runs in a goroutine; allow it a few ticks to converge.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m3", metav1.GetOptions{})
+		got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m3", metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
 		if phase == string(orchestrator.PhaseSucceeded) {
 			return
@@ -456,7 +460,11 @@ func TestReconciler_RecoverFromAnyNonTerminalPhase(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-cutover", metav1.GetOptions{})
+		got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-cutover", metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
 		if phase == string(orchestrator.PhaseSucceeded) {
 			return
@@ -520,7 +528,11 @@ func TestReconciler_RecoverFromMissingJobs(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m4", metav1.GetOptions{})
+		got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m4", metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
 		errMsg, _, _ := unstructured.NestedString(got.Object, "status", "message")
 		if phase == string(orchestrator.PhaseFailed) && strings.Contains(errMsg, "disappeared") {
@@ -562,7 +574,10 @@ func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patchStatusUpdate: %v", err)
 	}
-	got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get m5 after first patch: %v", err)
+	}
 	if phase, _, _ := unstructured.NestedString(got.Object, "status", "phase"); phase != string(orchestrator.PhaseTransferring) {
 		t.Fatalf("phase = %q, want transferring", phase)
 	}
@@ -587,7 +602,10 @@ func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patchStatusUpdate succeeded: %v", err)
 	}
-	got, _ = dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	got, err = dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m5", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get m5 after second patch: %v", err)
+	}
 	if downtime, _, _ := unstructured.NestedInt64(got.Object, "status", "actualDowntimeMS"); downtime != 17 {
 		t.Fatalf("actualDowntimeMS = %d, want 17", downtime)
 	}

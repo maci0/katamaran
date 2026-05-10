@@ -122,13 +122,15 @@ type SourceConfig struct {
 	PodName      string
 	PodNamespace string
 	// EmitCmdlineTo, when non-empty, instructs the source binary to capture
-	// /proc/<qemu_pid>/cmdline (NUL bytes converted to newlines) and write it
-	// to this path before kicking off the migration. The destination job
-	// consumes this file via DestConfig.ReplayCmdlineFile to spawn an
-	// identical QEMU with -incoming defer, since Kata 3.27 has no knob to
-	// inject extra QEMU args. The source emits a `KATAMARAN_CMDLINE_AT=<path>`
-	// stdout line when the write succeeds so the orchestrator can ship the
-	// file to the dest node.
+	// /proc/<qemu_pid>/cmdline (NUL bytes converted to newlines) and write
+	// it to this path before kicking off the migration. The destination
+	// job consumes the cmdline via DestConfig.ReplayCmdlineFile or
+	// ReplayCmdlineFromPod to spawn an identical QEMU with -incoming
+	// defer, since Kata 3.27 has no knob to inject extra QEMU args. On
+	// success the source prints two stdout markers: KATAMARAN_CMDLINE_AT=
+	// (path on the source node, used by deploy/migrate.sh) and
+	// KATAMARAN_CMDLINE_B64= (base64 payload, scraped from the pod log by
+	// the Native orchestrator).
 	EmitCmdlineTo string
 }
 
@@ -146,24 +148,26 @@ type DestConfig struct {
 	DestPodName      string
 	DestPodNamespace string
 	// ReplayCmdlineFile, when non-empty, points at a file containing the
-	// source QEMU's /proc/<pid>/cmdline (NUL→newline). The destination binary
-	// transforms this cmdline (path substitutions, strip readonly,
-	// strip/append -incoming defer + -daemonize), spawns the QEMU itself
-	// inside the dest container's network namespace, then drives the
-	// migration via QMP as usual. Used because Kata 3.27 cannot start QEMU
-	// with -incoming defer (kata-shim kills VMs that fail the vsock dial).
+	// source QEMU's /proc/<pid>/cmdline (NUL→newline). The destination
+	// binary transforms this cmdline (sandbox-path substitutions, strip
+	// readonly=on on the nvdimm backend, drop existing -daemonize and
+	// -incoming, append -incoming defer), spawns the QEMU itself inside
+	// the dest container's network namespace, then drives the migration
+	// via QMP as usual. Used because Kata 3.27 cannot start QEMU with
+	// -incoming defer (kata-shim kills VMs that fail the vsock dial).
 	ReplayCmdlineFile string
 	// ReplayCmdlineFromPod, when non-empty, names the source pod
 	// (`<namespace>/<name>`) whose log carries the KATAMARAN_CMDLINE_B64
 	// marker. The dest binary fetches the pod's log via the in-cluster
 	// apiserver, decodes the marker, writes a local tmp file, and falls
-	// through to the file-based replay path. Mutually compatible with
-	// ReplayCmdlineFile (which one wins is determined by which arrived
-	// first); orchestrators set exactly one.
+	// through to the file-based replay path. When both this and
+	// ReplayCmdlineFile are set, the pod-log marker wins; orchestrators
+	// normally set exactly one.
 	ReplayCmdlineFromPod string
 	// QEMUBinary, when non-empty, overrides the QEMU binary path used for
-	// cmdline replay. Defaults to the source's argv[0] (typically
-	// /opt/kata/bin/qemu-system-x86_64). Mostly a test seam.
+	// cmdline replay. Defaults to /opt/kata/bin/qemu-system-x86_64; the
+	// captured cmdline's argv[0] is intentionally not used (it is
+	// attacker-controlled in the source pod). Mostly a test seam.
 	QEMUBinary string
 	// SandboxID, when non-empty, names the synthetic dest sandbox directory
 	// created under /run/vc/vm/<id>/ for cmdline replay. Defaults to
@@ -191,4 +195,16 @@ func IPFamily(addr netip.Addr) string {
 		return "IPv4"
 	}
 	return "IPv6"
+}
+
+// formatQEMUHost returns the IP address formatted for use in QEMU's
+// colon-delimited URIs (e.g., nbd:host:port, tcp:host:port). IPv6 addresses
+// are wrapped in square brackets to avoid ambiguity with URI field separators.
+// IPv4 addresses (including IPv4-mapped IPv6) are returned unchanged.
+func formatQEMUHost(addr netip.Addr) string {
+	addr = addr.Unmap()
+	if addr.Is6() {
+		return "[" + addr.String() + "]"
+	}
+	return addr.String()
 }

@@ -41,6 +41,6 @@ sweep-results/
 /katamaran
 /dashboard
 /katamaran-mgr
+/katamaran-factory
 .playwright-mcp/
 .review-loop.lock
-katamaran-factory

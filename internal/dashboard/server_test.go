@@ -232,8 +232,9 @@ func TestValidFormValue(t *testing.T) {
 
 func TestHandleMigrate_DowntimeInjection(t *testing.T) {
 	t.Parallel()
-	// Regression test: downtime must be a strict integer to prevent
-	// command injection via migrate.sh → envsubst → /bin/sh -c.
+	// Regression test: downtime must be a strict integer to keep value
+	// safety guarantees on the Native orchestrator's argv-rendered
+	// `--downtime <N>` flag (and on legacy migrate.sh's envsubst path).
 	payloads := []string{
 		"25;rm -rf /",        // shell command separator
 		"25|cat /etc/passwd", // pipe
@@ -420,6 +421,7 @@ func TestMux_MethodNotAllowed(t *testing.T) {
 		{http.MethodGet, "/api/httpgen"},
 		{http.MethodGet, "/api/migrate"},
 		{http.MethodGet, "/api/migrate/stop"},
+		{http.MethodPost, "/api/history"},
 		{http.MethodGet, "/api/ping/stop"},
 		{http.MethodGet, "/api/httpgen/stop"},
 		{http.MethodPost, "/healthz"},
@@ -491,6 +493,18 @@ func TestHandlePingStart_InvalidTarget(t *testing.T) {
 	app.handlePingStart(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid target, got %v", w.Code)
+	}
+}
+
+func TestHandlePingStart_QueryTargetWithEmptyBodyIgnoresContentType(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodPost, "/api/ping?target=-invalid", nil)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.handlePingStart(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid query target, got %v", w.Code)
 	}
 }
 
@@ -737,6 +751,56 @@ func TestHandleMigrate_MissingRequiredField(t *testing.T) {
 	}
 }
 
+func TestHandleMigrate_PodModeRequiresNameWhenNamespaceProvided(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	form := url.Values{}
+	form.Set("source_pod_namespace", "default")
+	form.Set("dest_node", "node2")
+	form.Set("image", "katamaran:dev")
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for partial source pod ref, got %v", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "source_pod_name") {
+		t.Fatalf("expected error to mention source_pod_name, got %s", w.Body.String())
+	}
+}
+
+func TestHandleMigrate_RejectsPartialDestPodRef(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		setField  string
+		setValue  string
+		wantField string
+	}{
+		{"name without namespace", "dest_pod_name", "dest", "dest_pod_namespace"},
+		{"namespace without name", "dest_pod_namespace", "default", "dest_pod_name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app := &App{}
+			form := validMigrateForm()
+			form.Set(tt.setField, tt.setValue)
+			req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			app.handleMigrate(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for partial dest pod ref, got %v", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tt.wantField) {
+				t.Fatalf("expected error to mention %s, got %s", tt.wantField, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleMigrate_DuplicatePrevented(t *testing.T) {
 	t.Parallel()
 	app := &App{orch: slowOrchestrator(t)}
@@ -929,7 +993,7 @@ func TestHandleHealthz_HEAD(t *testing.T) {
 
 func TestServeDashboardMetrics(t *testing.T) {
 	app := &App{}
-	recordHTTPRequest("/api/test", http.StatusServiceUnavailable, 6*time.Second)
+	recordHTTPRequest(http.StatusServiceUnavailable, 6*time.Second)
 	recordMigrationDuration(45*time.Second, "success")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -1005,13 +1069,18 @@ func TestCSRFCheck_BlocksCrossOrigin(t *testing.T) {
 	})
 	handler := csrfCheck(inner)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/migrate", nil)
-	req.Host = "dashboard.local:8080"
-	req.Header.Set("Origin", "https://evil.com")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for cross-origin POST, got %v", w.Code)
+	for _, path := range []string{"/api", "/api/migrate"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Host = "dashboard.local:8080"
+		req.Header.Set("Origin", "https://evil.com")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403 for cross-origin POST, got %v", path, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("%s: expected JSON Content-Type for API CSRF rejection, got %q", path, ct)
+		}
 	}
 }
 
@@ -1199,6 +1268,53 @@ func TestHandleMigrate_RejectsJSONContentType(t *testing.T) {
 	}
 }
 
+func TestHandleMigrate_RejectsMissingContentTypeWithBody(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	form := validMigrateForm()
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415 for missing content type, got %v", w.Code)
+	}
+}
+
+func TestHandleMigrate_RejectsUnknownFormField(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	form := validMigrateForm()
+	form.Set("qmp_soruce", "/run/vc/vm/typo/qmp.sock")
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown form field, got %v", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "qmp_soruce") {
+		t.Fatalf("expected response to mention unknown field, got %s", w.Body.String())
+	}
+}
+
+func TestHandlePingStart_RejectsUnknownFormField(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	form := url.Values{}
+	form.Set("target", "192.0.2.1")
+	form.Set("taget", "192.0.2.1")
+	req := httptest.NewRequest(http.MethodPost, "/api/ping", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handlePingStart(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown form field, got %v", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "taget") {
+		t.Fatalf("expected response to mention unknown field, got %s", w.Body.String())
+	}
+}
+
 func TestHandleMigrate_IgnoresQueryParams(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1280,14 +1396,16 @@ func TestRecoverMiddleware_APIPanic(t *testing.T) {
 		panic("api panic")
 	})
 	handler := recoverMiddleware(panicking)
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %v", w.Code)
-	}
-	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("expected JSON Content-Type for /api/ panic, got %q", ct)
+	for _, path := range []string{"/api", "/api/status"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("%s: expected 500, got %v", path, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("%s: expected JSON Content-Type for API panic, got %q", path, ct)
+		}
 	}
 }
 

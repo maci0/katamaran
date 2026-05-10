@@ -1,9 +1,12 @@
 package dashboard
 
 import (
+	"bufio"
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,17 +24,21 @@ var (
 	dashboardHTTPResponsesByStatusClass = expvar.NewMap("dashboard_http_responses_by_status_class")
 	dashboardHTTPRequestDurationBuckets = expvar.NewMap("dashboard_http_request_duration_ms_buckets")
 	dashboardReadinessFailuresTotal     = expvar.NewInt("dashboard_readiness_failures_total")
+	dashboardCSRFRejectionsTotal        = expvar.NewInt("dashboard_csrf_rejections_total")
 
 	dashboardMigrationsActive           = expvar.NewInt("dashboard_migrations_active")
+	dashboardMigrationApplyErrorsTotal  = expvar.NewInt("dashboard_migration_apply_errors_total")
 	dashboardMigrationDurationMSTotal   = expvar.NewInt("dashboard_migration_duration_ms_total")
 	dashboardMigrationDurationMSBuckets = expvar.NewMap("dashboard_migration_duration_ms_buckets")
 	dashboardMigrationResultsByOutcome  = expvar.NewMap("dashboard_migration_results_by_outcome")
+	dashboardMigrationWatchErrorsTotal  = expvar.NewInt("dashboard_migration_watch_errors_total")
+	dashboardMigrationWatchLostTotal    = expvar.NewInt("dashboard_migration_watch_lost_total")
+	dashboardMigrationWorkerPanicsTotal = expvar.NewInt("dashboard_migration_worker_panics_total")
 )
 
-func recordHTTPRequest(path string, status int, duration time.Duration) {
-	if isObservabilityPath(path) {
-		return
-	}
+func recordHTTPRequest(status int, duration time.Duration) {
+	// Caller (requestLogger) gates observability paths upstream so this
+	// function is only entered for paths that should be metered.
 	dashboardHTTPRequestsTotal.Add(1)
 	dashboardHTTPResponsesByStatusClass.Add(statusClass(status), 1)
 	dashboardHTTPRequestDurationMSTotal.Add(duration.Milliseconds())
@@ -113,26 +120,39 @@ func serveDashboardMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 
-	writePromMetric(w, "dashboard_http_requests_total", "Dashboard HTTP requests served, excluding health and metrics endpoints.", "counter", dashboardHTTPRequestsTotal.String())
-	writePromMetric(w, "dashboard_http_server_errors_total", "Dashboard HTTP responses with status code >= 500.", "counter", dashboardHTTPServerErrorsTotal.String())
-	writePromMetric(w, "dashboard_http_slow_requests_total", "Dashboard HTTP requests slower than the configured slow request threshold.", "counter", dashboardHTTPSlowRequestsTotal.String())
-	writePromMetric(w, "dashboard_http_request_duration_ms_total", "Sum of observed dashboard HTTP request durations in milliseconds.", "counter", dashboardHTTPRequestDurationMSTotal.String())
-	writePromMapMetric(w, "dashboard_http_responses_total", "Dashboard HTTP responses by status class.", "counter", "status_class", dashboardHTTPResponsesByStatusClass)
-	writePromMapMetric(w, "dashboard_http_request_duration_ms_bucket_total", "Dashboard HTTP request duration bucket counts.", "counter", "bucket", dashboardHTTPRequestDurationBuckets)
-	writePromMetric(w, "dashboard_readiness_failures_total", "Dashboard readiness checks that failed because the orchestrator was unavailable.", "counter", dashboardReadinessFailuresTotal.String())
-	writePromMetric(w, "dashboard_migrations_active", "Dashboard migrations currently running.", "gauge", dashboardMigrationsActive.String())
-	writePromMetric(w, "dashboard_migration_duration_ms_total", "Sum of completed dashboard migration durations in milliseconds.", "counter", dashboardMigrationDurationMSTotal.String())
-	writePromMapMetric(w, "dashboard_migration_duration_ms_bucket_total", "Completed dashboard migration duration bucket counts.", "counter", "bucket", dashboardMigrationDurationMSBuckets)
-	writePromMapMetric(w, "dashboard_migration_results_total", "Completed dashboard migrations by outcome.", "counter", "outcome", dashboardMigrationResultsByOutcome)
+	// Buffer the many small Fprintf writes into one syscall per scrape.
+	bw := bufio.NewWriter(w)
+	defer func() {
+		if err := bw.Flush(); err != nil {
+			slog.Warn("metrics scrape flush failed", "error", err)
+		}
+	}()
+
+	writePromMetric(bw, "dashboard_http_requests_total", "Dashboard HTTP requests served, excluding health and metrics endpoints.", "counter", dashboardHTTPRequestsTotal.String())
+	writePromMetric(bw, "dashboard_http_server_errors_total", "Dashboard HTTP responses with status code >= 500.", "counter", dashboardHTTPServerErrorsTotal.String())
+	writePromMetric(bw, "dashboard_http_slow_requests_total", "Dashboard HTTP requests slower than the configured slow request threshold.", "counter", dashboardHTTPSlowRequestsTotal.String())
+	writePromMetric(bw, "dashboard_http_request_duration_ms_total", "Sum of observed dashboard HTTP request durations in milliseconds.", "counter", dashboardHTTPRequestDurationMSTotal.String())
+	writePromMapMetric(bw, "dashboard_http_responses_total", "Dashboard HTTP responses by status class.", "counter", "status_class", dashboardHTTPResponsesByStatusClass)
+	writePromMapMetric(bw, "dashboard_http_request_duration_ms_bucket_total", "Dashboard HTTP request duration bucket counts.", "counter", "bucket", dashboardHTTPRequestDurationBuckets)
+	writePromMetric(bw, "dashboard_readiness_failures_total", "Dashboard readiness checks that failed because the orchestrator was unavailable.", "counter", dashboardReadinessFailuresTotal.String())
+	writePromMetric(bw, "dashboard_csrf_rejections_total", "Dashboard requests rejected by the CSRF middleware (cross-origin/cross-site state-changing requests).", "counter", dashboardCSRFRejectionsTotal.String())
+	writePromMetric(bw, "dashboard_migrations_active", "Dashboard migrations currently running.", "gauge", dashboardMigrationsActive.String())
+	writePromMetric(bw, "dashboard_migration_apply_errors_total", "Dashboard migration submissions rejected by the orchestrator Apply call.", "counter", dashboardMigrationApplyErrorsTotal.String())
+	writePromMetric(bw, "dashboard_migration_duration_ms_total", "Sum of completed dashboard migration durations in milliseconds.", "counter", dashboardMigrationDurationMSTotal.String())
+	writePromMapMetric(bw, "dashboard_migration_duration_ms_bucket_total", "Completed dashboard migration duration bucket counts.", "counter", "bucket", dashboardMigrationDurationMSBuckets)
+	writePromMapMetric(bw, "dashboard_migration_results_total", "Completed dashboard migrations by outcome.", "counter", "outcome", dashboardMigrationResultsByOutcome)
+	writePromMetric(bw, "dashboard_migration_watch_errors_total", "Dashboard migrations where opening the orchestrator watch stream failed.", "counter", dashboardMigrationWatchErrorsTotal.String())
+	writePromMetric(bw, "dashboard_migration_watch_lost_total", "Dashboard migrations whose watch stream closed before a terminal status.", "counter", dashboardMigrationWatchLostTotal.String())
+	writePromMetric(bw, "dashboard_migration_worker_panics_total", "Recovered panics in the dashboard migration worker goroutine.", "counter", dashboardMigrationWorkerPanicsTotal.String())
 }
 
-func writePromMetric(w http.ResponseWriter, name, help, kind, value string) {
+func writePromMetric(w io.Writer, name, help, kind, value string) {
 	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 	fmt.Fprintf(w, "# TYPE %s %s\n", name, kind)
 	fmt.Fprintf(w, "%s %s\n", name, value)
 }
 
-func writePromMapMetric(w http.ResponseWriter, name, help, kind, labelName string, m *expvar.Map) {
+func writePromMapMetric(w io.Writer, name, help, kind, labelName string, m *expvar.Map) {
 	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 	fmt.Fprintf(w, "# TYPE %s %s\n", name, kind)
 	m.Do(func(kv expvar.KeyValue) {
@@ -157,9 +177,9 @@ func publishExpvars(app *App) {
 	} else {
 		expvar.NewString("version").Set(buildinfo.Version)
 	}
-	publishExpvarFunc("migrations_started", func() any { return app.getCounter("started") })
-	publishExpvarFunc("migrations_succeeded", func() any { return app.getCounter("succeeded") })
-	publishExpvarFunc("migrations_failed", func() any { return app.getCounter("failed") })
+	publishExpvarFunc("migrations_started", func() any { s, _, _ := app.counterSnapshot(); return s })
+	publishExpvarFunc("migrations_succeeded", func() any { _, s, _ := app.counterSnapshot(); return s })
+	publishExpvarFunc("migrations_failed", func() any { _, _, f := app.counterSnapshot(); return f })
 }
 
 // publishExpvarFunc registers fn under name, or replaces the existing

@@ -56,11 +56,13 @@ func validTargetPort(port string) bool {
 // blockedMetadataIPs are well-known cloud-provider instance metadata
 // endpoints. AWS/GCP/Azure share 169.254.169.254 (already covered by the
 // link-local check on most platforms but pinned here defensively); AWS IMDS
-// also exposes an IPv6 alias. Accessing these from the dashboard pod could
-// disclose node IAM credentials, so we hard-block them.
+// also exposes an IPv6 alias; Alibaba Cloud uses 100.100.100.200 (carrier
+// CGNAT range, not link-local). Accessing these from the dashboard pod
+// could disclose node IAM credentials, so we hard-block them.
 var blockedMetadataIPs = []net.IP{
 	net.ParseIP("169.254.169.254"),
 	net.ParseIP("fd00:ec2::254"),
+	net.ParseIP("100.100.100.200"),
 }
 
 func blockedTargetIP(ip net.IP) bool {

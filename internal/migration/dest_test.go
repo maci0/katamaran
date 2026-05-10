@@ -28,7 +28,7 @@ func TestRunDestination_Failures(t *testing.T) {
 			err := RunDestination(context.Background(), DestConfig{
 				QMPSocket:     "/nonexistent/qmp.sock",
 				TapIface:      tt.tap,
-				DriveIDs: []string{"drive-virtio-disk0"},
+				DriveIDs:      []string{"drive-virtio-disk0"},
 				SharedStorage: tt.sharedStorage,
 			})
 			if err == nil {
@@ -56,7 +56,7 @@ func TestRunDestination_NegativeMultifd(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:       "/nonexistent/qmp.sock",
-		DriveIDs: []string{"drive-virtio-disk0"},
+		DriveIDs:        []string{"drive-virtio-disk0"},
 		MultifdChannels: -1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "multifd channels must be non-negative") {
@@ -319,7 +319,7 @@ func TestRunDestination_InvalidTapIface(t *testing.T) {
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
 		TapIface:  ";evil",
-		DriveIDs: []string{"drive-virtio-disk0"},
+		DriveIDs:  []string{"drive-virtio-disk0"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid tap interface") {
 		t.Fatalf("expected tap interface validation error, got: %v", err)
@@ -331,7 +331,7 @@ func TestRunDestination_InvalidTapNetns(t *testing.T) {
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
 		TapNetns:  "/proc/../etc/passwd",
-		DriveIDs: []string{"drive-virtio-disk0"},
+		DriveIDs:  []string{"drive-virtio-disk0"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "path traversal") {
 		t.Fatalf("expected netns validation error, got: %v", err)
@@ -342,7 +342,7 @@ func TestRunDestination_InvalidDriveID(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket: "/nonexistent/qmp.sock",
-		DriveIDs: []string{";evil"},
+		DriveIDs:  []string{";evil"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid drive ID") {
 		t.Fatalf("expected drive ID validation error, got: %v", err)
@@ -353,7 +353,7 @@ func TestRunDestination_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 	t.Parallel()
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:     "/nonexistent/qmp.sock",
-		DriveIDs: []string{";evil"},
+		DriveIDs:      []string{";evil"},
 		SharedStorage: true,
 	})
 	if err == nil {
@@ -413,7 +413,7 @@ func TestRunDestination_NonShared_CommandArguments(t *testing.T) {
 
 	err := RunDestination(context.Background(), DestConfig{
 		QMPSocket:       sock,
-		DriveIDs: []string{"drive-virtio-disk0"},
+		DriveIDs:        []string{"drive-virtio-disk0"},
 		MultifdChannels: 4,
 	})
 	if err != nil {

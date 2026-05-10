@@ -10,6 +10,38 @@ import (
 	"time"
 )
 
+const maxCommandOutputBytes = 64 * 1024
+
+type cappedCommandOutput struct {
+	b         strings.Builder
+	truncated bool
+}
+
+func (o *cappedCommandOutput) Write(p []byte) (int, error) {
+	if remaining := maxCommandOutputBytes - o.b.Len(); remaining > 0 {
+		if len(p) > remaining {
+			_, _ = o.b.Write(p[:remaining])
+			o.truncated = true
+		} else {
+			_, _ = o.b.Write(p)
+		}
+	} else {
+		o.truncated = true
+	}
+	return len(p), nil
+}
+
+func (o *cappedCommandOutput) String() string {
+	s := o.b.String()
+	if o.truncated {
+		if s != "" && !strings.HasSuffix(s, "\n") {
+			s += "\n"
+		}
+		s += "... [truncated]"
+	}
+	return s
+}
+
 // runCmdInNetns executes a command inside the given network namespace.
 // If netnsPath is empty, it runs the command in the current namespace.
 func runCmdInNetns(ctx context.Context, netnsPath string, name string, args ...string) error {
@@ -28,7 +60,7 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 	slog.Debug("Executing command", "command", name, "args", args)
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out strings.Builder
+	var out cappedCommandOutput
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 

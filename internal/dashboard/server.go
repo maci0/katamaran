@@ -31,10 +31,11 @@ const (
 	maxPingLines = 500
 
 	// HTTP server timeouts.
-	httpReadTimeout  = 10 * time.Second
-	httpWriteTimeout = 30 * time.Second
-	httpIdleTimeout  = 60 * time.Second
-	shutdownTimeout  = 5 * time.Second
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 10 * time.Second
+	httpWriteTimeout      = 30 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+	shutdownTimeout       = 5 * time.Second
 
 	// maxBodySize is the maximum request body size (1 MB), used by
 	// MaxBytesReader on form POSTs.
@@ -42,7 +43,7 @@ const (
 
 	// maxHeaderBytes caps the total size of HTTP request headers. Smaller
 	// than maxBodySize because legitimate requests do not need megabytes of
-	// headers, and a large limit aids header-bomb DoS.
+	// headers, and a tight cap mitigates header-bomb DoS.
 	maxHeaderBytes = 64 * 1024
 
 	// Scanner buffer sizes for subprocess output reading.
@@ -157,8 +158,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	allowedImage := os.Getenv("KATAMARAN_MIGRATION_IMAGE")
 	if allowedImage != "" && !validFormValue(allowedImage) {
-		fmt.Fprintf(stderr, "Error: KATAMARAN_MIGRATION_IMAGE contains invalid characters\n")
-		return 1
+		fmt.Fprintf(stderr, "Error: KATAMARAN_MIGRATION_IMAGE contains invalid characters\n\n")
+		printUsage(stderr)
+		return 2
 	}
 	if allowedImage == "" {
 		// /api/migrate has no built-in authentication; without an image
@@ -171,21 +173,23 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	app := &App{startTime: time.Now(), allowedImage: allowedImage}
 
-	// The dashboard requires a working Kubernetes connection: in-cluster
+	// The dashboard needs a Kubernetes connection: try in-cluster
 	// service-account creds first, then a kubeconfig-loaded client (handy
-	// when running on a developer laptop). The Script (migrate.sh)
-	// orchestrator is not used here; it is available standalone via the
-	// bin/katamaran-orchestrator CLI.
+	// when running on a developer laptop).
 	if nat, err := orchestrator.New(); err == nil {
 		app.orch = nat
-		if disc, err := orchestrator.NewDiscoverer(); err == nil {
+		if disc, derr := orchestrator.NewDiscoverer(); derr == nil {
 			app.discoverer = disc
+		} else {
+			slog.Warn("Discoverer unavailable (in-cluster): /api/pods and /api/nodes will return 503", "error", derr)
 		}
 		slog.Info("Migration: orchestrator using in-cluster client-go")
 	} else if nat, err2 := orchestrator.NewFromKubeconfig("", ""); err2 == nil {
 		app.orch = nat
-		if disc, err := orchestrator.NewDiscovererFromKubeconfig("", ""); err == nil {
+		if disc, derr := orchestrator.NewDiscovererFromKubeconfig("", ""); derr == nil {
 			app.discoverer = disc
+		} else {
+			slog.Warn("Discoverer unavailable (kubeconfig): /api/pods and /api/nodes will return 503", "error", derr)
 		}
 		slog.Info("Migration: orchestrator using kubeconfig", "in_cluster_err", err)
 	} else {
@@ -202,12 +206,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mux := app.newMux(*enableDebug)
 
 	srv := &http.Server{
-		Addr:           *addr,
-		Handler:        requestLogger(recoverMiddleware(securityHeaders(csrfCheck(mux)))),
-		ReadTimeout:    httpReadTimeout,
-		WriteTimeout:   httpWriteTimeout,
-		IdleTimeout:    httpIdleTimeout,
-		MaxHeaderBytes: maxHeaderBytes,
+		Addr:              *addr,
+		Handler:           requestLogger(recoverMiddleware(securityHeaders(csrfCheck(mux)))),
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	go func() {
@@ -265,6 +270,7 @@ var apiAllowedMethods = map[string]string{
 	"/api/status":       http.MethodGet + ", " + http.MethodHead,
 	"/api/pods":         http.MethodGet + ", " + http.MethodHead,
 	"/api/nodes":        http.MethodGet + ", " + http.MethodHead,
+	"/api/history":      http.MethodGet + ", " + http.MethodHead,
 	"/api/ping":         http.MethodPost,
 	"/api/ping/stop":    http.MethodPost,
 	"/api/httpgen":      http.MethodPost,
@@ -283,13 +289,20 @@ func handleAPIFallback(w http.ResponseWriter, r *http.Request) {
 	jsonError(w, "Not found", http.StatusNotFound)
 }
 
+// Static probe response bodies, hoisted so each Kubernetes probe doesn't
+// allocate a fresh []byte conversion on the hot path.
+var (
+	probeOKBody       = []byte("ok\n")
+	probeNotReadyBody = []byte("orchestrator not wired\n")
+)
+
 // handleHealthz is a lightweight health check endpoint for Kubernetes probes.
 // Unlike /api/status, it avoids mutex acquisition and JSON serialization.
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
+	_, _ = w.Write(probeOKBody)
 }
 
 // handleReadyz is a readiness probe for Kubernetes. Unlike the lightweight
@@ -300,28 +313,21 @@ func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if a.orch != nil {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
+		_, _ = w.Write(probeOKBody)
 		return
 	}
 	dashboardReadinessFailuresTotal.Add(1)
 	slog.Debug("Readiness check failed: orchestrator not wired")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte("orchestrator not wired\n"))
+	_, _ = w.Write(probeNotReadyBody)
 }
 
-// getCounter returns the current value of the specified migration counter.
-func (a *App) getCounter(name string) int64 {
+// counterSnapshot returns the current values of the lifetime migration
+// counters under a single lock acquisition.
+func (a *App) counterSnapshot() (started, succeeded, failed int64) {
 	a.migrationMutex.Lock()
 	defer a.migrationMutex.Unlock()
-	switch name {
-	case "started":
-		return a.migrationsStarted
-	case "succeeded":
-		return a.migrationsSucceeded
-	case "failed":
-		return a.migrationsFailed
-	}
-	return 0
+	return a.migrationsStarted, a.migrationsSucceeded, a.migrationsFailed
 }
 
 // serveHome serves the dashboard's embedded index.html. Embedding removes
@@ -364,22 +370,31 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nodes)
 }
 
-// handleStatus returns the current state of the dashboard, including active migrations and loadgen logs.
+// handleHistory returns completed migrations, newest first.
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	a.migrationMutex.Lock()
-	hist := make([]MigrationHistoryEntry, len(a.migrationHistory))
-	copy(hist, a.migrationHistory)
+	hist := reverseCopyHistory(a.migrationHistory)
 	a.migrationMutex.Unlock()
-	// Reverse so newest first.
-	for i, j := 0, len(hist)-1; i < j; i, j = i+1, j-1 {
-		hist[i], hist[j] = hist[j], hist[i]
-	}
 	writeJSON(w, http.StatusOK, hist)
 }
 
+// reverseCopyHistory returns a newest-first copy of src in a single pass,
+// avoiding the make+copy+slices.Reverse two-pass pattern on a hot path.
+func reverseCopyHistory(src []MigrationHistoryEntry) []MigrationHistoryEntry {
+	n := len(src)
+	out := make([]MigrationHistoryEntry, n)
+	for i := 0; i < n; i++ {
+		out[i] = src[n-1-i]
+	}
+	return out
+}
+
+// handleStatus returns the current dashboard state, including active
+// migrations, loadgen samples, and incremental log/ping cursors.
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
-	rawLogs := r.URL.Query().Get("logs_after")
-	rawPings := r.URL.Query().Get("pings_after")
+	q := r.URL.Query()
+	rawLogs := q.Get("logs_after")
+	rawPings := q.Get("pings_after")
 	logsAfter, logsDelta := parseStatusCursor(rawLogs)
 	pingsAfter, pingsDelta := parseStatusCursor(rawPings)
 	// Surface malformed cursors so client bugs are diagnosable; behavior
@@ -419,13 +434,8 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		p := *a.latestProgress // copy under lock so caller mutation is safe
 		progress = &p
 	}
-	hist := make([]MigrationHistoryEntry, len(a.migrationHistory))
-	copy(hist, a.migrationHistory)
+	hist := reverseCopyHistory(a.migrationHistory)
 	a.migrationMutex.Unlock()
-	// Reverse so newest first.
-	for i, j := 0, len(hist)-1; i < j; i, j = i+1, j-1 {
-		hist[i], hist[j] = hist[j], hist[i]
-	}
 
 	var elapsedSeconds int64
 	if status && !migrationStart.IsZero() {

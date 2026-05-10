@@ -130,7 +130,8 @@ type Request struct {
 	AdoptVM bool
 
 	// TapIface is the destination tap interface to buffer with tc sch_plug.
-	// Defaults to "tap0_kata" in pod-picker mode.
+	// Leave empty to skip qdisc buffering; callers that know the standard
+	// Kata tap name usually pass "tap0_kata".
 	TapIface string
 
 	// TapNetns is the network namespace path containing TapIface, e.g.

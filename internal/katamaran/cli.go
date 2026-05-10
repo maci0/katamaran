@@ -37,16 +37,16 @@ var (
 		"downtime":               true,
 		"auto-downtime":          true,
 		"auto-downtime-floor-ms": true,
+		"cni-convergence-delay":  true,
 		"emit-cmdline-to":        true,
-		"pod-name":               true,
-		"pod-namespace":          true,
 	}
 	destOnlyFlags = map[string]bool{
-		"tap":                true,
-		"tap-netns":          true,
-		"replay-cmdline":     true,
-		"dest-pod-name":      true,
-		"dest-pod-namespace": true,
+		"tap":                     true,
+		"tap-netns":               true,
+		"replay-cmdline":          true,
+		"replay-cmdline-from-pod": true,
+		"dest-pod-name":           true,
+		"dest-pod-namespace":      true,
 	}
 )
 
@@ -76,7 +76,9 @@ Source mode flags:
   --downtime int           Max allowed downtime in milliseconds, 1-60000 (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
   --auto-downtime-floor-ms int
-                           Lower bound + overhead for auto-downtime in ms (default 0, uses 25ms)
+                           Lower bound + overhead for auto-downtime in ms (0 uses compiled-in 25ms; ignored without --auto-downtime)
+  --cni-convergence-delay duration
+                           Post-cutover wait keeping the IP tunnel alive while the CNI rebinds the pod (0 uses compiled-in 5s)
   --emit-cmdline-to string Capture source QEMU /proc/<pid>/cmdline to this path before migration
 
 Destination mode flags:
@@ -85,7 +87,11 @@ Destination mode flags:
   --dest-pod-name string   Destination pod name (alternative to --qmp)
   --dest-pod-namespace string
                            Destination pod namespace (required with --dest-pod-name)
+  --pod-name string        Source pod name for VMConfig fallback (requires --pod-namespace)
+  --pod-namespace string   Source pod namespace for VMConfig fallback (requires --pod-name)
   --replay-cmdline string  Spawn QEMU on dest by replaying captured source cmdline (with -incoming defer)
+  --replay-cmdline-from-pod string
+                           Fetch source QEMU cmdline from the named source pod's log ('<namespace>/<name>') instead of a hostPath file (requires pods/log get on the SA)
 
 Other:
   -v, --version            Show version and exit
@@ -98,7 +104,7 @@ Exit codes:
   130 Interrupted by signal (SIGINT/SIGTERM)
 
 Environment variables:
-  KATAMARAN_MIGRATION_ID   Correlation ID added to all log entries (set by the dashboard)
+  KATAMARAN_MIGRATION_ID   Correlation ID added to all log entries (set by orchestration paths)
 
 Examples:
   # Destination (run first)
@@ -133,20 +139,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	driveID := fs.String("drive-id", "drive-virtio-disk0", "QEMU block device ID(s), comma-separated for multi-disk")
 	sharedStorage := fs.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
 	tunnelMode := fs.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
-	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds")
-	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT")
+	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds (1-60000)")
+	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT (overrides --downtime)")
 	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, "Lower bound + overhead for the auto-calculated downtime (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime")
 	cniConvergenceDelay := fs.Duration("cni-convergence-delay", 0, "Post-cutover wait that keeps the IP tunnel alive while the CNI propagates the pod's new node binding (0 uses the compiled-in default of 5s)")
 	multifdChannels := fs.Int("multifd-channels", migration.DefaultMultifdChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
-	podName := fs.String("pod-name", "", "source pod name (alternative to --qmp/--vm-ip)")
-	podNS := fs.String("pod-namespace", "", "source pod namespace")
-	destPodName := fs.String("dest-pod-name", "", "destination pod name (alternative to --qmp)")
-	destPodNS := fs.String("dest-pod-namespace", "", "destination pod namespace")
-	emitCmdlineTo := fs.String("emit-cmdline-to", "", "source mode: capture /proc/<qemu_pid>/cmdline to this path before migration")
-	replayCmdline := fs.String("replay-cmdline", "", "dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
-	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
+	podName := fs.String("pod-name", "", "Source pod name (alternative to --qmp/--vm-ip)")
+	podNS := fs.String("pod-namespace", "", "Source pod namespace (required with --pod-name)")
+	destPodName := fs.String("dest-pod-name", "", "Destination pod name (alternative to --qmp)")
+	destPodNS := fs.String("dest-pod-namespace", "", "Destination pod namespace (required with --dest-pod-name)")
+	emitCmdlineTo := fs.String("emit-cmdline-to", "", "Source mode: capture /proc/<qemu_pid>/cmdline to this path before migration")
+	replayCmdline := fs.String("replay-cmdline", "", "Dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
+	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "Dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
 	showVersion := fs.Bool("version", false, "Show version and exit")
 	showVersionShort := fs.Bool("v", false, "")
 	helpFlag := fs.Bool("help", false, "")
@@ -218,6 +224,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+	if mode == roleSource && *cniConvergenceDelay < 0 {
+		_, _ = fmt.Fprintf(stderr, "Error: --cni-convergence-delay must be non-negative, got %s\n\n", *cniConvergenceDelay)
+		printUsage(stderr)
+		return 2
+	}
 
 	// Warn about mode-irrelevant flags and conflicting flag combinations.
 	fs.Visit(func(f *flag.Flag) {
@@ -228,23 +239,32 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			slog.Warn("Flag ignored in source mode", "flag", f.Name)
 		}
 	})
-	if *autoDowntime && seenFlags["downtime"] {
+	if mode == roleSource && *autoDowntime && seenFlags["downtime"] {
 		slog.Warn("--auto-downtime overrides --downtime; explicit --downtime value will be ignored")
 	}
 	if mode == roleSource && seenFlags["auto-downtime-floor-ms"] && !*autoDowntime {
 		slog.Warn("--auto-downtime-floor-ms is ignored without --auto-downtime")
 	}
-	slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
 
 	var err error
 	switch mode {
 	case roleDest:
 		// Validate that --dest-pod-name and --dest-pod-namespace come together.
 		// Unlike source, no XOR check is needed: --qmp has a sensible default
-		// and the resolver overrides it (including the well-known migrate.sh
-		// placeholder) when a dest pod is supplied.
+		// and the resolver overrides it (including the well-known
+		// destDefaultQMPSocket placeholder) when a dest pod is supplied.
 		if seenFlags["dest-pod-name"] != seenFlags["dest-pod-namespace"] {
 			_, _ = fmt.Fprintf(stderr, "Error: --dest-pod-name and --dest-pod-namespace must be supplied together\n\n")
+			printUsage(stderr)
+			return 2
+		}
+		if seenFlags["pod-name"] != seenFlags["pod-namespace"] {
+			_, _ = fmt.Fprintf(stderr, "Error: --pod-name and --pod-namespace must be supplied together\n\n")
+			printUsage(stderr)
+			return 2
+		}
+		if *replayCmdline != "" && *replayCmdlineFromPod != "" {
+			_, _ = fmt.Fprintf(stderr, "Error: --replay-cmdline and --replay-cmdline-from-pod are mutually exclusive\n\n")
 			printUsage(stderr)
 			return 2
 		}
@@ -252,6 +272,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if *podNS != "" && *podName != "" {
 			sourcePodRef = *podNS + "/" + *podName
 		}
+		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
 		err = migration.RunDestination(ctx, migration.DestConfig{
 			QMPSocket:            *qmpSocket,
 			TapIface:             *tapIface,
@@ -267,7 +288,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		})
 	case roleSource:
 		if *destIP == "" {
-			_, _ = fmt.Fprintf(stderr, "Error: required flag(s) not set: --dest-ip\n\n")
+			_, _ = fmt.Fprintf(stderr, "Error: --dest-ip is required\n\n")
 			printUsage(stderr)
 			return 2
 		}
@@ -335,6 +356,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 
+		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
 		err = migration.RunSource(ctx, migration.SourceConfig{
 			QMPSocket:           *qmpSocket,
 			DestIP:              parsedDest,

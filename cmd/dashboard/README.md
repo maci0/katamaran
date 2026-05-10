@@ -40,7 +40,8 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
 | `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `auto_downtime`, `shared_storage`, `replay_cmdline`, `tunnel_mode`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`, `auto_downtime`, `tunnel_mode`. |
 | `/api/migrate/stop` | POST | Cancel running migration |
-| `/api/status` | GET | JSON status: `{version, uptime_seconds, migrating, migration_id, migration_elapsed_seconds, migration_progress, last_migration_result, last_migration_error, migrations_started, migrations_succeeded, migrations_failed, loadgen_running, loadgen_type, logs, pings}`. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
+| `/api/status` | GET | JSON status for the UI, including migration state, counters, `history`, `logs`, `logs_next`, `logs_reset`, `pings`, `pings_next`, and `pings_reset`. Accepts `logs_after` and `pings_after` cursors for incremental polling. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
+| `/api/history` | GET | Completed migrations, newest first |
 | `/api/ping` | POST | Start continuous ping (5/sec) to target. Accepts `target=<host-or-ip>` via form body or query string. |
 | `/api/ping/stop` | POST | Stop active ping/loadgen |
 | `/api/httpgen` | POST | Start HTTP load generator (5 req/sec) to target. Accepts `target=<host-or-ip[:port]>` via form body or query string. |
@@ -49,12 +50,18 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/debug/pprof/` | GET | Runtime profiling (requires `--enable-debug`) |
 | `/debug/vars` | GET | Runtime metrics via expvar (requires `--enable-debug`) |
 
+API conventions:
+
+- State-changing `/api/*` endpoints accept `application/x-www-form-urlencoded` request bodies. Empty-body calls may pass parameters in the query string only where the endpoint description says so.
+- JSON responses set `Cache-Control: no-store`; errors use `{"error":"..."}` and may include endpoint-specific fields such as `migration_id`, `loadgen_type`, or `allow`.
+- Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values.
+
 ## Pod-picker workflow (recommended)
 
 1. Open the dashboard. The two `<select>` dropdowns auto-populate from `GET /api/pods` (filtered to `runtimeClassName=kata-qemu`) and `GET /api/nodes` (filtered to label `katacontainers.io/kata-runtime=true`).
 2. Pick **Source Pod**: `<namespace>/<name> @ <node> (<pod-ip>)`. The hidden `vm_ip` field auto-fills with the pod IP.
 3. Pick **Dest Node**: `<name> (<internal-ip>)`. The hidden `dest_ip` field auto-fills. The source's own node is hidden from the dest list.
-4. Optional: pick **Dest Pod**. Required only when running with `replay_cmdline=false` (to give the dest job a kata sandbox to connect into).
+4. Optional: pick **Dest Pod** when you want the destination job to connect to an existing kata sandbox. With `replay_cmdline=true`, leave it blank and katamaran spawns the destination QEMU itself.
 5. Set **Image** (e.g., `localhost/katamaran:dev`) and click **Start Migration**.
 
 The source job's resolver finds the QEMU PID and sandbox UUID at runtime (via the in-cluster apiserver) and assembles the rest of the migration arguments. Logs stream live into the Migration Log panel.
@@ -66,8 +73,6 @@ curl -sS -X POST http://127.0.0.1:8080/api/migrate \
   -d "source_pod_namespace=default" \
   -d "source_pod_name=kata-demo" \
   -d "dest_node=worker-b" \
-  -d "dest_pod_namespace=default" \
-  -d "dest_pod_name=kata-dest-shell-b" \
   -d "image=localhost/katamaran:dev" \
   -d "downtime=25" \
   -d "shared_storage=true" \

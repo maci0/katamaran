@@ -6,11 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 )
 
 const (
-	// migrationMetaFile is the filename the destination QEMU process
+	// migrationMetaFile is the filename the destination katamaran process
 	// writes after a successful incoming live migration.
 	migrationMetaFile = "migration-meta.json"
 
@@ -46,7 +47,7 @@ func (w *Watcher) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Do an immediate scan before the first tick.
-	w.scan()
+	w.safeScan()
 
 	for {
 		select {
@@ -54,9 +55,21 @@ func (w *Watcher) Run(ctx context.Context) {
 			slog.Info("Watcher stopped")
 			return
 		case <-ticker.C:
-			w.scan()
+			w.safeScan()
 		}
 	}
+}
+
+// safeScan invokes scan with panic recovery. A panic on a malformed entry
+// would otherwise kill the watcher goroutine and the factory would go
+// blind to all subsequent migrations with no log signal.
+func (w *Watcher) safeScan() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("Watcher scan panic", "dir", w.dir, "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	w.scan()
 }
 
 // scan walks the watch directory looking for sandbox subdirectories
@@ -64,18 +77,23 @@ func (w *Watcher) Run(ctx context.Context) {
 func (w *Watcher) scan() {
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
-		// The directory might not exist yet (no VMs running).
+		// The directory might not exist yet (no VMs running) — that
+		// case is expected and stays silent. Other errors (permissions,
+		// I/O) mean we are blind to migrations and need to be visible
+		// to operators.
 		if !os.IsNotExist(err) {
-			slog.Debug("Watcher scan failed", "dir", w.dir, "error", err)
+			slog.Warn("Watcher scan failed", "dir", w.dir, "error", err)
 		}
 		return
 	}
 
+	current := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		metaPath := filepath.Join(w.dir, e.Name(), migrationMetaFile)
+		current[metaPath] = struct{}{}
 		if _, ok := w.seen[metaPath]; ok {
 			continue
 		}
@@ -83,6 +101,11 @@ func (w *Watcher) scan() {
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
 			// File doesn't exist (yet) in this sandbox dir — expected.
+			// Other errors (permissions, I/O) mean we are silently blind
+			// to a real migration; surface them.
+			if !os.IsNotExist(err) {
+				slog.Warn("Watcher failed to read migration metadata", "path", metaPath, "error", err)
+			}
 			continue
 		}
 
@@ -100,5 +123,10 @@ func (w *Watcher) scan() {
 			slog.Info("VMConfig set from migration metadata", "id", state.ID)
 		}
 		w.server.OfferVM(state)
+	}
+	for metaPath := range w.seen {
+		if _, ok := current[metaPath]; !ok {
+			delete(w.seen, metaPath)
+		}
 	}
 }

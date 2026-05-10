@@ -9,10 +9,10 @@ import (
 )
 
 func TestRunCmd(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("requires linux")
 	}
+	t.Parallel()
 
 	ctx := context.Background()
 
@@ -65,10 +65,10 @@ func TestRunCmd(t *testing.T) {
 }
 
 func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("requires linux")
 	}
+	t.Parallel()
 	// With empty netnsPath, should delegate directly to runCmd.
 	if err := runCmdInNetns(context.Background(), "", "true"); err != nil {
 		t.Fatalf("expected success with empty netns, got: %v", err)
@@ -76,10 +76,10 @@ func TestRunCmdInNetns_EmptyNetns(t *testing.T) {
 }
 
 func TestRunCmdInNetns_WithNetns(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("requires linux")
 	}
+	t.Parallel()
 	// Use a nonexistent PID so nsenter always fails — even as root.
 	// This ensures the test detects regressions where runCmdInNetns
 	// silently skips the nsenter code path.

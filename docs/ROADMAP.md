@@ -1,12 +1,12 @@
 # Roadmap
 
-Current release: **v0.2.0** (2026-05-01)
+Current release: **v0.3.0** (2026-05-07)
 
 ---
 
 ## Project Status
 
-katamaran is feature-complete for single-pod, single-disk, single-NIC live migration within a single Kubernetes cluster. All 15 user stories are implemented and verified. The CRD controller, web dashboard, and CLI all drive the same Native orchestrator path.
+katamaran is feature-complete for single-pod, multi-disk, single-NIC live migration within a single Kubernetes cluster. All 15 user stories are implemented and verified. The CRD controller, web dashboard, and CLI all drive the same Native orchestrator path.
 
 | Area | Status |
 |------|--------|
@@ -35,7 +35,7 @@ Improvements that harden existing functionality without adding new migration cap
 
 ### Observability
 
-- **Prometheus metrics from migration progress** — expose storage sync %, RAM dirty rate, and actual downtime as Prometheus metrics on the controller's `/metrics` endpoint (currently only counters like dispatched/succeeded/failed are exposed)
+- **Storage and dirty-rate metrics** — controller `/metrics` already exposes phase, RAM transfer, downtime, applied downtime, and RTT; add storage sync percentage and RAM dirty-page rate when those signals are emitted by the source job
 - **Full per-pod log streaming for the dashboard** — the dashboard currently tails structured markers from the source pod log; full log streaming would show raw QEMU output in the UI log pane
 
 ### Encryption
@@ -44,7 +44,7 @@ Improvements that harden existing functionality without adding new migration cap
 
 ### Multi-Disk VMs
 
-- ~~**Parallel or sequential NBD mirrors for multi-disk pods**~~ — Done (v0.3.0+). `--drive-id` accepts comma-separated IDs. All mirrors run in parallel and must reach Ready before RAM pre-copy starts.
+- ~~**Parallel or sequential NBD mirrors for multi-disk pods**~~ — Done in the current branch. `--drive-id` accepts comma-separated IDs. All mirrors run in parallel and must reach Ready before RAM pre-copy starts.
 
 ### Test Robustness
 
@@ -93,7 +93,7 @@ Features that expand what can be migrated or how migration is triggered.
 
 ### Dashboard Improvements
 
-- **Migration history** — persist completed/failed migrations and surface them in the dashboard (currently only the active migration is shown)
+- **Durable migration history** — the dashboard keeps the last 100 completed/failed migrations in memory; persist them across dashboard restarts if operators need historical audit data
 - **Multi-migration view** — support concurrent migrations in the UI (the backend already supports concurrent migrations via distinct Job names)
 
 ---

@@ -27,9 +27,7 @@ rules:
   verbs: ["get", "list", "watch"]
 # Tail source pod logs for KATAMARAN_PROGRESS / KATAMARAN_RESULT
 # markers and (for the dest binary in replayCmdline mode) read the
-# source pod's KATAMARAN_CMDLINE_B64 marker. Replaces the previous
-# pods/exec + Pod create/delete RBAC that the SPDY/stager-pod flow
-# needed.
+# source pod's KATAMARAN_CMDLINE_B64 marker.
 - apiGroups: [""]
   resources: ["pods/log"]
   verbs: ["get"]
@@ -95,6 +93,12 @@ spec:
       labels: { app: katamaran-mgr }
     spec:
       serviceAccountName: katamaran-mgr
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       # Spread the two replicas across nodes when the cluster has more
       # than one. Soft preference (preferredDuringScheduling) so a
       # single-node cluster still schedules both — they just both run

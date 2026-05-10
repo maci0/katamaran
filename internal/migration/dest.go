@@ -15,10 +15,11 @@ import (
 	"github.com/maci0/katamaran/internal/qmp"
 )
 
-// destDefaultQMPSocket is the well-known socket path that deploy/migrate.sh
-// fills into the dest job when no explicit --qmp-dest is provided. It is
-// intentionally overridable here so the pod-resolver can replace it with the
-// real sandbox-derived path at runtime.
+// destDefaultQMPSocket is the well-known placeholder socket path the
+// orchestrator (and deploy/migrate.sh) bakes into the dest job when no
+// explicit --qmp-dest is provided. It is intentionally overridable here so
+// the pod-resolver can replace it with the real sandbox-derived path at
+// runtime.
 const destDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
 
 // RunDestination prepares the destination node for incoming live migration.
@@ -54,18 +55,18 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("resolve dest sandbox: %w", err)
 		}
-		// Override both an empty QMPSocket and the migrate.sh-generated default,
-		// since the orchestrator can't know the real sandbox UUID up front and
-		// passes the well-known placeholder path through to the dest job.
+		// Override both an empty QMPSocket and the templated default,
+		// since the orchestrator can't know the real sandbox UUID up front
+		// and bakes the well-known placeholder into the dest Job spec.
 		if cfg.QMPSocket == "" || cfg.QMPSocket == destDefaultQMPSocket {
 			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
 		}
 	}
 
 	// If a captured source cmdline is supplied, spawn the destination QEMU
-	// ourselves with -incoming defer + -daemonize before connecting to QMP.
-	// This bypasses Kata's sandbox lifecycle (which kills VMs that don't
-	// connect via vsock within dial_timeout — incompatible with -incoming).
+	// ourselves with -incoming defer before connecting to QMP. This bypasses
+	// Kata's sandbox lifecycle (which kills VMs that don't connect via vsock
+	// within dial_timeout — incompatible with -incoming).
 	// spawnReplayedQEMU mutates cfg.QMPSocket to point at the spawned QEMU's
 	// monitor; pod-resolver overrides above are intentionally superseded.
 	//
@@ -74,11 +75,10 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	//   --replay-cmdline-from-pod <ns>/<pod>: dest binary fetches the
 	//   source pod's log via the in-cluster apiserver, scans for the
 	//   KATAMARAN_CMDLINE_B64 marker, decodes it, writes to a local
-	//   tmp file, and falls through to the file-based replay path
-	//   below. No stager pod, no SPDY exec, no hostPath shuffling.
+	//   tmp file, and falls through to the file-based replay path below.
 	//
-	//   --replay-cmdline <path>: legacy file-based mode, kept for
-	//   manual testing where the file is staged out-of-band (e.g.
+	//   --replay-cmdline <path>: file-based mode, kept for manual
+	//   testing where the file is staged out-of-band (e.g.
 	//   deploy/migrate.sh's kubectl-cp shuffle).
 	if cfg.ReplayCmdlineFromPod != "" {
 		path, err := fetchCmdlineFromPodLog(ctx, cfg.ReplayCmdlineFromPod)
@@ -366,16 +366,23 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		QMPSocket: cfg.QMPSocket,
 	}
 
-	// Read QEMU PID from the pid file next to the QMP socket.
+	// Read QEMU PID from the pid file next to the QMP socket. A missing or
+	// unparseable pid file leaves meta.QEMUPid at zero, which silently breaks
+	// factory adoption — surface both failure modes so operators can correlate
+	// "VM not adopted" with the underlying read/parse error.
 	pidPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "pid")
-	if pidBytes, err := os.ReadFile(pidPath); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes))); err == nil {
-			meta.QEMUPid = pid
-		}
+	if pidBytes, err := os.ReadFile(pidPath); err != nil {
+		slog.Warn("Could not read QEMU pid file (factory adoption will be skipped)", "path", pidPath, "error", err)
+	} else if pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes))); err != nil {
+		slog.Warn("Could not parse QEMU pid file (factory adoption will be skipped)", "path", pidPath, "error", err)
+	} else {
+		meta.QEMUPid = pid
 	}
 
 	// Query VM status via QMP (informational).
-	if raw, err := client.Execute(ctx, "query-status", nil); err == nil {
+	if raw, err := client.Execute(ctx, "query-status", nil); err != nil {
+		slog.Warn("Failed to query dest VM status after migration", "error", err)
+	} else {
 		slog.Info("Dest VM status after migration", "status", string(raw))
 	}
 
@@ -392,7 +399,9 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
 			} `json:"Config"`
 		}
-		if json.Unmarshal(persistBytes, &persist) == nil {
+		if err := json.Unmarshal(persistBytes, &persist); err != nil {
+			slog.Warn("Failed to parse persist.json (VMConfig will be unavailable)", "path", persistPath, "error", err)
+		} else {
 			if len(persist.HypervisorState) > 0 {
 				meta.HypervisorState = persist.HypervisorState
 			}
@@ -431,7 +440,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		slog.Warn("Failed to marshal migration metadata", "error", err)
 		return
 	}
-	if err := os.WriteFile(metaPath, metaJSON, 0o644); err != nil {
+	if err := os.WriteFile(metaPath, metaJSON, 0o600); err != nil {
 		slog.Warn("Failed to write migration metadata", "path", metaPath, "error", err)
 	} else {
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)

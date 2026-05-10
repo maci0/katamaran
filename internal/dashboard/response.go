@@ -31,7 +31,13 @@ func jsonError(w http.ResponseWriter, msg string, status int) {
 // the calling endpoint.
 func parseFormPOST(w http.ResponseWriter, r *http.Request, logCtx string) bool {
 	reqID := requestIDFromContext(r.Context())
-	if ct := r.Header.Get("Content-Type"); ct != "" {
+	if r.ContentLength != 0 {
+		ct := r.Header.Get("Content-Type")
+		if ct == "" {
+			slog.Warn(logCtx+": missing content type", "request_id", reqID)
+			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
+			return false
+		}
 		mediaType, _, err := mime.ParseMediaType(ct)
 		if err != nil || mediaType != "application/x-www-form-urlencoded" {
 			slog.Warn(logCtx+": unsupported content type", "content_type", ct, "request_id", reqID)
@@ -49,6 +55,26 @@ func parseFormPOST(w http.ResponseWriter, r *http.Request, logCtx string) bool {
 			slog.Warn(logCtx+": failed to parse form body", "error", err, "request_id", reqID)
 			jsonError(w, "Invalid request body", http.StatusBadRequest)
 		}
+		return false
+	}
+	return true
+}
+
+func formFieldSet(keys ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		set[key] = struct{}{}
+	}
+	return set
+}
+
+func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
+	for key := range r.PostForm {
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Unknown form field: "+key, http.StatusBadRequest)
 		return false
 	}
 	return true

@@ -29,7 +29,7 @@ katamaran --mode <source|dest> [flags]
 |------|----------|---------|-------------|
 | `--mode` | yes | `""` | Migration role: `source` or `dest` |
 | `--qmp` | no | `/run/vc/vm/extra-monitor.sock` | QEMU QMP socket path |
-| `--drive-id` | no | `drive-virtio-disk0` | QEMU block device id |
+| `--drive-id` | no | `drive-virtio-disk0` | QEMU block device ID(s), comma-separated for multi-disk migrations |
 | `--shared-storage` | no | `false` | Skip NBD storage mirroring |
 | `--multifd-channels` | no | `4` | Parallel TCP channels for RAM migration (0 to disable) |
 | `--log-format` | no | `text` | Log output format: `text` or `json` |
@@ -49,6 +49,7 @@ katamaran --mode <source|dest> [flags]
 | `--downtime` | no | `25` | Maximum allowed downtime during VM pause, 1-60000 (ms) |
 | `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |
 | `--auto-downtime-floor-ms` | no | `0` | Lower bound + overhead for auto downtime; 0 uses the built-in 25 ms floor |
+| `--cni-convergence-delay` | no | `0s` | Keep the source-to-dest tunnel alive after cutover; 0 uses the built-in 5s delay |
 
 ### Destination mode flags
 
@@ -59,6 +60,7 @@ katamaran --mode <source|dest> [flags]
 | `--dest-pod-name` | alt to --qmp | `""` | Destination pod name; resolver finds sandbox QMP socket at runtime |
 | `--dest-pod-namespace` | with --dest-pod-name | `""` | Destination pod namespace |
 | `--replay-cmdline` | no | `""` | Path to a captured source QEMU cmdline file. When set, dest spawns its own QEMU with the replayed cmdline + `-incoming defer` (no kata sandbox needed on dest). |
+| `--replay-cmdline-from-pod` | no | `""` | Source pod reference (`<namespace>/<name>`) whose logs contain the captured cmdline marker for in-cluster replay |
 
 ## Direct CLI Usage
 
@@ -155,7 +157,7 @@ Legacy explicit-fields mode also requires:
 - source and destination QMP socket paths
 - VM pod IP
 
-Pod-picker mode requires source pod name + namespace instead of source QMP, VM IP, and tap values; the resolver derives those at runtime.
+Pod-picker mode requires source pod name + namespace instead of source QMP, VM IP, and tap values; the resolver derives those at runtime. Use `--replay-cmdline` unless you also provide an existing destination pod or QMP socket.
 
 ### Example (legacy explicit-fields mode)
 
@@ -244,11 +246,12 @@ The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/m
 
 | Variable | Description |
 |----------|-------------|
-| `KATAMARAN_MIGRATION_ID` | Correlation ID added to all log entries (set by the dashboard) |
+| `KATAMARAN_MIGRATION_ID` | Correlation ID added to all log entries (set by the dashboard, controller, or job wrapper) |
 
 ## Validation Rules
 
 - Source mode requires `--dest-ip` plus either `--vm-ip` or `--pod-name` + `--pod-namespace`
+- CLI pod mode cannot be combined with explicit `--qmp` or `--vm-ip`; the resolver derives both at runtime
 - When `--vm-ip` is supplied explicitly, `--dest-ip` and `--vm-ip` must be the same address family
 - `--tunnel-mode` must be `ipip`, `gre`, or `none`
 - `--downtime` must be between 1 and 60000
