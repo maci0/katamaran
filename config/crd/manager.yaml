@@ -162,11 +162,15 @@ spec:
             type: RuntimeDefault
 ---
 # Service the apiserver dials to reach the validating admission webhook.
-# Multi-replica mgr Deployment + leader election: any replica serves
-# the webhook (admission decisions don't need a leader; pendingAdoption
-# state is filled by the leader and read here, so non-leader webhook
-# answers may miss a recently-marked entry — accepted trade-off vs.
-# routing all admission traffic through one replica).
+# Selector matches only the leader replica: mgr stamps
+# `katamaran.io/leader=true` on its own pod via leader-election
+# callbacks (see setLeaderLabel in cmd/katamaran-mgr/main.go).
+# pendingAdoption state lives in the leader's process memory, so
+# routing admission traffic exclusively to the leader is required for
+# correctness — a follower has an empty registry and would silently
+# allow RS replacements during the adoption window. Brief gap during
+# leader handoff (~15s lease) is covered by failurePolicy=Ignore on
+# the ValidatingWebhookConfiguration.
 apiVersion: v1
 kind: Service
 metadata:
@@ -175,6 +179,7 @@ metadata:
 spec:
   selector:
     app: katamaran-mgr
+    katamaran.io/leader: "true"
   ports:
   - name: webhook
     port: 443

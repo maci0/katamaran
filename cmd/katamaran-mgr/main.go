@@ -30,6 +30,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
@@ -241,10 +242,17 @@ func main() {
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
 				slog.Info("Acquired leader lease", "identity", identity, "lease", *leaderNamespace+"/"+*leaderName)
+				// Mark this pod as leader so the webhook Service routes
+				// admission traffic only here. Without this, a non-leader
+				// replica answers from an empty pendingAdoption registry
+				// and silently lets RS replacements through.
+				setLeaderLabel(leaderCtx, kube, *leaderNamespace, identity, true)
+				defer setLeaderLabel(context.Background(), kube, *leaderNamespace, identity, false)
 				runReconciler(leaderCtx, rec)
 			},
 			OnStoppedLeading: func() {
 				slog.Info("Lost leader lease, exiting")
+				setLeaderLabel(context.Background(), kube, *leaderNamespace, identity, false)
 			},
 			OnNewLeader: func(id string) {
 				if id != identity {
@@ -260,6 +268,36 @@ func runReconciler(ctx context.Context, rec *controller.Reconciler) {
 	if err := rec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fail(err)
 	}
+}
+
+// setLeaderLabel patches the running pod's metadata.labels to add or
+// remove `katamaran.io/leader=true`. The webhook Service selector
+// includes this label, so endpoints flip atomically with leader
+// election. Best-effort: log + continue on failure (the worst case is
+// the Service routes to a pod that returns Unavailable to admission,
+// which falls through failurePolicy=Ignore — same as if the webhook
+// were down).
+//
+// podName must equal the running pod's metadata.name. The mgr's lease
+// identity is os.Hostname(), which Kubernetes sets equal to the pod
+// name by default — that's what callers pass here.
+func setLeaderLabel(ctx context.Context, kube kubernetes.Interface, namespace, podName string, leader bool) {
+	if podName == "" || namespace == "" {
+		return
+	}
+	patchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var patch string
+	if leader {
+		patch = `{"metadata":{"labels":{"katamaran.io/leader":"true"}}}`
+	} else {
+		patch = `{"metadata":{"labels":{"katamaran.io/leader":null}}}`
+	}
+	if _, err := kube.CoreV1().Pods(namespace).Patch(patchCtx, podName, ktypes.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		slog.Warn("Failed to update leader label on own pod", "pod", namespace+"/"+podName, "leader", leader, "error", err)
+		return
+	}
+	slog.Info("Updated leader label", "pod", namespace+"/"+podName, "leader", leader)
 }
 
 func fail(err error) {
