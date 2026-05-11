@@ -339,8 +339,85 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// adopt this VM. Failures are logged but never fail the migration.
 	writeMigrationMeta(ctx, cfg, client)
 
+	// Best-effort: re-parent the migrated QEMU out of the dest job
+	// container's cgroup so the VM survives this container's exit.
+	// See surviveContainerExit for the rationale + the next-step
+	// adoption-shim plan it sets up.
+	surviveContainerExit(cfg.QMPSocket)
+
 	return nil
 }
+
+// surviveContainerExit moves the QEMU process at <qmpDir>/pid out of
+// the current container's cgroup so it isn't SIGKILL'd when the dest
+// job's container exits (cgroup destruction kills every process
+// remaining in it). Step 1 of Approach E (process re-parenting). The
+// surviving QEMU still has no Kubernetes-side adoption — the
+// adoption-shim that picks it up via katamaran-factory and exposes it
+// as a containerd container is a separate follow-up. Without this
+// step the migrated VM dies the moment the dest job container exits
+// (~5 min after migration completes via the Job's TTL), so adoption
+// can't even happen retrospectively.
+//
+// Mechanism (cgroup v2 unified hierarchy):
+//
+//  1. Read QEMU pid from <qmpDir>/pid (written by QEMU's -pidfile).
+//  2. Create /sys/fs/cgroup/katamaran-adopted/<sandbox-id> (host
+//     cgroup root is mounted into the dest container at /sys via the
+//     hostPath volume).
+//  3. Write the QEMU pid into that cgroup's cgroup.procs file. The
+//     kernel atomically removes the pid from its current cgroup and
+//     places it in the new one.
+//  4. Container exits, container's cgroup is destroyed, but QEMU's
+//     new cgroup persists with no parent constraint (lives directly
+//     under root).
+//
+// All errors are best-effort warnings — a failure here means the
+// migration still succeeds operationally (source's VM is at the dest
+// node, dest binary's tunnel was set up, the new pod can be created)
+// but the migrated QEMU process won't survive long enough for a
+// future adoption-shim to grab it. Logged at WARN so the operator
+// can correlate "VM didn't survive past <time>" with the cgroup
+// move failure.
+func surviveContainerExit(qmpSocket string) {
+	pidPath := filepath.Join(filepath.Dir(qmpSocket), "pid")
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		slog.Warn("Cannot re-parent QEMU (pid file unreadable): VM will die at container exit",
+			"path", pidPath, "error", err)
+		return
+	}
+	pid := strings.TrimSpace(string(pidBytes))
+	if pid == "" {
+		slog.Warn("Cannot re-parent QEMU: pid file empty", "path", pidPath)
+		return
+	}
+
+	sandboxID := filepath.Base(filepath.Dir(qmpSocket))
+	cgroupDir := filepath.Join(adoptedCgroupRoot, sandboxID)
+	if err := os.MkdirAll(cgroupDir, 0o755); err != nil {
+		slog.Warn("Cannot re-parent QEMU (cgroup mkdir failed): VM will die at container exit",
+			"cgroup", cgroupDir, "error", err)
+		return
+	}
+
+	procsPath := filepath.Join(cgroupDir, "cgroup.procs")
+	if err := os.WriteFile(procsPath, []byte(pid+"\n"), 0o644); err != nil {
+		slog.Warn("Cannot re-parent QEMU (cgroup.procs write failed): VM will die at container exit",
+			"path", procsPath, "pid", pid, "error", err)
+		return
+	}
+	slog.Info("Re-parented QEMU into surviving cgroup; VM will outlive dest container",
+		"pid", pid, "cgroup", cgroupDir)
+}
+
+// adoptedCgroupRoot is where surviveContainerExit moves migrated QEMU
+// processes. var (not const) so a future test or alternate hierarchy
+// path (cgroup v1 hosts, sysctl-restricted environments) can override
+// it. The default targets cgroup v2 unified hierarchy under the host
+// /sys/fs/cgroup tree, which the dest container mounts via its
+// hostPath sys volume.
+var adoptedCgroupRoot = "/sys/fs/cgroup/katamaran-adopted"
 
 // writeMigrationMeta writes a migration-meta.json file next to the QMP socket.
 // The factory watcher picks this up and offers the VM to Kata shims via

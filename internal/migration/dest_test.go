@@ -3,6 +3,8 @@ package migration
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -469,4 +471,45 @@ func TestRunDestination_NonShared_CommandArguments(t *testing.T) {
 	if announce.Initial != garpInitialMS || announce.Max != garpMaxMS || announce.Rounds != garpRounds || announce.Step != garpStepMS {
 		t.Fatalf("unexpected announce-self args: %+v", announce)
 	}
+}
+
+// TestSurviveContainerExit_HappyPath simulates the cgroup re-parent
+// against a tmpdir-rooted fake cgroup tree. Locks the contract that
+// surviveContainerExit reads <qmpDir>/pid, creates the per-sandbox
+// cgroup dir under the configured root, and writes the pid into
+// cgroup.procs.
+func TestSurviveContainerExit_HappyPath(t *testing.T) {
+	root := t.TempDir()
+	qmpDir := t.TempDir()
+	if err := os.WriteFile(qmpDir+"/pid", []byte("12345\n"), 0o644); err != nil {
+		t.Fatalf("seed pid: %v", err)
+	}
+
+	prev := adoptedCgroupRoot
+	adoptedCgroupRoot = root
+	t.Cleanup(func() { adoptedCgroupRoot = prev })
+
+	surviveContainerExit(qmpDir + "/qmp.sock")
+
+	sandboxID := filepath.Base(qmpDir)
+	procs, err := os.ReadFile(root + "/" + sandboxID + "/cgroup.procs")
+	if err != nil {
+		t.Fatalf("cgroup.procs read: %v", err)
+	}
+	if !strings.Contains(string(procs), "12345") {
+		t.Fatalf("cgroup.procs = %q, want it to contain pid 12345", procs)
+	}
+}
+
+// TestSurviveContainerExit_MissingPidFileIsBestEffort confirms
+// surviveContainerExit is silent-and-safe when the pid file doesn't
+// exist (e.g., QEMU was started via a non-default flag). Migration
+// must still succeed; we just won't have a surviving QEMU.
+func TestSurviveContainerExit_MissingPidFileIsBestEffort(t *testing.T) {
+	prev := adoptedCgroupRoot
+	adoptedCgroupRoot = t.TempDir() + "/no-such-tree"
+	t.Cleanup(func() { adoptedCgroupRoot = prev })
+
+	// No pid file and no cgroup tree — must not panic, must not error.
+	surviveContainerExit("/no/such/qmp.sock")
 }
