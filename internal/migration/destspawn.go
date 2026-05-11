@@ -56,8 +56,13 @@ var (
 	// the dest QEMU to be up, instead of TCP-probing. See source.go for why
 	// the probe is incompatible with QEMU's migration peek. Sized to cover:
 	// dest pod scheduling + image pull + virtiofsd start + QEMU spawn +
-	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s.
-	destReplaySleep = 25 * time.Second
+	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s on
+	// a warm cluster, but can stretch to 30-40s when the dest node is
+	// freshly added (cgroup setup, image fetch, kata-deploy wiring) — bumped
+	// from 25s to 60s to cover that case. Live e2e on a 3-node minikube
+	// after adding a worker showed source's migrate command racing dest
+	// startup at the 25s mark, returning "Connection refused".
+	destReplaySleep = 60 * time.Second
 )
 
 // memPathRegex matches `mem-path=<path>` clauses inside a memory-backend-file

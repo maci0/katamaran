@@ -49,6 +49,7 @@ import (
 	"syscall"
 	"time"
 
+	taskAPIv2 "github.com/containerd/containerd/api/runtime/task/v2"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	taskTypes "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/ttrpc"
@@ -232,6 +233,12 @@ func runServer(logFn func(format string, args ...any)) error {
 	}
 	taskSvc := newAdoptedTaskService(logFn)
 	taskAPI.RegisterTTRPCTaskService(srv, taskSvc)
+	// Containerd 2.2.x dispatches by default to the v2.Task service
+	// (`service containerd.task.v2.Task`), not v3. Register both so the
+	// shim works regardless of which API the host containerd happens to
+	// pick. The v2 wrapper just adapts the request/response types — the
+	// adoption logic lives in adoptedTaskService and is shared.
+	taskAPIv2.RegisterTTRPCTaskService(srv, &v2Adapter{inner: taskSvc, logFn: logFn})
 	logFn("ttrpc server starting")
 
 	go func() {
@@ -545,6 +552,158 @@ func (s *adoptedTaskService) Update(_ context.Context, _ *taskAPI.UpdateTaskRequ
 }
 func (s *adoptedTaskService) Stats(_ context.Context, _ *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
 	return &taskAPI.StatsResponse{}, nil
+}
+
+// v2Adapter wraps adoptedTaskService to implement the v2 task API
+// for containerd 2.2.x clients that haven't migrated to v3 yet.
+// Each method translates v2 request types → v3, calls inner, then
+// translates response back. Since v2 + v3 type definitions are
+// structurally identical (both auto-generated from the same proto
+// shape across major versions), the translation is field-by-field
+// copying via proto.Marshal+Unmarshal — works for any future field
+// additions without per-method code changes.
+type v2Adapter struct {
+	inner *adoptedTaskService
+	logFn func(format string, args ...any)
+}
+
+func proxyMessage(in proto.Message, out proto.Message) error {
+	if in == nil {
+		return nil
+	}
+	data, err := proto.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return proto.Unmarshal(data, out)
+}
+
+func (a *v2Adapter) State(ctx context.Context, req *taskAPIv2.StateRequest) (*taskAPIv2.StateResponse, error) {
+	v3req := &taskAPI.StateRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.State(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.StateResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+
+func (a *v2Adapter) Create(ctx context.Context, req *taskAPIv2.CreateTaskRequest) (*taskAPIv2.CreateTaskResponse, error) {
+	v3req := &taskAPI.CreateTaskRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Create(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.CreateTaskResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+
+func (a *v2Adapter) Start(ctx context.Context, req *taskAPIv2.StartRequest) (*taskAPIv2.StartResponse, error) {
+	v3req := &taskAPI.StartRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Start(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.StartResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+
+func (a *v2Adapter) Delete(ctx context.Context, req *taskAPIv2.DeleteRequest) (*taskAPIv2.DeleteResponse, error) {
+	v3req := &taskAPI.DeleteRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Delete(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.DeleteResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+
+func (a *v2Adapter) Pids(ctx context.Context, req *taskAPIv2.PidsRequest) (*taskAPIv2.PidsResponse, error) {
+	v3req := &taskAPI.PidsRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Pids(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.PidsResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+
+func (a *v2Adapter) Pause(_ context.Context, _ *taskAPIv2.PauseRequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+func (a *v2Adapter) Resume(_ context.Context, _ *taskAPIv2.ResumeRequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+func (a *v2Adapter) Checkpoint(_ context.Context, _ *taskAPIv2.CheckpointTaskRequest) (*emptypb.Empty, error) {
+	return nil, errors.New("checkpoint not supported on adopted tasks")
+}
+func (a *v2Adapter) Kill(ctx context.Context, req *taskAPIv2.KillRequest) (*emptypb.Empty, error) {
+	v3req := &taskAPI.KillRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	return a.inner.Kill(ctx, v3req)
+}
+func (a *v2Adapter) Exec(_ context.Context, _ *taskAPIv2.ExecProcessRequest) (*emptypb.Empty, error) {
+	return nil, errors.New("exec not supported on adopted tasks")
+}
+func (a *v2Adapter) ResizePty(_ context.Context, _ *taskAPIv2.ResizePtyRequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+func (a *v2Adapter) CloseIO(_ context.Context, _ *taskAPIv2.CloseIORequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+func (a *v2Adapter) Update(_ context.Context, _ *taskAPIv2.UpdateTaskRequest) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+func (a *v2Adapter) Wait(ctx context.Context, req *taskAPIv2.WaitRequest) (*taskAPIv2.WaitResponse, error) {
+	v3req := &taskAPI.WaitRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Wait(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.WaitResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+func (a *v2Adapter) Stats(_ context.Context, _ *taskAPIv2.StatsRequest) (*taskAPIv2.StatsResponse, error) {
+	return &taskAPIv2.StatsResponse{}, nil
+}
+func (a *v2Adapter) Connect(ctx context.Context, req *taskAPIv2.ConnectRequest) (*taskAPIv2.ConnectResponse, error) {
+	v3req := &taskAPI.ConnectRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	v3resp, err := a.inner.Connect(ctx, v3req)
+	if err != nil {
+		return nil, err
+	}
+	out := &taskAPIv2.ConnectResponse{}
+	return out, proxyMessage(v3resp, out)
+}
+func (a *v2Adapter) Shutdown(ctx context.Context, req *taskAPIv2.ShutdownRequest) (*emptypb.Empty, error) {
+	v3req := &taskAPI.ShutdownRequest{}
+	if err := proxyMessage(req, v3req); err != nil {
+		return nil, err
+	}
+	return a.inner.Shutdown(ctx, v3req)
 }
 
 // readAdoptedSandboxID extracts the
