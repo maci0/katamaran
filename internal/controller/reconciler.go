@@ -422,11 +422,11 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			if r.Kube != nil && req.AdoptVM {
 				if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(cleanupCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
 					for _, o := range src.OwnerReferences {
-						if o.Controller != nil && *o.Controller && o.Kind == "ReplicaSet" {
+						if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {
 							rsUID = o.UID
 							r.pending.Mark(rsUID, string(id))
-							slog.Info("Marked ReplicaSet as adoption-pending; RS replacements will be denied by webhook",
-								"rs_uid", rsUID, "migration_id", id)
+							slog.Info("Marked source-pod controller as adoption-pending; replacements will be denied by webhook",
+								"controller_kind", o.Kind, "controller_uid", rsUID, "migration_id", id)
 							break
 						}
 					}

@@ -86,20 +86,59 @@ func TestShouldDenyPodCreate_NoPendingAllowsAll(t *testing.T) {
 	}
 }
 
-func TestShouldDenyPodCreate_NonRSOwnerAllowed(t *testing.T) {
+// TestShouldDenyPodCreate_StatefulSetOwnerDenied / DaemonSetOwnerDenied
+// confirm Strategy A's Mark applies to all built-in pod controllers
+// that auto-create replacement pods, not just ReplicaSet. Live e2e on
+// the 3-node minikube cluster verified this end-to-end against a
+// StatefulSet workload after the kind switch.
+func TestShouldDenyPodCreate_StatefulSetOwnerDenied(t *testing.T) {
 	t.Parallel()
 	r := &Reconciler{pending: newPendingAdoptionRegistry()}
-	r.pending.Mark("rs-1", "mig-abc")
+	r.pending.Mark("sts-1", "mig-sts")
 	ctrl := true
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			OwnerReferences: []metav1.OwnerReference{
-				{Kind: "DaemonSet", UID: "rs-1", Controller: &ctrl},
+				{Kind: "StatefulSet", UID: "sts-1", Controller: &ctrl},
+			},
+		},
+	}
+	if got := r.ShouldDenyPodCreate(pod); got == "" {
+		t.Fatal("StatefulSet pod with marked owner UID must be denied")
+	}
+}
+
+func TestShouldDenyPodCreate_DaemonSetOwnerDenied(t *testing.T) {
+	t.Parallel()
+	r := &Reconciler{pending: newPendingAdoptionRegistry()}
+	r.pending.Mark("ds-1", "mig-ds")
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "DaemonSet", UID: "ds-1", Controller: &ctrl},
+			},
+		},
+	}
+	if got := r.ShouldDenyPodCreate(pod); got == "" {
+		t.Fatal("DaemonSet pod with marked owner UID must be denied")
+	}
+}
+
+func TestShouldDenyPodCreate_UnmanagedKindAllowed(t *testing.T) {
+	t.Parallel()
+	r := &Reconciler{pending: newPendingAdoptionRegistry()}
+	r.pending.Mark("foo-1", "mig-x")
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "FooController", UID: "foo-1", Controller: &ctrl},
 			},
 		},
 	}
 	if got := r.ShouldDenyPodCreate(pod); got != "" {
-		t.Fatalf("ShouldDenyPodCreate for DaemonSet = %q, want empty", got)
+		t.Fatalf("ShouldDenyPodCreate for unmanaged-kind owner = %q, want empty", got)
 	}
 }
 

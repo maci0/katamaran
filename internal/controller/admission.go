@@ -102,13 +102,15 @@ func (p *pendingAdoptionRegistry) MigrationFor(uid types.UID) string {
 // non-empty reason string when the pod must be denied, or "" when it
 // should be allowed.
 //
-// Denies pods whose controllerRef points at a ReplicaSet currently
-// flagged in pendingAdoption. Bypasses pods carrying the
-// `app.kubernetes.io/component=adopted-vm` label — those are
+// Denies pods whose controllerRef points at a managed-pod controller
+// (ReplicaSet, StatefulSet, DaemonSet, Job — any built-in workload
+// controller that auto-creates replacement pods to keep its replica
+// count) currently flagged in pendingAdoption. Bypasses pods carrying
+// the `app.kubernetes.io/component=adopted-vm` label — those are
 // adoption pods created by the controller itself and inherit the
 // source pod's ownerReferences (Strategy A part 1), so without this
 // bypass the webhook would also deny the very pod that's supposed
-// to fill the RS replica count.
+// to fill the controller's replica count.
 func (r *Reconciler) ShouldDenyPodCreate(pod *corev1.Pod) string {
 	if r == nil || r.pending == nil || pod == nil {
 		return ""
@@ -117,11 +119,29 @@ func (r *Reconciler) ShouldDenyPodCreate(pod *corev1.Pod) string {
 		return ""
 	}
 	for _, owner := range pod.OwnerReferences {
-		if owner.Controller != nil && *owner.Controller && owner.Kind == "ReplicaSet" {
-			if migID := r.pending.MigrationFor(owner.UID); migID != "" {
-				return "katamaran migration " + migID + " in progress; ReplicaSet pod replacement denied (adoption pod pending)"
-			}
+		if owner.Controller == nil || !*owner.Controller {
+			continue
+		}
+		if !isManagedPodControllerKind(owner.Kind) {
+			continue
+		}
+		if migID := r.pending.MigrationFor(owner.UID); migID != "" {
+			return "katamaran migration " + migID + " in progress; " + owner.Kind + " pod replacement denied (adoption pod pending)"
 		}
 	}
 	return ""
+}
+
+// isManagedPodControllerKind reports whether the supplied
+// ownerReferences.kind names a built-in Kubernetes controller that
+// auto-creates replacement pods when an existing replica disappears.
+// Strategy A's pending-adoption Mark must apply to all of them so
+// migration of e.g. a StatefulSet member doesn't trigger a
+// replacement before the adoption pod takes over.
+func isManagedPodControllerKind(kind string) bool {
+	switch kind {
+	case "ReplicaSet", "StatefulSet", "DaemonSet", "Job":
+		return true
+	}
+	return false
 }
