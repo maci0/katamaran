@@ -150,6 +150,21 @@ Full controller-managed migration requires three components working together:
    - Or importing Kata's TOML config parser to construct the exact VMConfig struct
    - Or having the Kata shim skip the config comparison when the factory is a "migration factory" (upstream change)
 
+   **Update (live investigation, May 2026):** the Approach D path is blocked by Kata's factory ownership model in the 3.27 build we tested. `kata-runtime factory init` returns `"vm factory or VMCache is not enabled"` even when both `vm_cache_number = 1` and `enable_template = true` are set in the [factory] section, because:
+
+   - `enable_template = true` requires `initrd =` in the hypervisor config — kata-deploy 3.27 ships an `image =` (PMEM) layout, not an initrd, so templating is structurally unavailable.
+   - `vm_cache_number > 0` alone is insufficient: kata-runtime's factory init still reports the factory disabled, and `lsof` on the configured `vm_cache_endpoint` socket shows zero kata-shim connections during fresh sandbox creation. The runtime appears to require the factory process to have been registered through a code path other than just the config file.
+   - Setting `vm_cache_number = 1` while pointing the endpoint at the katamaran factory broke fresh pod creation cluster-wide with `CheckRequest timed out: context deadline exceeded` — the half-handshake codepath kata-shim enters when it sees a configured factory it can't actually use timed out every sandbox start.
+
+   The current daemonset therefore writes `vm_cache_endpoint = /var/run/katamaran/factory.sock` AND `vm_cache_number = 0`, leaving the wiring in place but the runtime hook dormant. The katamaran factory holds migration-meta.json + VMConfig payloads for future use; it isn't on the live-pod-creation path.
+
+   **What the adoption pod does today:** the controller creates `adopted-<id8>` with the source pod's labels + ownerReferences (Strategy A part 1) so the Deployment view stays consistent and the validating webhook (Strategy A part 2) blocks RS replacements. The pod itself goes through stock kata-shim and **cold-boots a fresh VM on the destination node** — the migrated QEMU process that the dest job left running is not inherited.
+
+   **Paths forward** (not yet attempted):
+   - **Approach C (standalone adoption shim):** implement containerd ttrpc TaskService directly, taking the migrated QEMU and exposing it as a containerd container. Loses Kata exec/logs/metrics integration but doesn't depend on Kata's factory feature working.
+   - **Approach D revival:** patch upstream kata-runtime to recognise an externally-bound factory socket (skip the `factory init` ownership check) and accept a per-sandbox `factory_endpoint` annotation. Requires Kata maintainer buy-in.
+   - **Approach E (process re-parenting):** pass the migrated QEMU's pidfd / file descriptors to a fresh containerd-shim instance that the controller starts directly, bypassing kata-runtime entirely for adopted pods. Most invasive but doesn't depend on either kata or container-runtime cooperation.
+
    **Prior art:** [Exotanium](https://katacontainers.io/blog/kata-containers-exotanium-case-study/) modified Kata into a distributed runtime with live migration (Xen-based, details undisclosed). No other public implementation exists.
 
 3. **Owner patching** — After the adoption shim creates a functioning pod on the destination, katamaran patches the source pod's owner (Deployment/ReplicaSet) or uses the admission webhook to redirect replacements to the dest node, keeping the replica count correct.
