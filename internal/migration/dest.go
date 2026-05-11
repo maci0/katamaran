@@ -409,6 +409,61 @@ func surviveContainerExit(qmpSocket string) {
 	}
 	slog.Info("Re-parented QEMU into surviving cgroup; VM will outlive dest container",
 		"pid", pid, "cgroup", cgroupDir)
+
+	// Move QEMU's KVM helper kernel threads to the same cgroup. Names
+	// look like `kvm-nx-lpage-recovery-<qemu-pid>` (and `kvm-pit/<pid>`,
+	// etc., depending on the QEMU build). Cgroup v2 keeps these in the
+	// container's cgroup even after the userspace QEMU process is moved
+	// out — they're spawned by the kernel for the QEMU's KVM ioctls,
+	// not as children of QEMU. If they stay in the dying container's
+	// cgroup, the cgroup is never empty, containerd never fires the
+	// "container exited" event, the pod stays in Status:Running for
+	// the full activeDeadlineSeconds (15 min), and the migration CR
+	// stays in phase=transferring until that timeout — even though the
+	// migration itself succeeded and QEMU is happily running.
+	moved := moveKVMHelperThreads(pid, procsPath)
+	if moved > 0 {
+		slog.Info("Moved KVM helper kernel threads to surviving cgroup", "qemu_pid", pid, "moved", moved)
+	}
+}
+
+// moveKVMHelperThreads finds kernel-thread PIDs whose comm contains
+// the QEMU pid (e.g. `kvm-nx-lpage-recovery-<qemupid>`) and moves
+// them into the supplied cgroup.procs file. Returns the count of
+// successfully moved threads. Best-effort; per-thread failures are
+// silently ignored (kernel-thread cgroup writes can fail under
+// security policies and a stuck thread is recoverable when the
+// container's cgroup is force-collected).
+func moveKVMHelperThreads(qemuPID, procsPath string) int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	suffix := "-" + qemuPID
+	moved := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		commBytes, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(commBytes))
+		// kvm-nx-lpage-recovery-<pid> is the common one observed in
+		// live e2e (kernel ≥6.x). Match any kvm- helper whose name
+		// ends in -<qemupid>.
+		if !strings.HasPrefix(comm, "kvm-") || !strings.HasSuffix(comm, suffix) {
+			continue
+		}
+		if err := os.WriteFile(procsPath, []byte(e.Name()+"\n"), 0o644); err == nil {
+			moved++
+		}
+	}
+	return moved
 }
 
 // adoptedCgroupRoot is where surviveContainerExit moves migrated QEMU
