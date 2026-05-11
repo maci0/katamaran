@@ -27,6 +27,11 @@ build-mgr:
 build-factory:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-factory ./cmd/katamaran-factory/
 
+# Build the containerd v2 adoption shim. Scaffolding only — see
+# cmd/containerd-shim-katamaran-adopted-v2/main.go package doc.
+build-adopted-shim:
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
+
 # Run go vet and gofmt checks
 vet:
 	go vet ./cmd/... ./internal/...

@@ -1,0 +1,28 @@
+# RuntimeClass for adoption pods created by katamaran-mgr after a
+# successful Migration with spec.adoptVM=true. The adoption pod uses
+# this runtime class (not kata-qemu) so containerd dispatches to
+# katamaran's own shim binary — `containerd-shim-katamaran-adopted-v2`,
+# resolved by name from the daemonset-installed PATH — which adopts
+# the surviving migrated QEMU instead of cold-booting a fresh VM.
+#
+# Status (May 2026): the shim is SCAFFOLDING only. Pods using this
+# RuntimeClass will currently fail to start (the shim prints an
+# explicit "scaffolding-only" diagnostic and exits non-zero). Apply
+# this manifest on test clusters where you want to iterate on the
+# shim; do NOT apply on production until the shim implements the
+# full containerd v2 TaskService protocol. The matching cmd
+# directory's package doc tracks remaining work.
+#
+# Until then, leaving spec.adoptVM=true with the default
+# runtimeClassName=kata-qemu (which controller.createAdoptionPod
+# uses today) produces an adoption pod that cold-boots a fresh VM
+# — the K8s view is correct (Deployment intact, no spurious pods)
+# but the migrated VM is not yet inherited.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: katamaran-adopted
+# handler must match the trailing portion of the shim binary name
+# `containerd-shim-<handler>-v2`. Containerd resolves shim binaries
+# by this convention from $PATH on the node.
+handler: katamaran-adopted

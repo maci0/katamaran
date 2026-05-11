@@ -40,7 +40,13 @@ spec:
             mkdir -p /host/usr/local/bin
             cp /usr/local/bin/katamaran /host/usr/local/bin/katamaran
             cp /usr/local/bin/katamaran-factory /host/usr/local/bin/katamaran-factory
-            chmod 0755 /host/usr/local/bin/katamaran /host/usr/local/bin/katamaran-factory
+            # Adoption shim. Containerd resolves `containerd-shim-<handler>-v2`
+            # by name from PATH, so the binary needs to live where containerd
+            # can find it. /usr/local/bin is on the default PATH for
+            # containerd's process. Scaffolding only — see
+            # cmd/containerd-shim-katamaran-adopted-v2/main.go package doc.
+            cp /usr/local/bin/containerd-shim-katamaran-adopted-v2 /host/usr/local/bin/containerd-shim-katamaran-adopted-v2
+            chmod 0755 /host/usr/local/bin/katamaran /host/usr/local/bin/katamaran-factory /host/usr/local/bin/containerd-shim-katamaran-adopted-v2
             echo "katamaran + factory binaries installed"
 
             # --- 2. Load required kernel modules ---
@@ -151,13 +157,13 @@ spec:
         args:
           - |
             echo "katamaran node setup complete"
-            trap 'rm -f /host-bin/katamaran /host-bin/katamaran-factory; echo "katamaran binaries removed"' TERM
+            trap 'rm -f /host-bin/katamaran /host-bin/katamaran-factory /host-bin/containerd-shim-katamaran-adopted-v2; echo "katamaran binaries removed"' TERM
             sleep infinity &
             wait $!
         lifecycle:
           preStop:
             exec:
-              command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran /host-bin/katamaran-factory"]
+              command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran /host-bin/katamaran-factory /host-bin/containerd-shim-katamaran-adopted-v2"]
         volumeMounts:
         - name: host-root
           mountPath: /host-bin
