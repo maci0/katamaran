@@ -25,10 +25,21 @@ type pendingAdoption struct {
 }
 
 // pendingAdoptionTTL bounds how long a pending-adoption entry blocks
-// RS replacements. Must be larger than the controller's adoption
-// staging delay (5s) plus a safety margin for slow apiservers, but
-// small enough that a stuck reconciler doesn't wedge the RS for hours.
-const pendingAdoptionTTL = 60 * time.Second
+// RS replacements. Must outlive the slowest legitimate flow:
+//
+//	source pod orphan-delete → adoption pod create (~5s) → adoption
+//	pod observed by RS informer → source pod fully terminated → RS
+//	settles to desired replica count.
+//
+// Live tests on 1.35 with kata-deploy showed a ~30-45s window
+// between Mark and RS quiescence (source termination is ~30s for a
+// kata pod because virtiofsd / agent shutdown waits). Set the TTL
+// well above that so the webhook keeps denying replacement attempts
+// across the whole settle window. Cap chosen at 5 minutes: long
+// enough that even pathological RS retry storms cannot slip
+// through, short enough that a crashed reconciler doesn't wedge a
+// Deployment forever.
+const pendingAdoptionTTL = 5 * time.Minute
 
 // pendingAdoptionRegistry is the data store the webhook consults. It
 // is keyed by RS UID so the per-Pod webhook check is O(1).

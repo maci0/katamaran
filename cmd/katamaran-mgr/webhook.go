@@ -120,21 +120,18 @@ func bytesEqual(a, b []byte) bool {
 // install-time, not user-configurable.
 const webhookConfigName = "katamaran-mgr"
 
-// serveWebhook starts the admission HTTPS server on addr. Blocks until
-// ctx cancel. Cert is generated in-process; CA bundle is patched onto
-// the ValidatingWebhookConfiguration so the apiserver trusts the cert.
-func serveWebhook(ctx context.Context, addr, serviceName, namespace string, rec *controller.Reconciler, kube kubernetes.Interface) error {
-	cert, caBundle, err := generateWebhookCert(serviceName, namespace)
-	if err != nil {
-		return fmt.Errorf("generate webhook cert: %w", err)
-	}
-	if err := patchWebhookConfigCABundle(ctx, kube, webhookConfigName, caBundle); err != nil {
-		// Log + continue: the manifest may be applied later, or
-		// failurePolicy=Ignore on the webhook keeps the cluster usable
-		// even if the patch failed.
-		slog.Warn("Failed to patch ValidatingWebhookConfiguration caBundle (webhook will still serve, but apiserver may not trust it)", "error", err)
-	}
-
+// serveWebhook starts the admission HTTPS server on addr using the
+// supplied cert. Blocks until ctx cancel.
+//
+// The caBundle that pairs with cert MUST be patched onto the
+// ValidatingWebhookConfiguration BEFORE this leader's webhook starts
+// answering apiserver requests, otherwise apiserver TLS validation
+// fails and (with failurePolicy=Ignore) every admission decision
+// short-circuits to allow. Patching is the LEADER's job (see main()'s
+// OnStartedLeading callback), not serveWebhook's, so multi-replica
+// mgr deployments don't have followers overwriting the leader's
+// caBundle with their own (unused) cert.
+func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *controller.Reconciler) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /admit", func(w http.ResponseWriter, r *http.Request) { handleAdmit(w, r, rec) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -157,7 +154,7 @@ func serveWebhook(ctx context.Context, addr, serviceName, namespace string, rec 
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	slog.Info("Admission webhook listening", "addr", addr, "service", serviceName, "namespace", namespace)
+	slog.Info("Admission webhook listening", "addr", addr)
 	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("webhook server: %w", err)
 	}

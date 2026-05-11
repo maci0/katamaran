@@ -204,9 +204,22 @@ func main() {
 	}()
 
 	go serveDebug(ctx, *addr)
+	// Cert is generated per-process. The serving cert is used by
+	// serveWebhook below; the matching CA bundle is patched onto
+	// the ValidatingWebhookConfiguration only by the leader (see
+	// OnStartedLeading callback). Followers serve TLS too (in case
+	// the Service routes to them during handoff) but their cert
+	// isn't trusted by the apiserver — failurePolicy=Ignore keeps
+	// the cluster usable in that gap.
+	var webhookCABundle []byte
 	if !*disableWebhook {
+		cert, caBundle, err := generateWebhookCert(*webhookService, *webhookNamespace)
+		if err != nil {
+			fail(fmt.Errorf("generate webhook cert: %w", err))
+		}
+		webhookCABundle = caBundle
 		go func() {
-			if err := serveWebhook(ctx, *webhookAddr, *webhookService, *webhookNamespace, rec, kube); err != nil {
+			if err := serveWebhook(ctx, *webhookAddr, cert, rec); err != nil {
 				slog.Error("Webhook server exited with error", "error", err)
 			}
 		}()
@@ -248,6 +261,17 @@ func main() {
 				// and silently lets RS replacements through.
 				setLeaderLabel(leaderCtx, kube, *leaderNamespace, identity, true)
 				defer setLeaderLabel(context.Background(), kube, *leaderNamespace, identity, false)
+				// Patch the webhook config's caBundle with THIS leader's
+				// cert so apiserver trusts the TLS handshake against the
+				// Service endpoint (which routes only to us). Doing this
+				// from a follower would publish a cert the Service-routed
+				// leader doesn't present — silent admission failure under
+				// failurePolicy=Ignore.
+				if webhookCABundle != nil {
+					if err := patchWebhookConfigCABundle(leaderCtx, kube, webhookConfigName, webhookCABundle); err != nil {
+						slog.Warn("Leader caBundle patch failed (admission may silently allow)", "error", err)
+					}
+				}
 				runReconciler(leaderCtx, rec)
 			},
 			OnStoppedLeading: func() {
