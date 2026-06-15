@@ -33,6 +33,7 @@
         button:focus-visible{outline:2px solid #2b8eff;outline-offset:2px}
         summary:focus-visible{outline:2px solid #2b8eff;outline-offset:2px;border-radius:0.375rem}
         #logs:focus{outline:2px solid #2b8eff;outline-offset:-2px;border-radius:0.5rem}
+        #main-content{scroll-margin-top:96px}
         .toast-close{background:none;border:none;color:inherit;opacity:.85;cursor:pointer;min-width:44px;min-height:44px;margin-left:4px;font-size:1.25rem;line-height:1;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;border-radius:.25rem}
         .toast-close:hover,.toast-close:focus-visible{opacity:1;background:rgba(255,255,255,.12)}
         @media(prefers-reduced-motion:reduce){
@@ -247,7 +248,7 @@
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &mdash; Zero-Drop Proof</h2>
                         <span id="loadgen-indicator" class="text-xs text-slate-400"></span>
                     </div>
-                    <div style="height:280px;position:relative" role="img" aria-label="Latency chart showing ping response times over time">
+                    <div style="height:280px;position:relative" role="img" aria-label="Latency chart. Start ICMP Ping or HTTP Load to see latency and failure data.">
                         <canvas id="latencyChart" aria-hidden="true"></canvas>
                         <div id="chart-empty" class="absolute inset-0 flex items-center justify-center text-center text-sm text-slate-400 px-6">Start ICMP Ping or HTTP Load to see latency and failure data.</div>
                     </div>
@@ -283,7 +284,7 @@
                     <div class="px-5 py-3 border-b border-slate-700/50">
                         <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Migration History</h2>
                     </div>
-                    <div class="overflow-x-auto">
+                    <div class="overflow-x-auto" tabindex="0" role="region" aria-label="Migration history (scroll horizontally for more columns)">
                         <table class="w-full text-xs text-slate-300">
                             <caption class="sr-only">Recent migration runs with result, timing, and RAM transfer summary.</caption>
                             <thead class="text-slate-400 border-b border-slate-700/50">
@@ -367,7 +368,7 @@
     function showToast(message, type) {
         var container = document.getElementById('toast-container');
         var toast = document.createElement('div');
-        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-600/90' : type === 'info' ? 'bg-hull-600/90' : 'bg-slate-700/90';
+        var bgColor = type === 'error' ? 'bg-red-600/90' : type === 'success' ? 'bg-emerald-700/90' : type === 'info' ? 'bg-hull-700/90' : 'bg-slate-700/90';
         toast.className = 'pointer-events-auto px-4 py-2.5 rounded-lg text-sm text-white shadow-lg backdrop-blur w-full flex items-center ' + bgColor + ' toast-enter';
         toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
         var textSpan = document.createElement('span');
@@ -1180,10 +1181,6 @@
                     badge.className = h.result === 'success' ? 'text-emerald-400' : 'text-red-400';
                     badge.textContent = h.result === 'success' ? '✓ success' : '✗ error';
                     if (h.error) {
-                        var errText = document.createElement('span');
-                        errText.className = 'sr-only';
-                        errText.textContent = ': ' + h.error;
-                        badge.appendChild(errText);
                         var errVisible = document.createElement('span');
                         errVisible.className = 'block text-xs text-slate-400 mt-0.5 font-normal';
                         errVisible.style.overflowWrap = 'anywhere';

@@ -9,7 +9,7 @@
 //     bundle dir cwd, and env containing the publisher socket etc.
 //     The shim daemonizes (fork+exec self with no `start` arg),
 //     binds /run/containerd/s/<random>.sock as a ttrpc server, and
-//     prints "unix://<path>\n" to stdout. Parent exits 0.
+//     prints "unix://<path>" (no trailing newline) to stdout. Parent exits 0.
 //  2. Containerd connects to that ttrpc socket and calls the
 //     TTRPCTaskService methods. The shim looks up the surviving
 //     migrated QEMU pid (Approach E step 1 wrote it into
@@ -31,7 +31,7 @@
 //     both fields on the adoption pod.
 //
 // If no surviving QEMU is found in the configured cgroup, Create
-// returns FailedPrecondition so containerd surfaces a clear error
+// returns an error so containerd surfaces a clear failure
 // instead of silently cold-booting a fresh VM.
 package main
 
@@ -83,17 +83,24 @@ const (
 )
 
 func main() {
-	logf, _ := os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if logf != nil {
+	// Default the log sink to stderr so the shim is never blind: containerd
+	// captures shim stderr into its own logs. stdout must stay clean (the
+	// start command writes the ttrpc address there). Prefer the on-disk log
+	// when its directory can be created and the file opened; otherwise fall
+	// back to stderr instead of silently dropping every log line.
+	var logw *os.File = os.Stderr
+	if err := os.MkdirAll(filepath.Dir(shimLogPath), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot create log dir %s: %v; logging to stderr\n", filepath.Dir(shimLogPath), err)
+	} else if logf, err := os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot open log file %s: %v; logging to stderr\n", shimLogPath, err)
+	} else {
 		defer func() { _ = logf.Close() }()
+		logw = logf
 	}
 	logFn := func(format string, args ...any) {
-		if logf == nil {
-			return
-		}
-		fmt.Fprintf(logf, "%s [%d] ", time.Now().UTC().Format(time.RFC3339Nano), os.Getpid())
-		fmt.Fprintf(logf, format, args...)
-		fmt.Fprintln(logf)
+		fmt.Fprintf(logw, "%s [%d] ", time.Now().UTC().Format(time.RFC3339Nano), os.Getpid())
+		fmt.Fprintf(logw, format, args...)
+		fmt.Fprintln(logw)
 	}
 	logFn("invoked argv=%v", os.Args)
 
@@ -259,16 +266,18 @@ func runServer(logFn func(format string, args ...any)) error {
 // adoptedTaskService implements TTRPCTaskService for an adoption pod.
 // All interesting state is the QEMU pid we located on Create.
 type adoptedTaskService struct {
-	logFn      func(format string, args ...any)
-	mu         sync.Mutex
-	id         string
-	qemuPid    int
-	startedAt  time.Time
-	exitedAt   time.Time
-	exitCode   uint32
-	exited     bool
-	shutdownCh chan struct{}
-	waiters    []chan struct{}
+	logFn        func(format string, args ...any)
+	mu           sync.Mutex
+	id           string
+	qemuPid      int
+	startedAt    time.Time
+	exitedAt     time.Time
+	exitCode     uint32
+	exited       bool
+	watchStarted bool // guards watchExit against duplicate/concurrent Start RPCs
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+	waiters      []chan struct{}
 }
 
 func newAdoptedTaskService(logFn func(format string, args ...any)) *adoptedTaskService {
@@ -290,6 +299,18 @@ func (s *adoptedTaskService) Create(_ context.Context, req *taskAPI.CreateTaskRe
 	if sandboxID == "" {
 		sandboxID = defaultAdoptedSandboxID
 	}
+	// The sandbox id is interpolated into a cgroup filesystem path
+	// (adoptedCgroupRoot/<id>/cgroup.procs). It originates from the pod's
+	// OCI config.json annotation, which is controllable by anyone who can
+	// create a pod with runtimeClassName=katamaran-adopted — a broader set
+	// than katamaran-mgr. Reject anything but a single safe path component
+	// so a crafted annotation cannot traverse out of adoptedCgroupRoot and
+	// make the shim adopt (and later signal/kill) an arbitrary qemu-system
+	// process on the node.
+	if !validAdoptedSandboxID(sandboxID) {
+		s.logFn("Create: rejecting unsafe adopted-sandbox-id=%q", sandboxID)
+		return nil, fmt.Errorf("invalid adopted-sandbox-id %q", sandboxID)
+	}
 	pid, err := lookupAdoptedQEMUPid(sandboxID)
 	if err != nil {
 		s.logFn("Create: no surviving QEMU for sandbox=%s: %v", sandboxID, err)
@@ -308,11 +329,19 @@ func (s *adoptedTaskService) Create(_ context.Context, req *taskAPI.CreateTaskRe
 func (s *adoptedTaskService) Start(_ context.Context, _ *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	s.mu.Lock()
 	pid := s.qemuPid
-	s.mu.Unlock()
 	if pid == 0 {
+		s.mu.Unlock()
 		return nil, errors.New("Start before Create")
 	}
-	go s.watchExit()
+	// ttrpc dispatches handlers concurrently; arm the exit watcher exactly
+	// once so duplicate/concurrent Start calls don't leak /proc-polling
+	// goroutines.
+	armWatch := !s.watchStarted
+	s.watchStarted = true
+	s.mu.Unlock()
+	if armWatch {
+		go s.watchExit()
+	}
 	s.logFn("Start: pid=%d (already running, watch goroutine armed)", pid)
 	return &taskAPI.StartResponse{Pid: uint32(pid)}, nil
 }
@@ -413,11 +442,10 @@ func (s *adoptedTaskService) Connect(_ context.Context, _ *taskAPI.ConnectReques
 // Shutdown stops the ttrpc server.
 func (s *adoptedTaskService) Shutdown(_ context.Context, _ *taskAPI.ShutdownRequest) (*emptypb.Empty, error) {
 	s.logFn("Shutdown received")
-	select {
-	case <-s.shutdownCh:
-	default:
-		close(s.shutdownCh)
-	}
+	// sync.Once guards the close so concurrent ttrpc-dispatched Shutdown
+	// calls cannot both pass a non-atomic select/default check and double
+	// close(shutdownCh), which panics. Mirrors the factory's quitOnce.
+	s.shutdownOnce.Do(func() { close(s.shutdownCh) })
 	return &emptypb.Empty{}, nil
 }
 
@@ -466,6 +494,30 @@ func pidAlive(pid int) bool {
 	}
 	_, err := os.Stat("/proc/" + strconv.Itoa(pid))
 	return err == nil
+}
+
+// validAdoptedSandboxID reports whether id is a single safe path component
+// suitable for building the adopted cgroup path. It rejects empty values,
+// path separators, ".." traversal, and any character outside a conservative
+// allowlist (matching the DNS-label-style validation used elsewhere in the
+// project). Kata sandbox ids and the well-known "katamaran-dest" default all
+// satisfy this.
+func validAdoptedSandboxID(id string) bool {
+	if id == "" || id == "." || len(id) > 253 || strings.Contains(id, "..") {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // lookupAdoptedQEMUPid reads the cgroup.procs file for the named

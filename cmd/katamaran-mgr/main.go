@@ -58,6 +58,11 @@ Flags:
   --disable-leader-election       Run reconciler without leader election (single-replica development only)
   --pod-wait-timeout duration     How long to wait for migration Job pods to appear (default 60s;
                                   overridden by KATAMARAN_POD_WAIT_TIMEOUT env or per-CR spec.podWaitTimeoutSeconds)
+  --webhook-addr string           HTTPS listen address for the validating admission webhook (default ":9443")
+  --webhook-service string        Name of the Kubernetes Service the apiserver dials to reach the webhook,
+                                  used as TLS SAN (default "katamaran-mgr-webhook")
+  --webhook-namespace string      Namespace of the webhook Service, used as TLS SAN (default "kube-system")
+  --disable-webhook               Skip starting the validating admission webhook (development only)
   --log-format string             Log output format: 'text' or 'json' (default "json")
   --log-level string              Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
@@ -126,6 +131,11 @@ func main() {
 		printUsage(os.Stderr)
 		os.Exit(2)
 	}
+	if !*disableWebhook && !validListenAddr(*webhookAddr) {
+		fmt.Fprintf(os.Stderr, "Error: invalid --webhook-addr %q (expected host:port, for example :9443 or 0.0.0.0:9443)\n\n", *webhookAddr)
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
 	if *podWaitTimeout <= 0 {
 		fmt.Fprintf(os.Stderr, "Error: --pod-wait-timeout must be greater than 0, got %s\n\n", *podWaitTimeout)
 		printUsage(os.Stderr)
@@ -167,12 +177,28 @@ func main() {
 		fail(fmt.Errorf("kubernetes client: %w", err))
 	}
 
-	// Env var overrides the flag default; per-CR spec overrides both.
+	// Precedence: an explicit --pod-wait-timeout wins over the env var, which
+	// wins over the flag default; per-CR spec.podWaitTimeoutSeconds overrides
+	// all. Without the explicit-flag check the env var would silently clobber
+	// an operator's explicit --pod-wait-timeout, contradicting the documented
+	// precedence above.
+	podWaitTimeoutSetByFlag := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "pod-wait-timeout" {
+			podWaitTimeoutSetByFlag = true
+		}
+	})
 	if envPWT := os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT"); envPWT != "" {
-		if d, err := time.ParseDuration(envPWT); err == nil && d > 0 {
-			*podWaitTimeout = d
-		} else {
-			slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", err)
+		switch {
+		case podWaitTimeoutSetByFlag:
+			slog.Debug("Ignoring KATAMARAN_POD_WAIT_TIMEOUT; --pod-wait-timeout was set explicitly",
+				"flag", podWaitTimeout.String(), "env", envPWT)
+		default:
+			if d, err := time.ParseDuration(envPWT); err == nil && d > 0 {
+				*podWaitTimeout = d
+			} else {
+				slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", err)
+			}
 		}
 	}
 

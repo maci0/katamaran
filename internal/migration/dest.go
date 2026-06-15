@@ -46,6 +46,12 @@ const destDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
 //  7. Stops the NBD server (unless shared-storage mode)
 //  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
 func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
+	// Stamp dest pod identity onto every log line for this migration so
+	// operators can correlate the whole destination flow in aggregated logs.
+	// One migration runs per process, so mutating the default logger is safe.
+	if cfg.DestPodName != "" {
+		slog.SetDefault(slog.Default().With("role", "dest", "dest_pod", cfg.DestPodName, "namespace", cfg.DestPodNamespace))
+	}
 	if cfg.DestPodName != "" {
 		ip, err := lookupPodIP(ctx, cfg.DestPodNamespace, cfg.DestPodName)
 		if err != nil {
@@ -538,12 +544,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 				meta.HypervisorState = persist.HypervisorState
 			}
 			if len(persist.Config.HypervisorConfig) > 0 {
-				vmCfg, _ := json.Marshal(map[string]any{
-					"HypervisorType":   persist.Config.HypervisorType,
-					"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
-					"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
-				})
-				meta.VMConfig = vmCfg
+				meta.VMConfig = marshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 				meta.AgentConfig = persist.Config.KataAgentConfig
 			}
 			slog.Info("Loaded state from persist.json", "path", persistPath)

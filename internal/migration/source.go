@@ -53,6 +53,12 @@ var (
 //   - Cancels the drive-mirror block job (disarms the deferred cleanup)
 //   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	// Stamp pod identity onto every log line for this migration so operators
+	// can correlate the whole source flow in aggregated logs. One migration
+	// runs per process, so mutating the default logger here is safe.
+	if cfg.PodName != "" {
+		slog.SetDefault(slog.Default().With("role", "source", "pod", cfg.PodName, "namespace", cfg.PodNamespace))
+	}
 	var resolvedQEMUPID int
 	if cfg.PodName != "" {
 		ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
@@ -765,7 +771,7 @@ func emitVMConfig(qemuPID int) {
 	sbsDir := "/run/vc/sbs"
 	entries, err := os.ReadDir(sbsDir)
 	if err != nil {
-		slog.Info("Cannot read sandbox dir for VMConfig emission", "dir", sbsDir, "error", err)
+		slog.Warn("Cannot read sandbox dir for VMConfig emission; factory VM adoption will fall back to cold start", "dir", sbsDir, "error", err)
 		return
 	}
 	for _, e := range entries {
@@ -797,11 +803,7 @@ func emitVMConfig(qemuPID int) {
 		if persist.HypervisorState.Pid != qemuPID {
 			continue
 		}
-		vmCfg, _ := json.Marshal(map[string]any{
-			"HypervisorType":   persist.Config.HypervisorType,
-			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
-			"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
-		})
+		vmCfg := marshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		agentCfg := persist.Config.KataAgentConfig
 		fmt.Printf("KATAMARAN_VMCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(vmCfg))
 		fmt.Printf("KATAMARAN_AGENTCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(agentCfg))

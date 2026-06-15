@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,38 @@ func TestPendingAdoption_MarkAndExpire(t *testing.T) {
 	reg.mu.Unlock()
 	if got := reg.MigrationFor(uid); got != "" {
 		t.Fatalf("MigrationFor after expiry = %q, want empty", got)
+	}
+}
+
+// A later Mark must sweep entries that expired but were never re-queried
+// (the leak path: a reconciler that Marks then crashes before Clear, whose
+// controller never creates another pod the webhook checks). MigrationFor
+// only prunes the single UID it reads, so without the sweep in Mark such
+// entries would accumulate unboundedly.
+func TestPendingAdoption_MarkPrunesExpiredEntries(t *testing.T) {
+	t.Parallel()
+	reg := newPendingAdoptionRegistry()
+	stale := types.UID("rs-stale")
+	reg.Mark(stale, "mig-stale")
+	// Force-expire the stale entry without ever reading it back.
+	reg.mu.Lock()
+	e := reg.entries[stale]
+	e.expiresAt = time.Now().Add(-time.Second)
+	reg.entries[stale] = e
+	reg.mu.Unlock()
+
+	// A Mark for a different UID must garbage-collect the expired entry.
+	reg.Mark("rs-fresh", "mig-fresh")
+
+	reg.mu.Lock()
+	_, stillThere := reg.entries[stale]
+	count := len(reg.entries)
+	reg.mu.Unlock()
+	if stillThere {
+		t.Fatal("expired entry survived a later Mark; sweep did not run")
+	}
+	if count != 1 {
+		t.Fatalf("registry holds %d entries, want 1 (only the fresh mark)", count)
 	}
 }
 
@@ -65,8 +98,16 @@ func TestShouldDenyPodCreate_RSReplacementDuringPending(t *testing.T) {
 	if got == "" {
 		t.Fatal("ShouldDenyPodCreate should deny RS-driven pod for pending adoption RS")
 	}
-	if got[:8] != "katamara" {
-		t.Fatalf("deny reason looks wrong: %q", got)
+	// The deny reason must identify the blocking migration and the owner kind
+	// so operators can trace why a replacement pod was rejected.
+	if !strings.HasPrefix(got, "katamaran migration ") {
+		t.Fatalf("deny reason missing katamaran prefix: %q", got)
+	}
+	if !strings.Contains(got, "mig-abc") {
+		t.Fatalf("deny reason omits migration ID: %q", got)
+	}
+	if !strings.Contains(got, "ReplicaSet") {
+		t.Fatalf("deny reason omits owner kind: %q", got)
 	}
 }
 

@@ -1,3 +1,6 @@
+# OS junk
+.DS_Store
+
 # Build output
 bin/
 cmd/dashboard/main
@@ -42,5 +45,6 @@ sweep-results/
 /dashboard
 /katamaran-mgr
 /katamaran-factory
+/containerd-shim-katamaran-adopted-v2
 .playwright-mcp/
 .review-loop.lock

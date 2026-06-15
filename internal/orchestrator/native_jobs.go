@@ -33,12 +33,12 @@ func jobSuffix(id MigrationID) string { return string(id) }
 // migrate.sh: simple shell-style variable expansion with no defaults or
 // nested expressions.
 func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
+	// --vm-ip and (legacy) --qmp reach the source binary through EXTRA_ARGS
+	// (see sourceExtraArgs); the source template does not interpolate them.
 	return renderJob(sourceJobTemplate, map[string]string{
 		"NODE_NAME":              req.SourceNode,
 		"IMAGE":                  req.Image,
-		"QMP_SOCKET":             cmp.Or(req.SourceQMP, "/run/vc/vm/extra-monitor.sock"),
 		"DEST_IP":                req.DestIP,
-		"VM_IP":                  req.VMIP,
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
 		"JOB_SUFFIX":             jobSuffix(id),

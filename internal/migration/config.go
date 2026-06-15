@@ -5,6 +5,7 @@ package migration
 
 import (
 	"context"
+	"encoding/json"
 	"net/netip"
 	"time"
 )
@@ -91,7 +92,7 @@ const (
 	// 25ms matches the manual --downtime default (1 frame at 40Hz).
 	rttMinOverheadMS = 25
 
-	// rttDialTimeout is the maximum time to wait for each TCP handshake
+	// rttDialTimeout is the maximum time to wait for each ICMP echo reply
 	// when measuring round-trip time to the destination.
 	rttDialTimeout = 5 * time.Second
 )
@@ -187,6 +188,18 @@ type DestConfig struct {
 // context is cancelled (e.g. by SIGINT), while preserving parent context values.
 func cleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(baseCtx), cleanupTimeout)
+}
+
+// marshalVMConfig builds the JSON blob matching Kata's VMConfig.ToGrpc shape
+// from the pieces stored in a sandbox persist.json. The marshal cannot fail for
+// these string/RawMessage inputs, so the error is dropped.
+func marshalVMConfig(hypervisorType string, hypervisorConfig, agentConfig json.RawMessage) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"HypervisorType":   hypervisorType,
+		"HypervisorConfig": hypervisorConfig,
+		"AgentConfig":      agentConfig,
+	})
+	return b
 }
 
 // IPFamily returns a human-readable label for the IP address family.

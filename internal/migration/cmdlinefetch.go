@@ -41,6 +41,10 @@ const maxMarkerB64Size = 6 * 1024 * 1024
 // round-trips on bogus references.
 var podRefDNSRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
+// namespace/object name limit).
+const maxDNS1123Len = 253
+
 const (
 	cmdlineMarker     = "KATAMARAN_CMDLINE_B64="
 	vmConfigMarker    = "KATAMARAN_VMCONFIG_B64="
@@ -242,10 +246,10 @@ func parsePodRef(ref string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid pod ref %q (expected <namespace>/<name>)", ref)
 	}
 	ns, pod := parts[0], parts[1]
-	if len(ns) > 253 || !podRefDNSRe.MatchString(ns) {
+	if len(ns) > maxDNS1123Len || !podRefDNSRe.MatchString(ns) {
 		return "", "", fmt.Errorf("invalid pod ref %q: namespace must be a DNS-1123 label", ref)
 	}
-	if len(pod) > 253 || !podRefDNSRe.MatchString(pod) {
+	if len(pod) > maxDNS1123Len || !podRefDNSRe.MatchString(pod) {
 		return "", "", fmt.Errorf("invalid pod ref %q: pod name must be a DNS-1123 label", ref)
 	}
 	return ns, pod, nil

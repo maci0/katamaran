@@ -66,7 +66,8 @@ type Request struct {
 	DestQMP string
 
 	// DestIP is the destination node IP that source QEMU connects to for
-	// the migration TCP stream. Required.
+	// the migration TCP stream. Required when DestNode is set; deferred
+	// until the dest Job is scheduled in auto-select mode (empty DestNode).
 	DestIP string
 
 	// Image is the katamaran container image used for both source and dest

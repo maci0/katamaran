@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +28,16 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/maci0/katamaran/internal/controller"
+)
+
+// Admission webhook counters surfaced by katamaran-mgr's /metrics endpoint
+// (see debug.go). The webhook runs with failurePolicy=Ignore, so internal
+// errors fall through to "allow" silently — webhookFailOpenTotal is the only
+// signal that race-window protection has stopped working. Alert on it.
+var (
+	webhookAdmissionsTotal = expvar.NewInt("katamaran_webhook_admissions_total")
+	webhookDeniedTotal     = expvar.NewInt("katamaran_webhook_denied_total")
+	webhookFailOpenTotal   = expvar.NewInt("katamaran_webhook_fail_open_total")
 )
 
 // generateWebhookCert returns a self-signed TLS cert + the PEM-encoded
@@ -87,7 +99,7 @@ func patchWebhookConfigCABundle(ctx context.Context, kube kubernetes.Interface, 
 	}
 	changed := false
 	for i := range cfg.Webhooks {
-		if !bytesEqual(cfg.Webhooks[i].ClientConfig.CABundle, caBundle) {
+		if !bytes.Equal(cfg.Webhooks[i].ClientConfig.CABundle, caBundle) {
 			cfg.Webhooks[i].ClientConfig.CABundle = caBundle
 			changed = true
 		}
@@ -101,18 +113,6 @@ func patchWebhookConfigCABundle(ctx context.Context, kube kubernetes.Interface, 
 	}
 	slog.Info("ValidatingWebhookConfiguration caBundle patched", "name", configName)
 	return nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // webhookConfigName is the name of the ValidatingWebhookConfiguration
@@ -136,6 +136,7 @@ func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *c
 	mux.HandleFunc("POST /admit", func(w http.ResponseWriter, r *http.Request) { handleAdmit(w, r, rec) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
@@ -152,7 +153,9 @@ func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *c
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("Webhook server shutdown error", "error", err)
+		}
 	}()
 	slog.Info("Admission webhook listening", "addr", addr)
 	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -167,13 +170,18 @@ func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *c
 // webhook config means decode/internal errors fall through to "allow",
 // so the cluster never wedges on a busted webhook.
 func handleAdmit(w http.ResponseWriter, r *http.Request, rec *controller.Reconciler) {
+	webhookAdmissionsTotal.Add(1)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 3<<20))
 	if err != nil {
+		webhookFailOpenTotal.Add(1)
+		slog.Warn("Admission webhook failing open: cannot read request body", "error", err)
 		writeAdmissionAllow(w, types.UID(""), fmt.Sprintf("read body: %v", err))
 		return
 	}
 	var review admissionv1.AdmissionReview
 	if err := json.Unmarshal(body, &review); err != nil || review.Request == nil {
+		webhookFailOpenTotal.Add(1)
+		slog.Warn("Admission webhook failing open: cannot decode AdmissionReview", "error", err)
 		writeAdmissionAllow(w, types.UID(""), fmt.Sprintf("decode AdmissionReview: %v", err))
 		return
 	}
@@ -182,12 +190,15 @@ func handleAdmit(w http.ResponseWriter, r *http.Request, rec *controller.Reconci
 
 	var pod corev1.Pod
 	if err := json.Unmarshal(review.Request.Object.Raw, &pod); err != nil {
+		webhookFailOpenTotal.Add(1)
+		slog.Warn("Admission webhook failing open: cannot decode Pod", "uid", uid, "error", err)
 		resp.Result = &metav1.Status{Message: fmt.Sprintf("decode Pod: %v", err)}
-		writeAdmissionResponse(w, review, resp)
+		writeAdmissionResponse(w, resp)
 		return
 	}
 
 	if msg := rec.ShouldDenyPodCreate(&pod); msg != "" {
+		webhookDeniedTotal.Add(1)
 		resp.Allowed = false
 		resp.Result = &metav1.Status{
 			Status:  metav1.StatusFailure,
@@ -197,10 +208,10 @@ func handleAdmit(w http.ResponseWriter, r *http.Request, rec *controller.Reconci
 		}
 		slog.Info("Admission webhook denied Pod create", "namespace", pod.Namespace, "generateName", pod.GenerateName, "reason", msg)
 	}
-	writeAdmissionResponse(w, review, resp)
+	writeAdmissionResponse(w, resp)
 }
 
-func writeAdmissionResponse(w http.ResponseWriter, _ admissionv1.AdmissionReview, resp admissionv1.AdmissionResponse) {
+func writeAdmissionResponse(w http.ResponseWriter, resp admissionv1.AdmissionResponse) {
 	out := admissionv1.AdmissionReview{
 		TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
 		Response: &resp,
@@ -220,10 +231,5 @@ func writeAdmissionAllow(w http.ResponseWriter, uid types.UID, msg string) {
 	if msg != "" {
 		resp.Result = &metav1.Status{Message: msg}
 	}
-	out := admissionv1.AdmissionReview{
-		TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
-		Response: &resp,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeAdmissionResponse(w, resp)
 }

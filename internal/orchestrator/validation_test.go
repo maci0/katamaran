@@ -19,6 +19,35 @@ func TestValidateAcceptsAutoSelectedDestForSourcePod(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsReplayCmdlineWithAutoSelectedDest(t *testing.T) {
+	t.Parallel()
+	req := validRequestForValidation()
+	req.SourceQMP = ""
+	req.VMIP = ""
+	req.SourcePod = &PodRef{Namespace: "default", Name: "kata-vm"}
+	req.DestNode = ""
+	req.DestIP = ""
+	req.ReplayCmdline = true
+
+	err := Validate(req)
+	if err == nil {
+		t.Fatal("expected error for replayCmdline with auto-selected destination, got nil")
+	}
+	if !strings.Contains(err.Error(), "replayCmdline requires destNode") {
+		t.Fatalf("expected replayCmdline/destNode error, got: %v", err)
+	}
+}
+
+func TestValidateAcceptsReplayCmdlineWithExplicitDest(t *testing.T) {
+	t.Parallel()
+	req := validRequestForValidation()
+	req.ReplayCmdline = true
+
+	if err := Validate(req); err != nil {
+		t.Fatalf("Validate replayCmdline with explicit destNode: %v", err)
+	}
+}
+
 func TestValidateRejectsInvalidIPFields(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -186,6 +215,28 @@ func TestValidateRejectsNegativeAutoDowntimeFloor(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsOversizedAutoDowntimeFloor(t *testing.T) {
+	t.Parallel()
+	req := Request{
+		SourceNode:          "worker-a",
+		DestNode:            "worker-b",
+		DestIP:              "10.0.0.20",
+		Image:               "localhost/katamaran:dev",
+		SourceQMP:           "/run/vc/vm/source/extra-monitor.sock",
+		VMIP:                "10.244.1.5",
+		AutoDowntime:        true,
+		AutoDowntimeFloorMS: 60001,
+		MultifdChannels:     4,
+	}
+	err := Validate(req)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "autoDowntimeFloorMS") {
+		t.Fatalf("expected autoDowntimeFloorMS error, got: %v", err)
+	}
+}
+
 func TestValidateRejectsNegativeCNIConvergenceDelay(t *testing.T) {
 	t.Parallel()
 	req := validRequestForValidation()
@@ -225,6 +276,38 @@ func TestValidateRejectsInvalidSourceCleanup(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sourceCleanup") {
 		t.Fatalf("expected sourceCleanup error, got: %v", err)
+	}
+}
+
+// TestValidateRejectsUppercaseEnums pins the case-sensitive enum contract:
+// downstream consumers (migration.setupSource, the katamaran CLI,
+// logging.SetupLogger) only accept canonical lowercase values, so Validate
+// must reject case variants up front rather than letting them fail later in
+// the migration Job.
+func TestValidateRejectsUppercaseEnums(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		mutate func(*Request)
+		field  string
+	}{
+		{"tunnelMode", func(r *Request) { r.TunnelMode = "IPIP" }, "tunnelMode"},
+		{"logLevel", func(r *Request) { r.LogLevel = "DEBUG" }, "logLevel"},
+		{"logFormat", func(r *Request) { r.LogFormat = "JSON" }, "logFormat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := validRequestForValidation()
+			tc.mutate(&req)
+			err := Validate(req)
+			if err == nil {
+				t.Fatalf("expected validation error for uppercase %s", tc.field)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("expected %s error, got: %v", tc.field, err)
+			}
+		})
 	}
 }
 

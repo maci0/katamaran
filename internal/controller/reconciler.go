@@ -409,29 +409,36 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
 	var rsUID types.UID
+	// Mark the source-pod controller as adoption-pending so the
+	// validating webhook denies replacement pods that the controller
+	// (RS/STS/DaemonSet/Job) would otherwise spawn the moment the
+	// source pod transitions to Failed/Terminated. This MUST run
+	// independently of SourceCleanup: with sourceCleanup=none the
+	// source pod still ends up in Error (its container is killed when
+	// QEMU is paused for migration), and the controller will retry to
+	// fill its replica/completion count if we do not mark its UID
+	// first. Best-effort: missing Kube clientset, RBAC failure, or
+	// pod-already-gone all fall back to "no pending mark", which means
+	// the webhook will not deny anything for this migration.
+	if lastPhase == string(orchestrator.PhaseSucceeded) && req.AdoptVM && r.Kube != nil && req.SourcePod != nil {
+		markCtx, markCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(markCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
+			for _, o := range src.OwnerReferences {
+				if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {
+					rsUID = o.UID
+					r.pending.Mark(rsUID, string(id))
+					slog.Info("Marked source-pod controller as adoption-pending; replacements will be denied by webhook",
+						"controller_kind", o.Kind, "controller_uid", rsUID, "migration_id", id)
+					break
+				}
+			}
+		}
+		markCancel()
+	}
 	if lastPhase == string(orchestrator.PhaseSucceeded) && req.SourceCleanup != "" && req.SourceCleanup != "none" {
 		if req.SourcePod != nil && r.Discoverer != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
-			// Look up source pod's controller-ref BEFORE delete so the
-			// webhook can deny RS-driven replacements during the
-			// adoption window. Best-effort: missing Kube clientset, RBAC
-			// failure, or non-RS owner all silently fall back to "no
-			// pending mark", which means the webhook won't deny anything
-			// for this migration.
-			if r.Kube != nil && req.AdoptVM {
-				if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(cleanupCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
-					for _, o := range src.OwnerReferences {
-						if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {
-							rsUID = o.UID
-							r.pending.Mark(rsUID, string(id))
-							slog.Info("Marked source-pod controller as adoption-pending; replacements will be denied by webhook",
-								"controller_kind", o.Kind, "controller_uid", rsUID, "migration_id", id)
-							break
-						}
-					}
-				}
-			}
 			switch req.SourceCleanup {
 			case "delete":
 				if err := r.Discoverer.DeletePod(cleanupCtx, req.SourcePod.Namespace, req.SourcePod.Name); err != nil {

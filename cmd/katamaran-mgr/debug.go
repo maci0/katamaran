@@ -72,6 +72,9 @@ func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
 		"katamaran_migrations_status_patch_errors_total": {"Migration status subresource patch failures observed since startup.", "counter"},
 		"katamaran_migrations_watch_lost_total":          {"Watch channels that closed before reaching a terminal phase.", "counter"},
 		"katamaran_migrations_worker_panics_total":       {"Recovered panics in dispatch/recover goroutines.", "counter"},
+		"katamaran_webhook_admissions_total":             {"Admission webhook requests handled.", "counter"},
+		"katamaran_webhook_denied_total":                 {"Pod creations denied by the admission webhook.", "counter"},
+		"katamaran_webhook_fail_open_total":              {"Admission webhook requests that failed internally and fell through to allow (failurePolicy=Ignore).", "counter"},
 	}
 	expvar.Do(func(kv expvar.KeyValue) {
 		spec, ok := specs[kv.Key]

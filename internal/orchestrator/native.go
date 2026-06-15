@@ -30,8 +30,9 @@ import (
 //
 //   - Apply / Watch / Stop for both legacy explicit-fields and pod-picker
 //     mode requests.
-//   - Status updates: PhaseSubmitted on submit, PhaseTransferring from source
-//     KATAMARAN_PROGRESS log markers when available, PhaseSucceeded when the
+//   - Status updates: PhaseSubmitted on submit, PhaseTransferring once the
+//     source Job becomes Active/Ready (and from source KATAMARAN_PROGRESS log
+//     markers when available), PhaseSucceeded when the
 //     destination Job reaches condition=Complete, and PhaseFailed when the
 //     destination fails or the source fails without a successful handover.
 //
@@ -179,8 +180,8 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 
 	id := newID()
 	cmdlinePath := cmdlinePathFor(id)
-	srcExtra := buildExtraArgs(req)
-	destExtra := srcExtra
+	srcExtra := sourceExtraArgs(req)
+	destExtra := buildExtraArgs(req)
 	if req.ReplayCmdline {
 		// Source captures /proc/<qemu>/cmdline locally so it can compute
 		// the KATAMARAN_CMDLINE_B64 marker on the way out. The dest then
@@ -237,7 +238,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 
 		// Re-render the source job now that we know DestIP. ReplayCmdline
 		// takes the earlier branch, so no --emit-cmdline-to is needed here.
-		srcJob, err = renderSourceJob(req, id, buildExtraArgs(req))
+		srcJob, err = renderSourceJob(req, id, sourceExtraArgs(req))
 		if err != nil {
 			return "", fmt.Errorf("re-render source job: %w", err)
 		}
@@ -639,6 +640,10 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 // before either value is interpolated into a /bin/sh -c command string.
 var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
+// namespace/object name limit).
+const maxDNS1123Len = 253
+
 // injectReplayFromPod returns a copy of destJob with
 // `--replay-cmdline-from-pod <ns>/<pod>` appended to the dest container's
 // command. The render path doesn't know the source pod name (it's only
@@ -648,10 +653,10 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	if destJob == nil || len(destJob.Spec.Template.Spec.Containers) == 0 {
 		return nil, fmt.Errorf("dest job has no containers")
 	}
-	if len(ns) == 0 || len(ns) > 253 || !dns1123LabelRe.MatchString(ns) {
+	if len(ns) == 0 || len(ns) > maxDNS1123Len || !dns1123LabelRe.MatchString(ns) {
 		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", ns)
 	}
-	if len(srcPod) == 0 || len(srcPod) > 253 || !dns1123LabelRe.MatchString(srcPod) {
+	if len(srcPod) == 0 || len(srcPod) > maxDNS1123Len || !dns1123LabelRe.MatchString(srcPod) {
 		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 label", srcPod)
 	}
 	out := destJob.DeepCopy()
@@ -852,8 +857,8 @@ func (n *native) Stop(ctx context.Context, id MigrationID) error {
 //
 //	dest=Complete          → PhaseSucceeded (regardless of source)
 //	dest=Failed            → PhaseFailed
-//	source=Failed && dest pending → keep waiting (dest may still complete)
-//	source=Failed && dest never starts → PhaseFailed
+//	source=Failed && dest pending → wait up to sourceFailGrace (90s) for dest
+//	source=Failed && dest still pending after grace → PhaseFailed
 func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer func() {
 		// Signal finished BEFORE closing updates so concurrent senders
@@ -945,10 +950,31 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	}
 }
 
+// sourceExtraArgs returns the EXTRA_ARGS string for the source Job. It
+// augments the shared buildExtraArgs with source-only flags that the source
+// CLI requires but that must not leak into the dest command. In legacy mode
+// (no SourcePod) the source binary needs an explicit --vm-ip, otherwise it
+// exits 2 with "source mode requires either (--vm-ip ...) or (--pod-name ...)";
+// a SourceQMP override is forwarded too. In pod mode the source CLI rejects
+// --qmp/--vm-ip alongside --pod-name, so nothing extra is added and the
+// caller-supplied override (if any) is intentionally ignored.
+func sourceExtraArgs(req Request) string {
+	base := buildExtraArgs(req)
+	if req.SourcePod != nil {
+		return base
+	}
+	extra := []string{base, "--vm-ip", req.VMIP}
+	if req.SourceQMP != "" {
+		extra = append(extra, "--qmp", req.SourceQMP)
+	}
+	return strings.TrimSpace(strings.Join(extra, " "))
+}
+
 // buildExtraArgs assembles the EXTRA_ARGS string appended to both rendered
 // source and dest container commands. Mode-specific flags may appear in this
 // shared string; the katamaran CLI warns and ignores flags that do not apply
 // to the current mode. Replay cmdline delivery flags are appended separately.
+// Source-only flags (--vm-ip, legacy --qmp) are added by sourceExtraArgs.
 func buildExtraArgs(req Request) string {
 	var args []string
 	if req.SharedStorage {

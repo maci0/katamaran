@@ -100,6 +100,12 @@ func (c *Client) readLine() ([]byte, error) {
 	}
 }
 
+// isTimeout reports whether err is (or wraps) a network timeout.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // NewClient connects to a QEMU QMP unix socket, performs the capability
 // negotiation handshake, and returns a ready-to-use client.
 func NewClient(ctx context.Context, socketPath string) (*Client, error) {
@@ -135,8 +141,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	}
 
 	if _, err := c.readLine(); err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
+		if isTimeout(err) {
 			// Ignore timeout — QEMU likely skipped the greeting (wait=off).
 		} else {
 			return fail(fmt.Errorf("reading QMP greeting: %w", err))
@@ -281,8 +286,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("QMP command %q interrupted: %w", cmd, ctx.Err())
 			}
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
+			if isTimeout(err) {
 				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, executeTimeout, err)
 			}
 			if errors.Is(err, io.EOF) {
@@ -378,8 +382,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 			if ctx.Err() != nil {
 				return fmt.Errorf("waiting for QMP event %q interrupted: %w", eventName, ctx.Err())
 			}
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
+			if isTimeout(err) {
 				return fmt.Errorf("timed out waiting for QMP event %q after %v: %w", eventName, timeout, err)
 			}
 			if errors.Is(err, io.EOF) {

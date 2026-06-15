@@ -8,6 +8,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -641,5 +642,104 @@ func TestSpecToRequest_AdoptVM_DefaultFalse(t *testing.T) {
 	}
 	if req.AdoptVM {
 		t.Fatal("expected AdoptVM=false by default")
+	}
+}
+
+// adoptCR builds a Migration CR with adoptVM and the given sourceCleanup,
+// auto-scheduled (no destNode) so dispatch skips the slow adoption-pod
+// path while still exercising the source-controller pending mark.
+func adoptCR(name, sourceCleanup string) *unstructured.Unstructured {
+	spec := map[string]any{
+		"sourcePod": map[string]any{"namespace": "default", "name": "kata-demo"},
+		"image":     "localhost/katamaran:dev",
+		"adoptVM":   true,
+	}
+	if sourceCleanup != "" {
+		spec["sourceCleanup"] = sourceCleanup
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "katamaran.io/v1alpha1",
+		"kind":       "Migration",
+		"metadata":   map[string]any{"name": name, "namespace": "default"},
+		"spec":       spec,
+	}}
+	u.SetFinalizers([]string{finalizerName})
+	return u
+}
+
+// sourcePodOwnedBy returns the source pod carrying a controller
+// ownerReference of the given kind/uid, as the webhook keys off.
+func sourcePodOwnedBy(kind string, uid types.UID) *corev1.Pod {
+	ctrl := true
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "kata-demo",
+			OwnerReferences: []metav1.OwnerReference{{
+				Kind:       kind,
+				Name:       "kata-demo-owner",
+				UID:        uid,
+				Controller: &ctrl,
+			}},
+		},
+	}
+}
+
+func newAdoptReconciler(t *testing.T, orch orchestrator.Orchestrator, cr *unstructured.Unstructured, pod *corev1.Pod) *Reconciler {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "Migration"}, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList"}, &unstructured.UnstructuredList{})
+	dyn := fakedyn.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		MigrationGVR: "MigrationList",
+	}, cr)
+	kube := fakekube.NewSimpleClientset(pod)
+	rec := NewReconciler(dyn, kube, orch, nil)
+	rec.PollInterval = 10 * time.Millisecond
+	rec.StatusTimeout = 1 * time.Second
+	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+	return rec
+}
+
+// On migration success with adoptVM, the source-pod controller must be
+// marked pending so the webhook denies replacement pods. This mark must
+// happen even when sourceCleanup=none — the source container is killed
+// when QEMU pauses, so the controller will otherwise spawn a replacement
+// to refill its replica count. Regression: the mark used to live inside
+// the sourceCleanup!=none branch and never ran for sourceCleanup=none.
+func TestReconciler_MarksPendingWhenSourceCleanupNone(t *testing.T) {
+	const rsUID types.UID = "rs-uid-none"
+	for _, cleanup := range []string{"none", ""} {
+		t.Run("cleanup="+cleanup, func(t *testing.T) {
+			updates := make(chan orchestrator.StatusUpdate, 1)
+			updates <- orchestrator.StatusUpdate{ID: "id-none", Phase: orchestrator.PhaseSucceeded}
+			close(updates)
+			orch := &fakeOrch{applyID: "id-none", updates: updates}
+			rec := newAdoptReconciler(t, orch, adoptCR("m-none", cleanup), sourcePodOwnedBy("ReplicaSet", rsUID))
+
+			rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-none"}, adoptCR("m-none", cleanup))
+
+			if got := rec.pending.MigrationFor(rsUID); got != "id-none" {
+				t.Fatalf("pending mark for %s = %q, want id-none (mark must run independently of sourceCleanup)", rsUID, got)
+			}
+		})
+	}
+}
+
+// Non-managed owner kinds (e.g. a bare ReplicationController, or no
+// controller at all) must NOT be marked — only built-in workload
+// controllers that auto-refill replicas are denied.
+func TestReconciler_DoesNotMarkUnmanagedOwner(t *testing.T) {
+	const uid types.UID = "rc-uid"
+	updates := make(chan orchestrator.StatusUpdate, 1)
+	updates <- orchestrator.StatusUpdate{ID: "id-rc", Phase: orchestrator.PhaseSucceeded}
+	close(updates)
+	orch := &fakeOrch{applyID: "id-rc", updates: updates}
+	rec := newAdoptReconciler(t, orch, adoptCR("m-rc", "none"), sourcePodOwnedBy("ReplicationController", uid))
+
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-rc"}, adoptCR("m-rc", "none"))
+
+	if got := rec.pending.MigrationFor(uid); got != "" {
+		t.Fatalf("unmanaged owner %s was marked %q, want unmarked", uid, got)
 	}
 }

@@ -8,18 +8,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// pendingAdoption tracks ReplicaSet UIDs whose source pod was just
-// deleted as part of a Migration with adoptVM=true. While the entry is
-// present, the validating webhook denies any new Pod whose
-// controllerRef points at this RS — preventing the RS from spawning
-// a fresh cold replacement during the brief window between source-pod
-// delete and adoption-pod create.
+// pendingAdoption tracks the UID of a managed-pod controller
+// (ReplicaSet, StatefulSet, DaemonSet, or Job) whose source pod is
+// being migrated away as part of a Migration with adoptVM=true. While
+// the entry is present, the validating webhook denies any new Pod
+// whose controllerRef points at this controller — preventing it from
+// spawning a fresh cold replacement during the window between the
+// source pod failing/terminating and the adoption pod being created.
 //
 // Entries auto-expire after pendingAdoptionTTL so a crashing
 // reconciler that fails to clear an entry doesn't block the RS
 // indefinitely.
 type pendingAdoption struct {
-	rsUID       types.UID
 	migrationID string
 	expiresAt   time.Time
 }
@@ -60,10 +60,20 @@ func (p *pendingAdoptionRegistry) Mark(uid types.UID, migrationID string) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Sweep expired entries here (the cold path: once per migration) so the
+	// map doesn't accumulate stale entries for controllers that are never
+	// re-queried. MigrationFor only prunes the single UID it reads, so a
+	// reconciler that Marks but crashes before Clear (and whose RS never
+	// creates another pod the webhook checks) would otherwise leak forever.
+	now := time.Now()
+	for k, e := range p.entries {
+		if now.After(e.expiresAt) {
+			delete(p.entries, k)
+		}
+	}
 	p.entries[uid] = pendingAdoption{
-		rsUID:       uid,
 		migrationID: migrationID,
-		expiresAt:   time.Now().Add(pendingAdoptionTTL),
+		expiresAt:   now.Add(pendingAdoptionTTL),
 	}
 }
 

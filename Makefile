@@ -1,10 +1,10 @@
-.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory test smoke fuzz fuzz-long image dashboard mgr factory clean vet help
+.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim test smoke fuzz fuzz-long image dashboard mgr factory clean vet help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
 
 # Default target
-all: build build-dashboard build-orchestrator build-mgr build-factory
+all: build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim
 
 # Build the katamaran binary
 build:
@@ -27,7 +27,7 @@ build-mgr:
 build-factory:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-factory ./cmd/katamaran-factory/
 
-# Build the containerd v2 adoption shim. Scaffolding only — see
+# Build the containerd v2 adoption shim (Approach E). See
 # cmd/containerd-shim-katamaran-adopted-v2/main.go package doc.
 build-adopted-shim:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
@@ -45,10 +45,9 @@ test:
 smoke:
 	./scripts/test.sh
 
-# Run fuzz test seed corpus (instant, validates seeds)
+# Run fuzz test seed corpus (instant, validates seeds across every package)
 fuzz:
-	go test ./internal/qmp/ -run "^Fuzz" -count=1
-	go test ./internal/migration/ -run "^Fuzz" -count=1
+	go test ./... -run "^Fuzz" -count=1
 
 # Run actual fuzzing for 30s per target
 fuzz-long:
@@ -59,6 +58,12 @@ fuzz-long:
 	go test ./internal/qmp/ -fuzz=FuzzErrorFormat -fuzztime=30s
 	go test ./internal/qmp/ -fuzz=FuzzArgsSerialization -fuzztime=30s
 	go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
+	go test ./internal/migration/ -fuzz=FuzzParseCmdlineBytes -fuzztime=30s
+	go test ./internal/migration/ -fuzz=FuzzFindSrcSandboxDir -fuzztime=30s
+	go test ./internal/migration/ -fuzz=FuzzParsePodRef -fuzztime=30s
+	go test ./internal/migration/ -fuzz=FuzzSplitAddrTokens -fuzztime=30s
+	go test ./cmd/katamaran-orchestrator/ -fuzz=FuzzReadRequest -fuzztime=30s
+	go test ./cmd/katamaran-mgr/ -fuzz=FuzzHandleAdmit -fuzztime=30s
 
 CE ?= $(shell command -v podman 2>/dev/null || echo docker)
 GOARCH ?= $(shell go env GOARCH)
@@ -93,18 +98,20 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  build            Build bin/katamaran"
-	@echo "  build-dashboard  Build bin/katamaran-dashboard"
-	@echo "  build-orchestrator Build bin/katamaran-orchestrator"
-	@echo "  build-mgr        Build bin/katamaran-mgr"
-	@echo "  build-factory    Build bin/katamaran-factory"
-	@echo "  test             Run unit tests with race detector"
-	@echo "  smoke            Run smoke tests (no VMs required)"
-	@echo "  fuzz             Run fuzz test seed corpus (instant)"
-	@echo "  fuzz-long        Run actual fuzzing for 30s per target"
-	@echo "  vet              Run go vet and gofmt checks"
-	@echo "  image            Build katamaran container image"
-	@echo "  dashboard        Build dashboard container image"
-	@echo "  mgr              Build katamaran-mgr container image"
-	@echo "  factory          Build katamaran-factory container image"
-	@echo "  clean            Remove build artifacts"
+	@echo "  all                 Build all binaries"
+	@echo "  build               Build bin/katamaran"
+	@echo "  build-dashboard     Build bin/katamaran-dashboard"
+	@echo "  build-orchestrator  Build bin/katamaran-orchestrator"
+	@echo "  build-mgr           Build bin/katamaran-mgr"
+	@echo "  build-factory       Build bin/katamaran-factory"
+	@echo "  build-adopted-shim  Build bin/containerd-shim-katamaran-adopted-v2"
+	@echo "  test                Run unit tests with race detector"
+	@echo "  smoke               Run smoke tests (no VMs required)"
+	@echo "  fuzz                Run fuzz test seed corpus (instant)"
+	@echo "  fuzz-long           Run actual fuzzing for 30s per target"
+	@echo "  vet                 Run go vet and gofmt checks"
+	@echo "  image               Build katamaran container image"
+	@echo "  dashboard           Build dashboard container image"
+	@echo "  mgr                 Build katamaran-mgr container image"
+	@echo "  factory             Build katamaran-factory container image"
+	@echo "  clean               Remove build artifacts"

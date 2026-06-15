@@ -36,11 +36,25 @@ func Validate(req Request) error {
 	} else if req.SourcePod.Name == "" || req.SourcePod.Namespace == "" {
 		return errors.New("sourcePod requires both Name and Namespace")
 	}
+	// ReplayCmdline and auto-select (empty DestNode) are mutually exclusive.
+	// Replay requires the source Job to start first so it can emit the QEMU
+	// cmdline marker; auto-select requires the dest Job to start first so its
+	// scheduled node can be resolved into DestIP before the source Job is
+	// rendered. Apply cannot satisfy both orderings, so the replay branch
+	// would render the source Job with an empty DestIP and the migration would
+	// never connect. Reject the combination instead of silently building a
+	// broken source Job.
+	if req.ReplayCmdline && req.DestNode == "" {
+		return errors.New("replayCmdline requires destNode to be set (it is incompatible with destination auto-selection)")
+	}
 	if req.DestPod != nil && (req.DestPod.Name == "" || req.DestPod.Namespace == "") {
 		return errors.New("destPod requires both Name and Namespace")
 	}
-	tunnelMode := strings.ToLower(req.TunnelMode)
-	if tunnelMode != "" && tunnelMode != "ipip" && tunnelMode != "gre" && tunnelMode != "none" {
+	// Enum checks are case-sensitive to match the canonical lowercase values
+	// every downstream consumer enforces (migration.setupSource, the katamaran
+	// CLI, logging.SetupLogger). Accepting case variants here would let a
+	// request pass validation only to fail at runtime in the migration Job.
+	if req.TunnelMode != "" && req.TunnelMode != "ipip" && req.TunnelMode != "gre" && req.TunnelMode != "none" {
 		return fmt.Errorf("tunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
 	}
 	if req.DowntimeMS < 0 || req.DowntimeMS > 60000 {
@@ -49,18 +63,21 @@ func Validate(req Request) error {
 	if req.MultifdChannels < 0 {
 		return fmt.Errorf("multifdChannels must be non-negative, got %d", req.MultifdChannels)
 	}
-	if req.AutoDowntimeFloorMS < 0 {
-		return fmt.Errorf("autoDowntimeFloorMS must be non-negative, got %d", req.AutoDowntimeFloorMS)
+	// AutoDowntimeFloorMS is the lower bound for the auto-calculated downtime
+	// and becomes the programmed downtime directly when the RTT is ~0, so it is
+	// the same unit and budget as DowntimeMS and shares its upper bound. A floor
+	// above 60s would pause the guest longer than the fixed-downtime path ever
+	// allows, defeating the tool's purpose.
+	if req.AutoDowntimeFloorMS < 0 || req.AutoDowntimeFloorMS > 60000 {
+		return fmt.Errorf("autoDowntimeFloorMS must be between 0 and 60000, got %d", req.AutoDowntimeFloorMS)
 	}
 	if req.CNIConvergenceDelaySeconds < 0 {
 		return fmt.Errorf("cniConvergenceDelaySeconds must be non-negative, got %d", req.CNIConvergenceDelaySeconds)
 	}
-	logLevel := strings.ToLower(req.LogLevel)
-	if logLevel != "" && logLevel != "debug" && logLevel != "info" && logLevel != "warn" && logLevel != "error" {
+	if req.LogLevel != "" && req.LogLevel != "debug" && req.LogLevel != "info" && req.LogLevel != "warn" && req.LogLevel != "error" {
 		return fmt.Errorf("logLevel must be one of debug, info, warn, or error, got %q", req.LogLevel)
 	}
-	logFormat := strings.ToLower(req.LogFormat)
-	if logFormat != "" && logFormat != "text" && logFormat != "json" {
+	if req.LogFormat != "" && req.LogFormat != "text" && req.LogFormat != "json" {
 		return fmt.Errorf("logFormat must be one of text or json, got %q", req.LogFormat)
 	}
 	if req.PodWaitTimeoutSeconds < 0 {

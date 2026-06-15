@@ -25,6 +25,51 @@ func validRequest() Request {
 	}
 }
 
+// Legacy mode (SourceQMP + VMIP, no SourcePod) must render a source command
+// carrying --vm-ip, otherwise the source binary exits 2 ("source mode requires
+// either (--vm-ip ...) or (--pod-name ...)"). A SourceQMP override is forwarded
+// as --qmp. Neither flag may leak into the dest command (the dest CLI takes its
+// socket from --qmp built into the template and rejects an unexpected --vm-ip).
+func TestNative_Apply_LegacyModeSourceCarriesVMIP(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := NewFromClient(cs)
+	req := Request{
+		SourceNode: "n1",
+		DestNode:   "n2",
+		DestIP:     "10.0.0.20",
+		Image:      "katamaran:dev",
+		SourceQMP:  "/run/vc/vm/custom/extra-monitor.sock",
+		VMIP:       "10.244.1.5",
+	}
+	if _, err := n.Apply(context.Background(), req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	var src, dest batchv1.Job
+	for _, j := range jobs.Items {
+		switch j.Labels["app.kubernetes.io/component"] {
+		case "source":
+			src = j
+		case "dest":
+			dest = j
+		}
+	}
+	sourceCmd := jobCommand(t, src)
+	for _, want := range []string{"--mode source", "--vm-ip 10.244.1.5", "--qmp /run/vc/vm/custom/extra-monitor.sock"} {
+		if !strings.Contains(sourceCmd, want) {
+			t.Fatalf("source command missing %q: %s", want, sourceCmd)
+		}
+	}
+	destCmd := jobCommand(t, dest)
+	if strings.Contains(destCmd, "--vm-ip") {
+		t.Fatalf("dest command must not carry --vm-ip: %s", destCmd)
+	}
+}
+
 func TestInjectReplayFromPod_AppendsFlag(t *testing.T) {
 	t.Parallel()
 	job := &batchv1.Job{
