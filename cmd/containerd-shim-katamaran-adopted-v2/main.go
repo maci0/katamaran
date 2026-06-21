@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -381,6 +382,11 @@ func (s *adoptedTaskService) Wait(ctx context.Context, _ *taskAPI.WaitRequest) (
 		defer s.mu.Unlock()
 		return &taskAPI.WaitResponse{ExitStatus: s.exitCode, ExitedAt: timestamppb.New(s.exitedAt)}, nil
 	case <-ctx.Done():
+		// Caller gave up: drop our channel from the waiters slice so it does
+		// not accumulate (and get closed) on every future exit.
+		s.mu.Lock()
+		s.waiters = slices.DeleteFunc(s.waiters, func(c chan struct{}) bool { return c == ch })
+		s.mu.Unlock()
 		return nil, ctx.Err()
 	}
 }

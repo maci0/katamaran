@@ -164,7 +164,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := loadConfig(*kubeconfig)
+	cfg, err := orchestrator.LoadRESTConfig(*kubeconfig)
 	if err != nil {
 		fail(err)
 	}
@@ -202,19 +202,13 @@ func main() {
 		}
 	}
 
-	orch, err := orchestrator.New()
-	if err != nil {
-		orch, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
-	}
+	orch, err := orchestrator.New(*kubeconfig)
 	if err != nil {
 		fail(fmt.Errorf("orchestrator unavailable: %w", err))
 	}
 	orchestrator.SetPodWaitTimeout(orch, *podWaitTimeout)
 
-	disc, derr := orchestrator.NewDiscoverer()
-	if derr != nil {
-		disc, derr = orchestrator.NewDiscovererFromKubeconfig(*kubeconfig, "")
-	}
+	disc, derr := orchestrator.NewDiscoverer(*kubeconfig)
 	if derr != nil {
 		slog.Warn("Discoverer unavailable, controller will not resolve SourceNode/DestIP", "error", derr)
 	}

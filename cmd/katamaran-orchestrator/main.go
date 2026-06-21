@@ -148,10 +148,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	o, err := orchestrator.New()
-	if err != nil {
-		o, err = orchestrator.NewFromKubeconfig(*kubeconfig, "")
-	}
+	o, err := orchestrator.New(*kubeconfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: orchestrator init: %v\n", err)
 		os.Exit(1)

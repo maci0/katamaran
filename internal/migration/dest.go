@@ -573,8 +573,15 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		slog.Warn("Failed to marshal migration metadata", "error", err)
 		return
 	}
-	if err := os.WriteFile(metaPath, metaJSON, 0o600); err != nil {
-		slog.Warn("Failed to write migration metadata", "path", metaPath, "error", err)
+	// Write atomically (temp in the same dir + rename) so the factory watcher,
+	// which polls this directory, never reads a half-written file and parses it
+	// as invalid JSON (which it would then mark as seen and never retry).
+	tmpPath := metaPath + ".tmp"
+	if err := os.WriteFile(tmpPath, metaJSON, 0o600); err != nil {
+		slog.Warn("Failed to write migration metadata", "path", tmpPath, "error", err)
+	} else if err := os.Rename(tmpPath, metaPath); err != nil {
+		slog.Warn("Failed to rename migration metadata", "path", metaPath, "error", err)
+		_ = os.Remove(tmpPath)
 	} else {
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
 	}

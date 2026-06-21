@@ -12,11 +12,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // sandboxUUIDRe restricts sandbox identifiers to characters that cannot have
@@ -83,83 +86,117 @@ func resolveSandbox(root string, p procFS, podIP string) (Resolved, error) {
 	}
 }
 
-// procExecTimeout caps the wall-clock time of pgrep / nsenter invocations
-// performed by realProc. Two seconds is comfortably above typical observed
-// latencies (single-digit ms) while keeping a stuck process from hanging the
-// whole resolve loop.
-const procExecTimeout = 2 * time.Second
-
-// realProc is the production implementation of procFS. It shells out to
-// pgrep and nsenter; both invocations are bounded by procExecTimeout.
+// realProc is the production implementation of procFS.
 type realProc struct{}
 
-// PIDForSandbox locates the QEMU PID associated with the given sandbox UUID
-// by running `pgrep -f "sandbox-<uuid>"`. If pgrep returns multiple PIDs
-// (e.g. helper processes whose cmdline mentions the sandbox path), the first
-// one is returned and the rest are logged at debug level.
+// PIDForSandbox locates the QEMU PID associated with the given sandbox UUID by
+// scanning /proc/<pid>/cmdline for the literal substring "sandbox-<uuid>".
+// This is a native scan rather than a `pgrep -f` shellout: no external binary,
+// and the substring is matched literally so a `.` in the UUID cannot act as a
+// regex wildcard and match unrelated processes. If several processes match
+// (e.g. helpers whose cmdline mentions the sandbox path), the lowest PID is
+// returned and the rest are logged.
 func (realProc) PIDForSandbox(uuid string) (int, error) {
 	if !sandboxUUIDRe.MatchString(uuid) {
 		return 0, fmt.Errorf("invalid sandbox identifier %q", uuid)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), procExecTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "pgrep", "-f", "sandbox-"+uuid).Output()
+	needle := "sandbox-" + uuid
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return 0, fmt.Errorf("pgrep sandbox-%s: %w", uuid, err)
+		return 0, fmt.Errorf("read /proc: %w", err)
 	}
-	lines := strings.Fields(strings.TrimSpace(string(out)))
-	if len(lines) == 0 {
-		return 0, fmt.Errorf("pgrep returned no PIDs for sandbox-%s", uuid)
+	var pids []int
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue // not a PID directory
+		}
+		// cmdline args are NUL-separated; join with spaces before matching.
+		// A read error means the process exited mid-scan or is unreadable; skip.
+		raw, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(string(raw), "\x00", " "), needle) {
+			pids = append(pids, pid)
+		}
 	}
-	pid, err := strconv.Atoi(lines[0])
-	if err != nil {
-		return 0, fmt.Errorf("parse PID %q: %w", lines[0], err)
+	if len(pids) == 0 {
+		return 0, fmt.Errorf("no process cmdline contains %q", needle)
 	}
-	if len(lines) > 1 {
-		slog.Warn("pgrep returned multiple PIDs; using first", "sandbox", uuid, "pids", lines)
+	slices.Sort(pids)
+	if len(pids) > 1 {
+		slog.Warn("multiple processes match sandbox; using lowest PID", "sandbox", uuid, "pids", pids)
 	}
-	return pid, nil
+	return pids[0], nil
 }
 
 // NetnsHasIP returns true if the network namespace of pid has an interface
-// configured with ip. It runs `nsenter --net=/proc/<pid>/ns/net -- ip -o addr
-// show` and checks each line for an exact-token match on ip.
+// configured with ip. Instead of shelling out to `nsenter ... ip addr`, it
+// enters the target netns natively via setns(2) and lists addresses with the
+// standard library's net.InterfaceAddrs.
 func (realProc) NetnsHasIP(pid int, ip string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), procExecTimeout)
-	defer cancel()
-	nsArg := fmt.Sprintf("--net=/proc/%d/ns/net", pid)
-	out, err := exec.CommandContext(ctx, "nsenter", nsArg, "--", "ip", "-o", "addr", "show").Output()
-	if err != nil {
-		return false, fmt.Errorf("nsenter ip addr in pid %d: %w", pid, err)
+	target := net.ParseIP(ip)
+	if target == nil {
+		return false, fmt.Errorf("invalid IP %q", ip)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		// `ip -o addr show` lines look like:
-		//   2: eth0    inet 10.0.0.5/24 brd ... scope global eth0
-		// Match the bare IP (without prefix) as an exact whitespace-or-slash
-		// delimited token to avoid 10.0.0.5 matching inside 10.0.0.50/24.
-		for _, tok := range splitAddrTokens(line) {
-			if tok == ip {
-				return true, nil
-			}
+	addrs, err := netnsInterfaceAddrs(pid)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range addrs {
+		var got net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			got = v.IP
+		case *net.IPAddr:
+			got = v.IP
+		}
+		if got != nil && got.Equal(target) {
+			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// splitAddrTokens returns the candidate IP tokens from a line of `ip -o addr`
-// output. It strips the CIDR suffix on each whitespace-separated field so the
-// caller can compare against a bare IP literal.
-func splitAddrTokens(line string) []string {
-	fields := strings.Fields(line)
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if i := strings.IndexByte(f, '/'); i >= 0 {
-			out = append(out, f[:i])
-		} else {
-			out = append(out, f)
-		}
+// netnsInterfaceAddrs returns the interface addresses visible inside the network
+// namespace of pid. setns(2) only affects the calling OS thread, and Go freely
+// migrates goroutines across threads, so the switch is done on a dedicated
+// goroutine pinned with runtime.LockOSThread that is never unlocked: when it
+// returns, the runtime terminates the (now netns-tainted) thread rather than
+// recycling it. The netlink socket net.InterfaceAddrs opens is created on the
+// pinned thread, so it inherits the target namespace.
+//
+// ponytail: one throwaway OS thread per call. Fine at resolve-time frequency
+// (a handful of calls per migration); revisit only if this turns into a hot path.
+func netnsInterfaceAddrs(pid int) ([]net.Addr, error) {
+	type result struct {
+		addrs []net.Addr
+		err   error
 	}
-	return out
+	ch := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread() // deliberately never unlocked; see doc comment
+		nsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
+		f, err := os.Open(nsPath)
+		if err != nil {
+			ch <- result{nil, fmt.Errorf("open %s: %w", nsPath, err)}
+			return
+		}
+		defer func() { _ = f.Close() }()
+		if err := unix.Setns(int(f.Fd()), unix.CLONE_NEWNET); err != nil {
+			ch <- result{nil, fmt.Errorf("setns into pid %d netns: %w", pid, err)}
+			return
+		}
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			ch <- result{nil, fmt.Errorf("list addrs in pid %d netns: %w", pid, err)}
+			return
+		}
+		ch <- result{addrs, nil}
+	}()
+	r := <-ch
+	return r.addrs, r.err
 }
 
 // In-cluster apiserver lookup paths and endpoint. These are package-level

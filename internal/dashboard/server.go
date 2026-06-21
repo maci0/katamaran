@@ -176,29 +176,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// The dashboard needs a Kubernetes connection: try in-cluster
 	// service-account creds first, then a kubeconfig-loaded client (handy
 	// when running on a developer laptop).
-	if nat, err := orchestrator.New(); err == nil {
+	if nat, err := orchestrator.New(""); err == nil {
 		app.orch = nat
-		if disc, derr := orchestrator.NewDiscoverer(); derr == nil {
+		if disc, derr := orchestrator.NewDiscoverer(""); derr == nil {
 			app.discoverer = disc
 		} else {
-			slog.Warn("Discoverer unavailable (in-cluster): /api/pods and /api/nodes will return 503", "error", derr)
+			slog.Warn("Discoverer unavailable: /api/pods and /api/nodes will return 503", "error", derr)
 		}
-		slog.Info("Migration: orchestrator using in-cluster client-go")
-	} else if nat, err2 := orchestrator.NewFromKubeconfig("", ""); err2 == nil {
-		app.orch = nat
-		if disc, derr := orchestrator.NewDiscovererFromKubeconfig("", ""); derr == nil {
-			app.discoverer = disc
-		} else {
-			slog.Warn("Discoverer unavailable (kubeconfig): /api/pods and /api/nodes will return 503", "error", derr)
-		}
-		slog.Info("Migration: orchestrator using kubeconfig", "in_cluster_err", err)
+		slog.Info("Migration: orchestrator using client-go")
 	} else {
 		// No Kubernetes API reachable. Keep the dashboard up so /healthz,
 		// the static UI, and the loadgen endpoints still work; migration
 		// + discovery handlers return 503 until app.orch is wired. Real
-		// deployments will hit one of the branches above; this is the
-		// fallback for unit tests + a developer-laptop dry run.
-		slog.Warn("Kubernetes API unreachable: migration handlers will return 503 until in-cluster config or KUBECONFIG is available", "in_cluster_err", err, "kubeconfig_err", err2)
+		// deployments hit the branch above; this is the fallback for unit
+		// tests + a developer-laptop dry run.
+		slog.Warn("Kubernetes API unreachable: migration handlers will return 503 until in-cluster config or KUBECONFIG is available", "error", err)
 	}
 
 	publishExpvars(app)

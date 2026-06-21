@@ -146,31 +146,3 @@ func FuzzParsePodRef(f *testing.F) {
 	})
 }
 
-// FuzzSplitAddrTokens fuzzes the /proc/net-style line tokenizer used while
-// resolving a pod's sandbox by IP. It strips an optional "/prefixlen" suffix
-// from each whitespace-separated field; the contract is no panic and no
-// surviving slash in any emitted token.
-func FuzzSplitAddrTokens(f *testing.F) {
-	seeds := []string{
-		"",
-		"10.0.0.1/24 dev eth0",
-		"fe80::1/64",
-		"  spaced   out  ",
-		"/leadingslash",
-		"trailing/",
-		"a/b/c d/e",
-		"\t\ttabs\t",
-	}
-	for _, s := range seeds {
-		f.Add(s)
-	}
-
-	f.Fuzz(func(t *testing.T, line string) {
-		tokens := splitAddrTokens(line)
-		for _, tok := range tokens {
-			if strings.ContainsRune(tok, '/') {
-				t.Fatalf("token %q retains a slash", tok)
-			}
-		}
-	})
-}

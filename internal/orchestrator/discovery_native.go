@@ -8,7 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 // nativeDiscoverer is the only Discoverer implementation. Constructors
@@ -17,25 +16,11 @@ type nativeDiscoverer struct {
 	client kubernetes.Interface
 }
 
-// NewDiscoverer constructs a Discoverer using the in-cluster service
-// account credentials (works inside any pod with the right RBAC).
-func NewDiscoverer() (Discoverer, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("in-cluster config: %w", err)
-	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("clientset: %w", err)
-	}
-	return &nativeDiscoverer{client: cs}, nil
-}
-
-// NewDiscovererFromKubeconfig builds a Discoverer from a kubeconfig
-// file. Intended for local development and tests; production pods
-// should use NewDiscoverer.
-func NewDiscovererFromKubeconfig(path, contextName string) (Discoverer, error) {
-	cfg, err := loadKubeconfig(path, contextName)
+// NewDiscoverer constructs a Discoverer using in-cluster service-account
+// credentials when running in a pod, falling back to a kubeconfig (the given
+// path, or the default loading rules when empty) for local development.
+func NewDiscoverer(kubeconfig string) (Discoverer, error) {
+	cfg, err := LoadRESTConfig(kubeconfig)
 	if err != nil {
 		return nil, err
 	}

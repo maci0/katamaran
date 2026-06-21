@@ -85,41 +85,29 @@ type nativeRun struct {
 	autoDowntime     bool
 }
 
-// New builds an Orchestrator using the in-cluster service account. Job
-// manifests are submitted into kube-system.
-func New() (Orchestrator, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("in-cluster config: %w", err)
-	}
-	return newFromRestConfig(cfg)
-}
-
-// NewFromKubeconfig builds an Orchestrator from a kubeconfig file.
-// Intended for out-of-cluster usage (dashboard run on a developer
-// laptop, integration tests, etc). Pass an empty path to use the default
-// loading rules (KUBECONFIG env / ~/.kube/config).
-func NewFromKubeconfig(path, contextName string) (Orchestrator, error) {
-	cfg, err := loadKubeconfig(path, contextName)
+// New builds an Orchestrator. It uses the in-cluster service account when
+// running inside a pod, falling back to a kubeconfig (the given path, or the
+// default KUBECONFIG/~/.kube/config rules when empty) for out-of-cluster use.
+func New(kubeconfig string) (Orchestrator, error) {
+	cfg, err := LoadRESTConfig(kubeconfig)
 	if err != nil {
 		return nil, err
 	}
 	return newFromRestConfig(cfg)
 }
 
-// loadKubeconfig resolves a kubeconfig-derived *rest.Config using the standard
-// clientcmd loading rules. Shared by NewFromKubeconfig and
-// NewDiscovererFromKubeconfig so both follow identical path/context resolution.
-func loadKubeconfig(path, contextName string) (*rest.Config, error) {
+// LoadRESTConfig resolves a *rest.Config: in-cluster service account first,
+// then a kubeconfig file (explicit path, or the default loading rules when
+// empty). Shared by the orchestrator/discoverer constructors and katamaran-mgr.
+func LoadRESTConfig(kubeconfig string) (*rest.Config, error) {
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
+	}
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if path != "" {
-		rules.ExplicitPath = path
+	if kubeconfig != "" {
+		rules.ExplicitPath = kubeconfig
 	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if contextName != "" {
-		overrides.CurrentContext = contextName
-	}
-	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
