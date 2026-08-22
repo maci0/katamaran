@@ -228,6 +228,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		// takes the earlier branch, so no --emit-cmdline-to is needed here.
 		srcJob, err = renderSourceJob(req, id, sourceExtraArgs(req))
 		if err != nil {
+			n.cleanupDestJob(ctx, destJob.Name, "source job re-render failed")
 			return "", fmt.Errorf("re-render source job: %w", err)
 		}
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {

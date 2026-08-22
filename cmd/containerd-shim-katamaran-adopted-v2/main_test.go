@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,4 +62,48 @@ func FuzzValidAdoptedSandboxID(f *testing.F) {
 			t.Fatalf("accepted id %q escapes root: %q", id, joined)
 		}
 	})
+}
+
+// TestRemoveShimSocket pins the server-side cleanup contract: when the
+// daemonized shim exits it must unlink the ttrpc socket file runStart
+// bound (the parent disabled auto-unlink-on-close so the child could
+// inherit it). Without this, every adopted pod leaves a stale .sock in
+// /run/containerd/s until the node reboots.
+func TestRemoveShimSocket(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "katamaran-test.sock")
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	l.SetUnlinkOnClose(false) // mirror runStart: file must outlive the handle
+
+	logs := []string{}
+	logFn := func(format string, args ...any) { logs = append(logs, format) }
+
+	removeShimSocket(socketPath, logFn)
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("socket file %s still exists after removeShimSocket (err=%v)", socketPath, err)
+	}
+	if len(logs) != 1 || strings.Contains(logs[0], "failed") {
+		t.Fatalf("first removal logged %v; want exactly one success line", logs)
+	}
+
+	// Idempotent: removing an already-gone path must not log a failure.
+	logs = nil
+	removeShimSocket(socketPath, logFn)
+	for _, l := range logs {
+		if strings.Contains(l, "failed") {
+			t.Fatalf("removal of missing socket logged a failure: %q", l)
+		}
+	}
+
+	// Empty path (env var unset, e.g. child started by an older parent)
+	// must be a no-op that neither panics nor logs.
+	logs = nil
+	removeShimSocket("", logFn)
+	if len(logs) != 0 {
+		t.Fatalf("removeShimSocket(\"\") logged %v; want none", logs)
+	}
 }

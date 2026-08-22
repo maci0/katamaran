@@ -160,10 +160,18 @@ func runStart(logFn func(format string, args ...any)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", socketPath, err)
 	}
-	listener.SetUnlinkOnClose(false) // child handles cleanup on exit
+	// The bound socket file must outlive the parent's listener handle (the
+	// child serves on it), so auto-unlink-on-close is disabled here. The
+	// child owns cleanup: it receives the path via KATAMARAN_SHIM_SOCKET_PATH
+	// and removes the file when its ttrpc server shuts down (runServer).
+	// Every parent-side failure path below that has not yet started the
+	// child unlinks the file itself, so a failed `start` cannot strand a
+	// stale socket in /run/containerd/s.
+	listener.SetUnlinkOnClose(false)
 	listenerFile, err := listener.File()
 	if err != nil {
 		_ = listener.Close()
+		_ = os.Remove(socketPath)
 		return fmt.Errorf("listener file: %w", err)
 	}
 	defer func() { _ = listenerFile.Close() }()
@@ -178,11 +186,14 @@ func runStart(logFn func(format string, args ...any)) error {
 	childArgs := os.Args[1:] // start was already removed from os.Args
 	child := exec.Command(exe, childArgs...)
 	child.ExtraFiles = []*os.File{listenerFile}
-	child.Env = append(os.Environ(), "KATAMARAN_SHIM_LISTENER_FD=3")
+	child.Env = append(os.Environ(),
+		"KATAMARAN_SHIM_LISTENER_FD=3",
+		"KATAMARAN_SHIM_SOCKET_PATH="+socketPath)
 	// Detach from parent's process group so we survive containerd's
 	// reaping of the start-command child.
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
+		_ = os.Remove(socketPath) // no child exists yet; nobody owns the file
 		return fmt.Errorf("fork child: %w", err)
 	}
 	logFn("daemonized child pid=%d listening at unix://%s", child.Process.Pid, socketPath)
@@ -221,11 +232,16 @@ func runDelete(logFn func(format string, args ...any)) error {
 }
 
 // runServer is the ttrpc server loop. The listening socket was passed
-// in by runStart as fd 3 (per KATAMARAN_SHIM_LISTENER_FD env).
+// in by runStart as fd 3 (per KATAMARAN_SHIM_LISTENER_FD env), and the
+// bound socket file's path via KATAMARAN_SHIM_SOCKET_PATH (removed on
+// exit so repeated adoptions don't accumulate stale .sock files in
+// /run/containerd/s).
 func runServer(logFn func(format string, args ...any)) error {
 	if os.Getenv("KATAMARAN_SHIM_LISTENER_FD") == "" {
 		return errors.New("invoked without start/delete and no listener fd; refusing to run")
 	}
+	socketPath := os.Getenv("KATAMARAN_SHIM_SOCKET_PATH")
+	defer removeShimSocket(socketPath, logFn)
 	f := os.NewFile(3, "ttrpc-listener")
 	if f == nil {
 		return errors.New("listener fd 3 not present")
@@ -262,6 +278,22 @@ func runServer(logFn func(format string, args ...any)) error {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// removeShimSocket unlinks the ttrpc socket file the shim's server was
+// bound to. Best-effort: ENOENT is success (already gone), anything else
+// is logged so a node operator can see why /run/containerd/s is
+// accumulating stale katamaran sockets. Empty path (env var unset, e.g.
+// when the child was started by an older parent) is a no-op.
+func removeShimSocket(socketPath string, logFn func(format string, args ...any)) {
+	if socketPath == "" {
+		return
+	}
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		logFn("server: failed to remove shim socket %s: %v", socketPath, err)
+		return
+	}
+	logFn("server: removed shim socket %s", socketPath)
 }
 
 // adoptedTaskService implements TTRPCTaskService for an adoption pod.
