@@ -34,6 +34,25 @@ var (
 	sandboxRoot        = "/run/vc/vm"
 )
 
+// errQueryDecode marks a query-migrate reply that arrived but could not be
+// parsed as JSON — a protocol-level fault, distinct from a transport error.
+var errQueryDecode = errors.New("decode query-migrate response")
+
+// queryMigrateInfo executes query-migrate and decodes the MigrateInfo reply.
+// Shared by the STOP-event poller, the completion poller, and the final
+// metrics capture so the execute+decode pair has one implementation.
+func queryMigrateInfo(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo, error) {
+	raw, err := client.Execute(ctx, "query-migrate", nil)
+	if err != nil {
+		return qmp.MigrateInfo{}, err
+	}
+	var info qmp.MigrateInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return qmp.MigrateInfo{}, fmt.Errorf("%w: %v", errQueryDecode, err)
+	}
+	return info, nil
+}
+
 // RunSource initiates live migration from the source node to the destination.
 //
 // A deferred cleanup ensures the drive-mirror job is torn down on any early
@@ -316,16 +335,10 @@ stopLoop:
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			// Check if the background migration process failed.
-			raw, qerr := client.Execute(ctx, "query-migrate", nil)
+			info, qerr := queryMigrateInfo(ctx, client)
 			if qerr != nil {
 				queryErrors++
 				logTransientQueryError(ctx, "Transient query-migrate error during STOP polling", qerr, queryErrors)
-				continue
-			}
-			var info qmp.MigrateInfo
-			if err := json.Unmarshal(raw, &info); err != nil {
-				queryErrors++
-				logTransientQueryError(ctx, "Failed to parse query-migrate response", err, queryErrors)
 				continue
 			}
 			queryErrors = 0
@@ -374,21 +387,16 @@ stopLoop:
 
 	if migrationErr == nil {
 		// Capture actual migration metrics from QEMU.
-		raw, qerr := client.Execute(ctx, "query-migrate", nil)
+		info, qerr := queryMigrateInfo(ctx, client)
 		if qerr != nil {
 			slog.Warn("Failed to capture migration metrics", "error", qerr)
 		} else {
-			var info qmp.MigrateInfo
-			if err := json.Unmarshal(raw, &info); err != nil {
-				slog.Warn("Failed to parse migration metrics", "error", err)
-			} else {
-				slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
-				// Stable, parser-friendly final-result marker the orchestrator
-				// scrapes from pod logs to populate StatusUpdate.DowntimeMS in
-				// the PhaseSucceeded event.
-				fmt.Printf("KATAMARAN_RESULT downtime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
-					info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
-			}
+			slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
+			// Stable, parser-friendly final-result marker the orchestrator
+			// scrapes from pod logs to populate StatusUpdate.DowntimeMS in
+			// the PhaseSucceeded event.
+			fmt.Printf("KATAMARAN_RESULT downtime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+				info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
 		}
 	}
 
@@ -713,9 +721,15 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 		}
 
 		queryCtx, queryCancel := context.WithTimeout(ctx, queryMigrateTimeout)
-		raw, err := client.Execute(queryCtx, "query-migrate", nil)
+		info, err := queryMigrateInfo(queryCtx, client)
 		queryCancel()
 		if err != nil {
+			if errors.Is(err, errQueryDecode) {
+				// The socket answered with garbage: a protocol fault, not a
+				// handover stall. Fail loudly instead of waiting out the grace
+				// window on a broken connection.
+				return fmt.Errorf("unmarshaling migration status: %v", err)
+			}
 			if ctx.Err() != nil {
 				slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
 				return fmt.Errorf("migration: %w", ctx.Err())
@@ -735,10 +749,6 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 				"error", err, "last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
 		} else {
 			firstStallAt = time.Time{} // reset on any successful query
-			var info qmp.MigrateInfo
-			if err := json.Unmarshal(raw, &info); err != nil {
-				return fmt.Errorf("unmarshaling migration status: %w", err)
-			}
 			statusChanged := info.Status != prevStatus
 			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
 			if statusChanged || remainingChanged {

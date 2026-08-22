@@ -97,23 +97,35 @@ func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Load generator stop requested", "stopped": wasRunning, "loadgen_type": loadgenType})
 }
 
-// handlePingStart processes a request to start the ping load generator.
-func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
-	if !parseFormPOST(w, r, "Ping load generator request") {
-		return
+// validateLoadgenTarget runs the shared validation preamble for both load
+// generator start endpoints: form content-type check, unknown-field
+// rejection, and SSRF-safe target validation. Writes the error response and
+// returns ok=false on rejection.
+func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, label string) (string, bool) {
+	if !parseFormPOST(w, r, label) {
+		return "", false
 	}
-	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, "Ping load generator request") {
-		return
+	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, label) {
+		return "", false
 	}
 	target := r.FormValue("target")
 	if target == "" {
-		slog.Warn("Ping load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
+		slog.Warn("Load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Missing required field: target", http.StatusBadRequest)
-		return
+		return "", false
 	}
 	if !validTarget(target) {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid value for target", http.StatusBadRequest)
+		return "", false
+	}
+	return target, true
+}
+
+// handlePingStart processes a request to start the ping load generator.
+func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
+	target, ok := a.validateLoadgenTarget(w, r, "Ping load generator request")
+	if !ok {
 		return
 	}
 
@@ -206,21 +218,8 @@ func (a *App) addPing(lat float64, errStr string) {
 
 // handleHTTPStart processes a request to start the HTTP load generator.
 func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
-	if !parseFormPOST(w, r, "HTTP load generator request") {
-		return
-	}
-	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, "HTTP load generator request") {
-		return
-	}
-	target := r.FormValue("target")
-	if target == "" {
-		slog.Warn("HTTP load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Missing required field: target", http.StatusBadRequest)
-		return
-	}
-	if !validTarget(target) {
-		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for target", http.StatusBadRequest)
+	target, ok := a.validateLoadgenTarget(w, r, "HTTP load generator request")
+	if !ok {
 		return
 	}
 

@@ -930,7 +930,7 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 				}
 				continue // give dest time to land RESUME and exit 0
 			}
-			if !announcedTransferring && (srcJob.Status.Active > 0 || srcJob.Status.Ready != nil && *srcJob.Status.Ready > 0) {
+			if !announcedTransferring && (srcJob.Status.Active > 0 || (srcJob.Status.Ready != nil && *srcJob.Status.Ready > 0)) {
 				run.updates <- StatusUpdate{ID: id, Phase: PhaseTransferring, When: time.Now()}
 				announcedTransferring = true
 			}

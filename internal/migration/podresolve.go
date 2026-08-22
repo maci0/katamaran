@@ -242,6 +242,47 @@ type podStatusResp struct {
 	} `json:"status"`
 }
 
+// inClusterAPIClient bundles what every direct apiserver caller needs:
+// an HTTP client wired with the service-account CA bundle and a strict
+// no-redirect policy, plus the bearer token to set per request.
+type inClusterAPIClient struct {
+	http  *http.Client
+	token string
+}
+
+// newInClusterAPIClient builds the shared apiserver HTTP client: SA token +
+// CA bundle from the service-account mount, TLS 1.2 minimum, and redirects
+// refused so a crafted redirect can never divert the bearer token off-cluster.
+func newInClusterAPIClient() (*inClusterAPIClient, error) {
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("read service account token: %w", err)
+	}
+	caBytes, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read service account CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caBytes) {
+		return nil, fmt.Errorf("CA file %s did not contain any PEM certificates", caPath)
+	}
+	return &inClusterAPIClient{
+		http: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					RootCAs:    pool,
+					MinVersion: tls.VersionTLS12,
+				},
+			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		token: strings.TrimSpace(string(tokenBytes)),
+	}, nil
+}
+
 // LookupPodIP queries the in-cluster Kubernetes API for the given pod and
 // returns its status.podIP. It uses the standard service-account token + CA
 // bundle mounted at /var/run/secrets/kubernetes.io/serviceaccount and the
@@ -259,38 +300,11 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	tokenBytes, err := os.ReadFile(tokenPath)
+	api, err := newInClusterAPIClient()
 	if err != nil {
-		return "", fmt.Errorf("read service account token: %w", err)
+		return "", err
 	}
-	token := strings.TrimSpace(string(tokenBytes))
-
-	caBytes, err := os.ReadFile(caPath)
-	if err != nil {
-		return "", fmt.Errorf("read service account CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caBytes) {
-		return "", fmt.Errorf("CA file %s did not contain any PEM certificates", caPath)
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-		// Refuse to follow redirects: the in-cluster apiserver does not
-		// redirect on the happy path, and a redirect away from it could
-		// divert the bearer token to an untrusted host.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	defer client.CloseIdleConnections()
+	defer api.http.CloseIdleConnections()
 
 	// Escape ns/name as single path segments: callers may pass values with
 	// '/' (the orchestrator validation allowlist permits it for legitimate
@@ -302,7 +316,7 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 	backoffs := []time.Duration{lookupBackoff1, lookupBackoff2, lookupBackoff3}
 	const attempts = 3
 	for i := 0; i < attempts; i++ {
-		ip, err := lookupPodIPOnce(ctx, client, endpoint, token)
+		ip, err := lookupPodIPOnce(ctx, api.http, endpoint, api.token)
 		if err != nil {
 			return "", err
 		}

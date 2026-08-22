@@ -283,6 +283,74 @@ func (r *Reconciler) updateTrack(key types.NamespacedName, id orchestrator.Migra
 	}
 }
 
+// resolveSourcePodDiscovery fills req's SourceNode (and DestIP, or the
+// dest scheduling constraints in auto-select mode) from the source pod's
+// live state via the Discoverer. Returns an error (already logged + patched
+// to the CR by the caller) when resolution fails.
+func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.NamespacedName, req *orchestrator.Request) error {
+	if r.Discoverer == nil {
+		slog.Error("Migration cannot be resolved: discoverer unavailable", "migration", key)
+		r.patchFailedStatus(ctx, key, "", "resolve migration", "discoverer unavailable")
+		return fmt.Errorf("discoverer unavailable")
+	}
+	lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
+	srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
+	if lerr != nil || srcNode == "" {
+		lookupCancel()
+		if lerr == nil {
+			lerr = fmt.Errorf("source pod node is empty")
+		}
+		slog.Error("Resolve source pod node failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
+		r.patchFailedStatus(ctx, key, "", "resolve source pod node", lerr.Error())
+		return lerr
+	}
+	req.SourceNode = srcNode
+
+	if req.DestNode == "" {
+		// Auto-select mode: copy the source pod's scheduling
+		// constraints so the dest Job lands on a compatible node.
+		sched, lerr := r.Discoverer.LookupPodScheduling(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
+		lookupCancel()
+		if lerr != nil {
+			slog.Error("Resolve source pod scheduling failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
+			r.patchFailedStatus(ctx, key, "", "resolve source pod scheduling", lerr.Error())
+			return lerr
+		}
+		// Merge source pod nodeSelector into any CRD-level destNodeSelector.
+		if len(sched.NodeSelector) > 0 {
+			if req.DestNodeSelector == nil {
+				req.DestNodeSelector = make(map[string]string, len(sched.NodeSelector))
+			}
+			for k, v := range sched.NodeSelector {
+				if _, exists := req.DestNodeSelector[k]; !exists {
+					req.DestNodeSelector[k] = v
+				}
+			}
+		}
+		req.DestTolerations = sched.Tolerations
+		// DestIP will be resolved after the dest Job pod is scheduled
+		// (inside native.Apply's auto-select path).
+		return nil
+	}
+	destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
+	lookupCancel()
+	if lerr != nil || destIP == "" {
+		if lerr == nil {
+			lerr = fmt.Errorf("destination node InternalIP is empty")
+		}
+		slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
+		r.patchFailedStatus(ctx, key, "", "resolve dest node IP", lerr.Error())
+		return lerr
+	}
+	req.DestIP = destIP
+	if req.SourceNode == req.DestNode {
+		slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
+		r.patchFailedStatus(ctx, key, "", "invalid spec", "source pod already runs on destNode")
+		return fmt.Errorf("source pod already runs on destNode %s", req.DestNode)
+	}
+	return nil
+}
+
 func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
 	mInflight.Add(1)
 	defer mInflight.Add(-1)
@@ -302,65 +370,8 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		return
 	}
 	if req.SourcePod != nil {
-		if r.Discoverer == nil {
-			slog.Error("Migration cannot be resolved: discoverer unavailable", "migration", key)
-			r.patchFailedStatus(ctx, key, "", "resolve migration", "discoverer unavailable")
+		if err := r.resolveSourcePodDiscovery(ctx, key, &req); err != nil {
 			return
-		}
-		lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
-		srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-		if lerr != nil || srcNode == "" {
-			lookupCancel()
-			if lerr == nil {
-				lerr = fmt.Errorf("source pod node is empty")
-			}
-			slog.Error("Resolve source pod node failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
-			r.patchFailedStatus(ctx, key, "", "resolve source pod node", lerr.Error())
-			return
-		}
-		req.SourceNode = srcNode
-
-		if req.DestNode == "" {
-			// Auto-select mode: copy the source pod's scheduling
-			// constraints so the dest Job lands on a compatible node.
-			sched, lerr := r.Discoverer.LookupPodScheduling(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-			lookupCancel()
-			if lerr != nil {
-				slog.Error("Resolve source pod scheduling failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
-				r.patchFailedStatus(ctx, key, "", "resolve source pod scheduling", lerr.Error())
-				return
-			}
-			// Merge source pod nodeSelector into any CRD-level destNodeSelector.
-			if len(sched.NodeSelector) > 0 {
-				if req.DestNodeSelector == nil {
-					req.DestNodeSelector = make(map[string]string, len(sched.NodeSelector))
-				}
-				for k, v := range sched.NodeSelector {
-					if _, exists := req.DestNodeSelector[k]; !exists {
-						req.DestNodeSelector[k] = v
-					}
-				}
-			}
-			req.DestTolerations = sched.Tolerations
-			// DestIP will be resolved after the dest Job pod is scheduled
-			// (inside native.Apply's auto-select path).
-		} else {
-			destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
-			lookupCancel()
-			if lerr != nil || destIP == "" {
-				if lerr == nil {
-					lerr = fmt.Errorf("destination node InternalIP is empty")
-				}
-				slog.Error("Resolve destination node IP failed", "migration", key, "dest_node", req.DestNode, "error", lerr)
-				r.patchFailedStatus(ctx, key, "", "resolve dest node IP", lerr.Error())
-				return
-			}
-			req.DestIP = destIP
-			if req.SourceNode == req.DestNode {
-				slog.Warn("Migration spec invalid: source pod already on destination node", "migration", key, "node", req.SourceNode)
-				r.patchFailedStatus(ctx, key, "", "invalid spec", "source pod already runs on destNode")
-				return
-			}
 		}
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
@@ -408,6 +419,18 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		slog.Error("Migration watch closed without terminal status", "migration", key, "migration_id", id, "last_phase", lastPhase)
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
+	r.handleMigrationOutcome(ctx, key, req, id, lastPhase)
+	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
+}
+
+// handleMigrationOutcome runs the post-terminal actions after the watch
+// loop ends: marking the source-pod controller as adoption-pending,
+// optional source-pod cleanup, and optional adoption-pod creation. All
+// steps are best-effort; failures are logged, never propagated.
+func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.NamespacedName, req orchestrator.Request, id orchestrator.MigrationID, lastPhase string) {
+	if lastPhase != string(orchestrator.PhaseSucceeded) {
+		return
+	}
 	var rsUID types.UID
 	// Mark the source-pod controller as adoption-pending so the
 	// validating webhook denies replacement pods that the controller
@@ -420,7 +443,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	// first. Best-effort: missing Kube clientset, RBAC failure, or
 	// pod-already-gone all fall back to "no pending mark", which means
 	// the webhook will not deny anything for this migration.
-	if lastPhase == string(orchestrator.PhaseSucceeded) && req.AdoptVM && r.Kube != nil && req.SourcePod != nil {
+	if req.AdoptVM && r.Kube != nil && req.SourcePod != nil {
 		markCtx, markCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(markCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
 			for _, o := range src.OwnerReferences {
@@ -435,7 +458,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		}
 		markCancel()
 	}
-	if lastPhase == string(orchestrator.PhaseSucceeded) && req.SourceCleanup != "" && req.SourceCleanup != "none" {
+	if req.SourceCleanup != "" && req.SourceCleanup != "none" {
 		if req.SourcePod != nil && r.Discoverer != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
@@ -455,43 +478,39 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			}
 		}
 	}
-	if lastPhase == string(orchestrator.PhaseSucceeded) && req.AdoptVM {
-		if req.SourcePod != nil {
-			adoptCtx, adoptCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer adoptCancel()
-			adoptName := "adopted-" + string(id)[:8]
-			destNode := req.DestNode
-			// If auto-scheduled, resolve dest node from the dest job
-			if destNode == "" {
-				// Try to find the dest job's node
-				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption", "migration", key, "migration_id", id)
-			} else {
-				// Wait for the factory to load VMConfig from the migration
-				// state or a sandbox persist.json before creating the pod.
-				slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", "5s")
-				time.Sleep(5 * time.Second)
-				if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
-					slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
-				} else {
-					// Deliberately do NOT call r.pending.Clear(rsUID)
-					// here. Live e2e showed RS sometimes deletes the
-					// freshly-created adoption pod (RS sees adopted +
-					// terminating-source as 2 matches and scales down,
-					// often picking adopted) and then RS spawns a new
-					// replacement. If we cleared the Mark on adoption
-					// success, that replacement would slip through the
-					// webhook. The Mark's pendingAdoptionTTL (5m)
-					// covers the whole settle window — by the time it
-					// expires, RS has long since accepted the adopted
-					// pod as its single replica.
-					mResumed.Add(0) // placeholder; resume counter remains separate
-					slog.Info("Adoption pod created (pending mark left active until TTL expiry to cover RS settle window)",
-						"migration", key, "migration_id", id, "name", adoptName, "node", destNode, "rs_uid", rsUID)
-				}
-			}
+	if req.AdoptVM && req.SourcePod != nil {
+		adoptCtx, adoptCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer adoptCancel()
+		adoptName := "adopted-" + string(id)[:8]
+		destNode := req.DestNode
+		// If auto-scheduled, resolve dest node from the dest job
+		if destNode == "" {
+			// Try to find the dest job's node
+			slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption", "migration", key, "migration_id", id)
+			return
 		}
+		// Wait for the factory to load VMConfig from the migration
+		// state or a sandbox persist.json before creating the pod.
+		slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", "5s")
+		time.Sleep(5 * time.Second)
+		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
+			slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
+			return
+		}
+		// Deliberately do NOT call r.pending.Clear(rsUID)
+		// here. Live e2e showed RS sometimes deletes the
+		// freshly-created adoption pod (RS sees adopted +
+		// terminating-source as 2 matches and scales down,
+		// often picking adopted) and then RS spawns a new
+		// replacement. If we cleared the Mark on adoption
+		// success, that replacement would slip through the
+		// webhook. The Mark's pendingAdoptionTTL (5m)
+		// covers the whole settle window — by the time it
+		// expires, RS has long since accepted the adopted
+		// pod as its single replica.
+		slog.Info("Adoption pod created (pending mark left active until TTL expiry to cover RS settle window)",
+			"migration", key, "migration_id", id, "name", adoptName, "node", destNode, "rs_uid", rsUID)
 	}
-	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
 }
 
 // recover reattaches to a Migration left in a non-terminal phase by a

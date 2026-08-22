@@ -139,7 +139,9 @@ func TestRun_CaseInsensitiveLogFlags(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Pre-cancel so the server shuts down immediately.
 	var stdout, stderr bytes.Buffer
-	code := Run(ctx, []string{"--log-level", "INFO", "--log-format", "TEXT"}, &stdout, &stderr)
+	// Port 0 lets the kernel pick a free port so the test never collides
+	// with a real server on :8080.
+	code := Run(ctx, []string{"--addr", "127.0.0.1:0", "--log-level", "INFO", "--log-format", "TEXT"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 	}

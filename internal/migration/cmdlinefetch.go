@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -63,8 +61,9 @@ type podLogClient struct {
 }
 
 // newPodLogClient builds an authenticated HTTP client and the apiserver
-// pod-log URL for the given <ns>/<pod> ref. Centralises the SA token + CA
-// bundle plumbing shared by every apiserver-driven pod-log fetch.
+// pod-log URL for the given <ns>/<pod> ref. Reuses the shared in-cluster
+// client plumbing (SA token + CA bundle + no-redirect policy) from
+// podresolve.go so every apiserver-driven fetch stays consistent.
 func newPodLogClient(ref string) (*podLogClient, error) {
 	ns, pod, err := parsePodRef(ref)
 	if err != nil {
@@ -74,41 +73,16 @@ func newPodLogClient(ref string) (*podLogClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	tokenBytes, err := os.ReadFile(tokenPath)
+	api, err := newInClusterAPIClient()
 	if err != nil {
-		return nil, fmt.Errorf("read service account token: %w", err)
-	}
-	token := strings.TrimSpace(string(tokenBytes))
-	caBytes, err := os.ReadFile(caPath)
-	if err != nil {
-		return nil, fmt.Errorf("read service account CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caBytes) {
-		return nil, fmt.Errorf("CA file %s did not contain any PEM certificates", caPath)
-	}
-	hc := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-		// Refuse to follow redirects: the apiserver pod-log endpoint does
-		// not redirect on the happy path, and a redirect away from the
-		// in-cluster apiserver could divert the bearer token to an
-		// untrusted host.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		return nil, err
 	}
 	q := url.Values{}
 	q.Set("container", "katamaran")
 	q.Set("limitBytes", fmt.Sprint(maxPodLogScanBytes))
 	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s/log?%s",
 		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(pod), q.Encode())
-	return &podLogClient{client: hc, endpoint: endpoint, token: token, ns: ns, pod: pod}, nil
+	return &podLogClient{client: api.http, endpoint: endpoint, token: api.token, ns: ns, pod: pod}, nil
 }
 
 // fetchCmdlineFromPodLog retrieves the source QEMU cmdline that the

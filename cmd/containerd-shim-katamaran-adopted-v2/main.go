@@ -573,7 +573,16 @@ func removeAdoptedCgroup(qemuPid int) error {
 		if err != nil {
 			continue
 		}
-		if !strings.Contains(string(procs), strconv.Itoa(qemuPid)) && len(strings.TrimSpace(string(procs))) > 0 {
+		otherAlive := false
+		for _, line := range strings.Split(string(procs), "\n") {
+			pid, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil || pid == qemuPid {
+				continue
+			}
+			otherAlive = true
+			break
+		}
+		if otherAlive {
 			continue
 		}
 		_ = os.Remove(dir)
