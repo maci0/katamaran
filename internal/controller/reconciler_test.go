@@ -394,6 +394,67 @@ func TestReconciler_DeletionCallsStopAndRemovesFinalizer(t *testing.T) {
 	}
 }
 
+// blockingApplyOrch blocks inside Apply until its context is cancelled,
+// letting tests hold dispatch mid-submission.
+type blockingApplyOrch struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (b *blockingApplyOrch) Apply(ctx context.Context, _ orchestrator.Request) (orchestrator.MigrationID, error) {
+	close(b.started)
+	<-ctx.Done()
+	close(b.done)
+	return "", ctx.Err()
+}
+
+func (b *blockingApplyOrch) Watch(_ context.Context, _ orchestrator.MigrationID) (<-chan orchestrator.StatusUpdate, error) {
+	ch := make(chan orchestrator.StatusUpdate)
+	close(ch)
+	return ch, nil
+}
+
+func (b *blockingApplyOrch) Stop(_ context.Context, _ orchestrator.MigrationID) error { return nil }
+
+func (b *blockingApplyOrch) Resume(_ context.Context, _ orchestrator.MigrationID, _ orchestrator.Request) (bool, error) {
+	return false, nil
+}
+
+func TestReconciler_DeletionCancelsInFlightDispatch(t *testing.T) {
+	cr := newMigrationCR("m-delrace", []string{finalizerName}, false, nil)
+	orch := &blockingApplyOrch{started: make(chan struct{}), done: make(chan struct{})}
+	rec, _, _ := newReconcilerWithCR(t, orch, cr)
+	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+	// Long budget: without the early setTrackCancel registration, nothing
+	// else can unblock Apply within this window.
+	rec.StatusTimeout = 10 * time.Minute
+
+	key := types.NamespacedName{Namespace: "default", Name: "m-delrace"}
+	if !rec.markTracking(key) {
+		t.Fatal("markTracking: expected first claim")
+	}
+	dispatchDone := make(chan struct{})
+	go func() {
+		defer close(dispatchDone)
+		rec.dispatch(context.Background(), key, cr)
+	}()
+
+	select {
+	case <-orch.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatch never reached Apply")
+	}
+
+	delCR := newMigrationCR("m-delrace", []string{finalizerName}, true, nil)
+	rec.handleDeletion(context.Background(), key, delCR)
+
+	select {
+	case <-dispatchDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleDeletion did not cancel in-flight dispatch; deleting a brand-new Migration would still create Jobs afterwards")
+	}
+}
+
 func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 	cr := newMigrationCR("m3", []string{finalizerName}, false, map[string]any{
 		"phase":       "transferring",

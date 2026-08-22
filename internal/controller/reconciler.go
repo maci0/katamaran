@@ -150,22 +150,26 @@ type Reconciler struct {
 }
 
 // track holds the per-migration state the controller needs to handle
-// CR deletion: the assigned migrationID (so we can call Stop) and a
-// cancel func for the Watch goroutine.
+// CR deletion: the cancel func for the dispatch/recover goroutine.
 type track struct {
-	id     orchestrator.MigrationID
 	cancel context.CancelFunc
 }
 
 // NewReconciler builds a reconciler with sensible defaults.
 func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orchestrator.Orchestrator, disc orchestrator.Discoverer) *Reconciler {
 	return &Reconciler{
-		Dynamic:       dyn,
-		Kube:          kube,
-		Orchestrator:  orch,
-		Discoverer:    disc,
-		PollInterval:  5 * time.Second,
-		StatusTimeout: 30 * time.Minute,
+		Dynamic:      dyn,
+		Kube:         kube,
+		Orchestrator: orch,
+		Discoverer:   disc,
+		PollInterval: 5 * time.Second,
+		// Must outlive every budget the migration Jobs themselves allow,
+		// or the watch dies mid-transfer and a healthy migration gets
+		// marked Failed. Worst case per the source binary: storage sync
+		// (2h) + RAM migration (1h) + dest replay startup wait (~1m) +
+		// CNI convergence delay (up to 10m), rounded up to 4h — which
+		// also covers the rendered Jobs' activeDeadlineSeconds.
+		StatusTimeout: 4 * time.Hour,
 		tracking:      map[types.NamespacedName]*track{},
 		pending:       newPendingAdoptionRegistry(),
 	}
@@ -274,11 +278,12 @@ func (r *Reconciler) untrack(key types.NamespacedName) {
 	delete(r.tracking, key)
 }
 
-func (r *Reconciler) updateTrack(key types.NamespacedName, id orchestrator.MigrationID, cancel context.CancelFunc) {
+// setTrackCancel registers cancel under key so handleDeletion can abort
+// the dispatch/recover goroutine for that Migration.
+func (r *Reconciler) setTrackCancel(key types.NamespacedName, cancel context.CancelFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if t, ok := r.tracking[key]; ok {
-		t.id = id
 		t.cancel = cancel
 	}
 }
@@ -363,6 +368,16 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	}()
 
 	slog.Info("Dispatching new Migration", "migration", key)
+
+	// Budget the whole dispatch up front and register its cancel func
+	// before any slow work (spec decode, discovery, Apply). Without this,
+	// a Migration deleted during discovery or Apply would find a track
+	// entry with no cancel func and could not stop us from creating Jobs
+	// for a CR that is already going away.
+	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
+	r.setTrackCancel(key, cancel)
+	defer cancel()
+
 	req, err := specToRequest(obj.Object)
 	if err != nil {
 		slog.Warn("Migration spec invalid", "migration", key, "error", err)
@@ -374,8 +389,6 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			return
 		}
 	}
-	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
-	defer cancel()
 	id, err := r.Orchestrator.Apply(jobCtx, req)
 	if err != nil {
 		slog.Error("Apply failed", "migration", key, "error", err)
@@ -383,7 +396,6 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		return
 	}
 	mDispatched.Add(1)
-	r.updateTrack(key, id, cancel)
 	defer migrationProgress.Delete(string(id))
 	slog.Info("Migration submitted", "migration", key, "migration_id", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
 	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")

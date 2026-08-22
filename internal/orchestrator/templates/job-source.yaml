@@ -15,7 +15,12 @@ metadata:
     katamaran.io/migration-id: "${KATAMARAN_MIGRATION_ID}"
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: 900
+  # Must exceed the source binary's own phase budgets or Kubernetes kills
+  # the Job mid-migration on exactly the workloads local-storage mode
+  # exists for: storage sync up to storageSyncTimeout (2h) + RAM migration
+  # up to migrationTimeout (1h) + dest replay startup wait (~1m). The
+  # previous 900s silently capped drive-mirror at 15 minutes.
+  activeDeadlineSeconds: 7500
   ttlSecondsAfterFinished: 3600
   template:
     spec:

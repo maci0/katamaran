@@ -12,7 +12,11 @@ metadata:
     katamaran.io/migration-id: "${KATAMARAN_MIGRATION_ID}"
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: 900
+  # Mirrors the source Job deadline (see job-source.yaml): the dest waits
+  # for RESUME while storage sync (up to 2h) and RAM migration (up to 1h)
+  # complete, plus the source's dest-startup wait (~1m). The previous 900s
+  # killed the dest mid-wait on any migration whose storage phase ran long.
+  activeDeadlineSeconds: 7500
   ttlSecondsAfterFinished: 300
   template:
     spec:

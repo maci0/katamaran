@@ -423,8 +423,8 @@ func surviveContainerExit(qmpSocket string) {
 	// out — they're spawned by the kernel for the QEMU's KVM ioctls,
 	// not as children of QEMU. If they stay in the dying container's
 	// cgroup, the cgroup is never empty, containerd never fires the
-	// "container exited" event, the pod stays in Status:Running for
-	// the full activeDeadlineSeconds (15 min), and the migration CR
+	// "container exited" event, the pod stays in Status:Running until
+	// the Job's activeDeadlineSeconds elapses, and the migration CR
 	// stays in phase=transferring until that timeout — even though the
 	// migration itself succeeded and QEMU is happily running.
 	moved := moveKVMHelperThreads(pid, procsPath)
