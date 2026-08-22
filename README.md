@@ -318,9 +318,13 @@ internal/
     response.go                 # JSON response + form-POST parsing helpers
     types.go                    # Dashboard state and API response types
     validation.go               # Input validation and SSRF prevention
+    validation_fuzz_test.go     # Fuzz tests for input validation
+    orch_fakes_test.go          # Shared orchestrator fakes for handler tests
   factory/
     server.go                   # Kata VM cache gRPC server implementation
+    server_test.go              # Cache gRPC server unit tests
     watcher.go                  # migration-meta.json directory watcher
+    watcher_test.go             # Watcher unit tests
     cachepb/                    # Generated CacheService protobuf bindings
   katamaran/
     cli.go                      # Primary source/destination CLI implementation
@@ -341,16 +345,20 @@ internal/
     exec_test.go                # Exec unit tests
     podresolve.go               # Resolves pod IP / sandbox UUID / QEMU PID via apiserver + procfs
     podresolve_test.go          # Pod-resolver unit tests
+    meta.go                     # migration-meta.json on-disk contract shared with internal/factory
     qmp_recording_test.go       # QMP command recording helpers for migration tests
+    parsers_fuzz_test.go        # Fuzz tests for cmdline and pod-ref parsers
     source.go                   # Source-side migration logic and polling
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
     tunnel_test.go              # Tunnel unit tests
   orchestrator/
     orchestrator.go             # Public orchestrator interface and shared helpers
+    orchestrator_test.go        # Interface contract tests
     types.go                    # Request, status, and migration ID types
     id.go                       # MigrationID generator
     validation.go               # Request validation (Validate, ValidateSafeArgValue)
+    validation_test.go          # Request validation tests
     cmdline.go                  # hostPath layout for the captured-cmdline replay flow
     discovery*.go               # Kubernetes pod/node discovery boundary
     native*.go                  # client-go implementation that submits migration Jobs
