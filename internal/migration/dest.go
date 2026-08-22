@@ -15,13 +15,6 @@ import (
 	"github.com/maci0/katamaran/internal/qmp"
 )
 
-// destDefaultQMPSocket is the well-known placeholder socket path the
-// orchestrator (and deploy/migrate.sh) bakes into the dest job when no
-// explicit --qmp-dest is provided. It is intentionally overridable here so
-// the pod-resolver can replace it with the real sandbox-derived path at
-// runtime.
-const destDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
-
 // RunDestination prepares the destination node for incoming live migration.
 //
 // Deferred cleanups ensure the qdisc and NBD server are released on any early
@@ -64,8 +57,8 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		// Override both an empty QMPSocket and the templated default,
 		// since the orchestrator can't know the real sandbox UUID up front
 		// and bakes the well-known placeholder into the dest Job spec.
-		if cfg.QMPSocket == "" || cfg.QMPSocket == destDefaultQMPSocket {
-			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
+		if cfg.QMPSocket == "" || cfg.QMPSocket == DestDefaultQMPSocket {
+			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
 		}
 	}
 
@@ -484,22 +477,8 @@ var adoptedCgroupRoot = "/sys/fs/cgroup/katamaran-adopted"
 // The factory watcher picks this up and offers the VM to Kata shims via
 // GetBaseVM. All errors are logged as warnings and never propagated.
 func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client) {
-	type migrationMeta struct {
-		ID              string          `json:"id"`
-		QEMUPid         int             `json:"qemu_pid"`
-		QMPSocket       string          `json:"qmp_socket"`
-		VsockCID        uint32          `json:"vsock_cid"`
-		UUID            string          `json:"uuid"`
-		VirtiofsdPid    int             `json:"virtiofsd_pid"`
-		HypervisorState json.RawMessage `json:"hypervisor_state,omitempty"`
-		CPU             uint32          `json:"cpu"`
-		Memory          uint32          `json:"memory"`
-		VMConfig        json.RawMessage `json:"vm_config,omitempty"`
-		AgentConfig     json.RawMessage `json:"agent_config,omitempty"`
-	}
-
 	sandboxID := filepath.Base(filepath.Dir(cfg.QMPSocket))
-	meta := migrationMeta{
+	meta := MigrationMeta{
 		ID:        sandboxID,
 		QMPSocket: cfg.QMPSocket,
 	}
@@ -530,12 +509,8 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	persistBytes, persistPath := findAnyPersistJSON()
 	if persistBytes != nil {
 		var persist struct {
-			HypervisorState json.RawMessage `json:"HypervisorState"`
-			Config          struct {
-				HypervisorType   string          `json:"HypervisorType"`
-				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
-				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
-			} `json:"Config"`
+			HypervisorState json.RawMessage   `json:"HypervisorState"`
+			Config          kataPersistConfig `json:"Config"`
 		}
 		if err := json.Unmarshal(persistBytes, &persist); err != nil {
 			slog.Warn("Failed to parse persist.json (VMConfig will be unavailable)", "path", persistPath, "error", err)
@@ -587,9 +562,10 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	}
 }
 
-// findAnyPersistJSON scans /run/vc/sbs/ for any sandbox persist.json.
+// findAnyPersistJSON scans Kata's sandbox state root for any sandbox
+// persist.json.
 func findAnyPersistJSON() ([]byte, string) {
-	entries, err := os.ReadDir("/run/vc/sbs")
+	entries, err := os.ReadDir(kataSBSRoot)
 	if err != nil {
 		return nil, ""
 	}
@@ -597,7 +573,7 @@ func findAnyPersistJSON() ([]byte, string) {
 		if !e.IsDir() {
 			continue
 		}
-		p := filepath.Join("/run/vc/sbs", e.Name(), "persist.json")
+		p := filepath.Join(kataSBSRoot, e.Name(), "persist.json")
 		data, err := os.ReadFile(p)
 		if err == nil {
 			return data, p

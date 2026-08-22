@@ -94,11 +94,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			return fmt.Errorf("resolve sandbox: %w", err)
 		}
 		// Override QMPSocket in pod mode unless the user supplied an explicit
-		// non-default override. The CLI default is `/run/vc/vm/extra-monitor.sock`
-		// (no sandbox UUID) — anything matching that gets replaced with the
+		// non-default override. The CLI default is DefaultQMPSocket (no
+		// sandbox UUID) — anything matching that gets replaced with the
 		// resolved sandbox-specific path.
-		if cfg.QMPSocket == "" || cfg.QMPSocket == "/run/vc/vm/extra-monitor.sock" {
-			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, "extra-monitor.sock")
+		if cfg.QMPSocket == "" || cfg.QMPSocket == DefaultQMPSocket {
+			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
 		}
 		resolvedQEMUPID = res.PID
 		// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
@@ -490,6 +490,7 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	dst := &net.IPAddr{IP: net.IP(destIP.AsSlice())}
 	id := os.Getpid() & 0xffff
 	var best time.Duration
+	bestSet := false // i-- retries below can revisit i==0 after a success, so track "first sample" explicitly
 	unrelated := 0
 	for i := 0; i < samples; i++ {
 		msg := icmp.Message{
@@ -538,8 +539,9 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 			continue
 		}
 		slog.Debug("RTT sample", "sample", i+1, "of", samples, "rtt", rtt)
-		if i == 0 || rtt < best {
+		if !bestSet || rtt < best {
 			best = rtt
+			bestSet = true
 		}
 	}
 
@@ -778,17 +780,16 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 // this from the source pod's log to populate migration-meta.json so the
 // factory can serve it to the Kata shim for VM adoption.
 func emitVMConfig(qemuPID int) {
-	sbsDir := "/run/vc/sbs"
-	entries, err := os.ReadDir(sbsDir)
+	entries, err := os.ReadDir(kataSBSRoot)
 	if err != nil {
-		slog.Warn("Cannot read sandbox dir for VMConfig emission; factory VM adoption will fall back to cold start", "dir", sbsDir, "error", err)
+		slog.Warn("Cannot read sandbox dir for VMConfig emission; factory VM adoption will fall back to cold start", "dir", kataSBSRoot, "error", err)
 		return
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		persistPath := filepath.Join(sbsDir, e.Name(), "persist.json")
+		persistPath := filepath.Join(kataSBSRoot, e.Name(), "persist.json")
 		raw, err := os.ReadFile(persistPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -800,11 +801,7 @@ func emitVMConfig(qemuPID int) {
 			HypervisorState struct {
 				Pid int `json:"Pid"`
 			} `json:"HypervisorState"`
-			Config struct {
-				HypervisorType   string          `json:"HypervisorType"`
-				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
-				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
-			} `json:"Config"`
+			Config kataPersistConfig `json:"Config"`
 		}
 		if err := json.Unmarshal(raw, &persist); err != nil {
 			slog.Warn("Failed to parse Kata persist.json for VMConfig emission", "path", persistPath, "error", err)

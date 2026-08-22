@@ -10,6 +10,8 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
+
+	"github.com/maci0/katamaran/internal/migration"
 )
 
 // Embedded copies of the runtime templates so the Native orchestrator does
@@ -47,9 +49,11 @@ func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Jo
 
 func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
 	job, err := renderJob(destJobTemplate, map[string]string{
-		"NODE_NAME":              req.DestNode,
-		"IMAGE":                  req.Image,
-		"QMP_SOCKET":             cmp.Or(req.DestQMP, "/run/vc/vm/katamaran-dest/qmp.sock"),
+		"NODE_NAME": req.DestNode,
+		"IMAGE":     req.Image,
+		// migration.DestDefaultQMPSocket must stay the placeholder
+		// RunDestination overrides with the real sandbox-derived path.
+		"QMP_SOCKET":             cmp.Or(req.DestQMP, migration.DestDefaultQMPSocket),
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
 		"JOB_SUFFIX":             jobSuffix(id),

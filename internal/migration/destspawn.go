@@ -399,7 +399,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 		dstSandboxID = destReplayDefaultSandbox
 	}
 	dstSandboxDir := filepath.Join(sandboxRoot, dstSandboxID)
-	dstSocket := filepath.Join(dstSandboxDir, "extra-monitor.sock")
+	dstSocket := filepath.Join(dstSandboxDir, extraMonitorSocketName)
 
 	srcSandboxDir, srcSandboxID := findSrcSandboxDir(args, sandboxRoot)
 	if srcSandboxDir == "" {
@@ -426,7 +426,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	// Wipe stale sockets from prior failed attempts so waitForSocket doesn't
 	// return immediately on a leftover file. The dest sandbox dir is reused
 	// across restart attempts of the dest job pod.
-	for _, name := range []string{"extra-monitor.sock", "vhost-fs.sock", "console.sock"} {
+	for _, name := range []string{extraMonitorSocketName, "vhost-fs.sock", "console.sock"} {
 		_ = os.Remove(filepath.Join(dstSandboxDir, name))
 	}
 	sharedDir := filepath.Join(kataSharedSandboxRoot, dstSandboxID, "shared")

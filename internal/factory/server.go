@@ -12,34 +12,24 @@ package factory
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
 	"sync"
 
 	"github.com/maci0/katamaran/internal/factory/cachepb"
+	"github.com/maci0/katamaran/internal/migration"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// MigrationState holds the metadata written by the destination
-// katamaran process after a successful incoming live migration. The factory
-// translates this into the GrpcVM proto that Kata's shim expects.
-type MigrationState struct {
-	ID              string          `json:"id"`
-	QEMUPid         int             `json:"qemu_pid"`
-	QMPSocket       string          `json:"qmp_socket"`
-	VsockCID        uint32          `json:"vsock_cid"`
-	UUID            string          `json:"uuid"`
-	VirtiofsdPid    int             `json:"virtiofsd_pid"`
-	HypervisorState json.RawMessage `json:"hypervisor_state"`
-	CPU             uint32          `json:"cpu"`
-	Memory          uint32          `json:"memory"`
-	VMConfig        json.RawMessage `json:"vm_config,omitempty"`
-	AgentConfig     json.RawMessage `json:"agent_config,omitempty"`
-}
+// MigrationState is the metadata written by the destination katamaran
+// process after a successful incoming live migration (migration-meta.json
+// next to the QMP socket). It is the reader-side name for
+// migration.MigrationMeta, the single definition of that file's format;
+// the factory translates it into the GrpcVM proto that Kata's shim expects.
+type MigrationState = migration.MigrationMeta
 
 // Server implements cachepb.CacheServiceServer, serving migrated VMs
 // to Kata shims that connect over the factory's Unix socket.

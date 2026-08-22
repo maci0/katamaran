@@ -308,7 +308,7 @@ func scanPodLogMarkers(ctx context.Context, client *http.Client, endpoint, token
 // coresident pod. os.CreateTemp uses O_EXCL|O_CREATE which fails on existing
 // symlinks and gives each invocation its own random name.
 func writeCmdlineTempFile(data []byte) (string, error) {
-	dir := "/tmp/katamaran-cmdlines"
+	dir := CmdlineHostDir
 	// 0o700: keep the directory unreadable to other UIDs sharing /tmp.
 	// The decoded cmdline can include hostPath or socket addresses worth
 	// hiding from coresident workloads; the file mode is also 0o600.

@@ -131,7 +131,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	modeFlag := fs.String("mode", "", "Migration role: 'source' or 'dest'")
-	qmpSocket := fs.String("qmp", "/run/vc/vm/extra-monitor.sock", "Path to QEMU QMP unix socket")
+	qmpSocket := fs.String("qmp", migration.DefaultQMPSocket, "Path to QEMU QMP unix socket")
 	tapIface := fs.String("tap", "", "Tap interface name for tc sch_plug buffering")
 	tapNetns := fs.String("tap-netns", "", "Network namespace path for tap interface")
 	destIP := fs.String("dest-ip", "", "Destination node IP address")

@@ -1,16 +1,16 @@
 package orchestrator
 
-import "fmt"
+import (
+	"fmt"
 
-// cmdlineHostDir is the hostPath mount the source job uses to capture
-// /proc/<qemu>/cmdline locally before emitting it to its pod log as a
-// KATAMARAN_CMDLINE_B64 marker. The dest binary scrapes that marker
-// via the apiserver instead of mounting the host directory itself.
-const cmdlineHostDir = "/tmp/katamaran-cmdlines"
+	"github.com/maci0/katamaran/internal/migration"
+)
 
 // cmdlinePathFor returns the per-migration cmdline file path inside
-// cmdlineHostDir. Used by Apply to build the source binary's
-// --emit-cmdline-to flag.
+// migration.CmdlineHostDir. Used by Apply to build the source binary's
+// --emit-cmdline-to flag. The dest binary materializes pod-log-fetched
+// cmdlines under the same directory (migration.CmdlineHostDir), so both
+// sides must agree on it.
 func cmdlinePathFor(id MigrationID) string {
-	return fmt.Sprintf("%s/cmdline-%s.txt", cmdlineHostDir, id)
+	return fmt.Sprintf("%s/cmdline-%s.txt", migration.CmdlineHostDir, id)
 }

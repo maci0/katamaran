@@ -18,6 +18,29 @@ const (
 	// ramMigrationPort is the TCP port used for QEMU RAM migration.
 	ramMigrationPort = "4444"
 
+	// DefaultQMPSocket is the CLI's default --qmp value for source mode.
+	// RunSource treats this exact value (or empty) as "no explicit
+	// override" and replaces it with the sandbox-resolved socket path,
+	// so the katamaran CLI default must stay identical to it.
+	DefaultQMPSocket = "/run/vc/vm/extra-monitor.sock"
+
+	// DestDefaultQMPSocket is the well-known placeholder socket path the
+	// orchestrator bakes into the dest Job when no explicit --qmp-dest is
+	// provided. RunDestination overrides it (and empty) with the real
+	// sandbox-derived path at runtime, so the rendered Job template value
+	// must stay identical to it.
+	DestDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
+
+	// CmdlineHostDir is the hostPath mount the source job uses to capture
+	// /proc/<qemu>/cmdline before emitting it to its pod log as a
+	// KATAMARAN_CMDLINE_B64 marker. The dest binary materializes fetched
+	// cmdlines under the same directory.
+	CmdlineHostDir = "/tmp/katamaran-cmdlines"
+
+	// extraMonitorSocketName is the per-sandbox filename Kata binds the
+	// QEMU monitor socket to under /run/vc/vm/<sandbox>/.
+	extraMonitorSocketName = "extra-monitor.sock"
+
 	// maxBandwidth is the maximum migration bandwidth in bytes/second (10 GB/s).
 	// Set high to ensure the final dirty page flush completes as fast as possible.
 	maxBandwidth = 10_000_000_000
@@ -179,6 +202,20 @@ type DestConfig struct {
 	// pod. Used to fetch VMConfig from the source pod's log markers for
 	// factory adoption. Set from --pod-name/--pod-namespace on the dest.
 	SourcePodRef string
+}
+
+// kataSBSRoot is where Kata stages per-sandbox state directories, each
+// holding the persist.json both VMConfig emission (source) and
+// migration-meta enrichment (dest) read.
+const kataSBSRoot = "/run/vc/sbs"
+
+// kataPersistConfig is the subset of Kata's per-sandbox persist.json
+// Config object shared by every reader of that file in this package.
+// Keep field tags identical to Kata's marshalling.
+type kataPersistConfig struct {
+	HypervisorType   string          `json:"HypervisorType"`
+	HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
+	KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
 }
 
 // cleanupCtx returns a context with cleanupTimeout that is independent of the
