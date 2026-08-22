@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/maci0/katamaran/internal/migration"
 )
@@ -12,5 +13,5 @@ import (
 // cmdlines under the same directory (migration.CmdlineHostDir), so both
 // sides must agree on it.
 func cmdlinePathFor(id MigrationID) string {
-	return fmt.Sprintf("%s/cmdline-%s.txt", migration.CmdlineHostDir, id)
+	return filepath.Join(migration.CmdlineHostDir, fmt.Sprintf("cmdline-%s.txt", id))
 }
