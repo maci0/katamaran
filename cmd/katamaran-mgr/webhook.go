@@ -51,13 +51,16 @@ func generateWebhookCert(serviceName, namespace string) (tls.Certificate, []byte
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return tls.Certificate{}, nil, fmt.Errorf("serial: %w", err)
+		return tls.Certificate{}, nil, fmt.Errorf("generate serial: %w", err)
 	}
+	now := time.Now()
 	template := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: serviceName + "." + namespace + ".svc"},
-		NotBefore:             time.Now().Add(-5 * time.Minute),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: serviceName + "." + namespace + ".svc"},
+		// One calendar year, not 365*24h: fixed-day arithmetic drifts a
+		// day off around leap years.
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

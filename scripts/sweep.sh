@@ -57,7 +57,7 @@ done
 # Results directory for raw logs and TSV output
 RESULTS_DIR="${PROJECT_ROOT}/sweep-results"
 mkdir -p "$RESULTS_DIR"
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 TSV_FILE="${RESULTS_DIR}/sweep-${TIMESTAMP}.tsv"
 
 echo "============================================================"

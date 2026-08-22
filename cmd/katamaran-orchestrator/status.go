@@ -20,7 +20,7 @@ func newStatusOutput(u orchestrator.StatusUpdate) statusOutput {
 	out := statusOutput{
 		ID:                u.ID,
 		Phase:             u.Phase,
-		Time:              u.When.UTC().Format("2006-01-02T15:04:05.000Z"),
+		Time:              u.When.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		Msg:               u.Message,
 		RAMTransferred:    u.RAMTransferred,
 		RAMTotal:          u.RAMTotal,
