@@ -3,7 +3,7 @@ package dashboard
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"embed"
 	"errors"
 	"expvar"
 	"flag"
@@ -25,6 +25,14 @@ import (
 
 //go:embed index.html
 var indexHTML []byte
+
+// assetsFS holds the vendored third-party JS bundles (Tailwind CSS runtime,
+// Chart.js). Vendoring instead of loading them from a CDN removes unverified
+// remote script execution from the dashboard origin and keeps the UI working
+// on air-gapped or egress-restricted clusters.
+//
+//go:embed assets
+var assetsFS embed.FS
 
 const (
 	maxLogLines  = 1000
@@ -235,6 +243,8 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
 	mux.HandleFunc("GET /metrics", serveDashboardMetrics)
 	mux.HandleFunc("GET /{$}", a.serveHome)
+	mux.HandleFunc("GET /assets/tailwind-3.4.17.js", serveAsset("tailwind-3.4.17.js"))
+	mux.HandleFunc("GET /assets/chart-4.5.1.min.js", serveAsset("chart-4.5.1.min.js"))
 	mux.HandleFunc("/api", handleAPIFallback)
 	mux.HandleFunc("/api/", handleAPIFallback)
 	mux.HandleFunc("POST /api/migrate", a.handleMigrate)
@@ -326,6 +336,25 @@ func (a *App) counterSnapshot() (started, succeeded, failed int64) {
 // the CWD dependency that http.ServeFile would otherwise impose.
 func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "index.html", a.startTime, bytes.NewReader(indexHTML))
+}
+
+// serveAsset serves one vendored asset from the embedded assetsFS by name.
+// Asset filenames carry their upstream version, so responses are immutable
+// and cacheable forever; a bump means editing the filename in both places
+// (index.html and newMux).
+func serveAsset(name string) http.HandlerFunc {
+	body, err := assetsFS.ReadFile("assets/" + name)
+	if err != nil {
+		// The file is embedded at build time via go:embed, so a miss is a
+		// programming error. Panic during mux construction (fail fast at
+		// startup) rather than 500-ing every request later.
+		panic("dashboard: missing embedded asset " + name + ": " + err.Error())
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(body))
+	}
 }
 
 // handleListPods returns kata-runtime pods discovered from Kubernetes.

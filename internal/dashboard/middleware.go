@@ -216,10 +216,12 @@ func csrfForbidden(w http.ResponseWriter, r *http.Request) {
 
 // contentSecurityPolicy is the value written to Content-Security-Policy on every
 // response. Held as a single concatenated const so the per-request header path
-// is one map write.
+// is one map write. All scripts and styles are served same-origin (vendored
+// into the binary); 'unsafe-inline' stays because the Tailwind runtime
+// config block and the page's inline scripts require it.
 const contentSecurityPolicy = "default-src 'self'; " +
-	"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com/3.4.17 https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js; " +
-	"style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; " +
+	"script-src 'self' 'unsafe-inline'; " +
+	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data:; " +
 	"connect-src 'self'; " +
 	"base-uri 'self'; " +

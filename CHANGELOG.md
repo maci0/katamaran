@@ -33,6 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dashboard: vendored the two runtime CDN scripts into the binary.
+  `index.html` previously loaded Tailwind CSS 3.4.17 from
+  `cdn.tailwindcss.com` (no SRI hash) and Chart.js 4.5.1 from
+  `cdn.jsdelivr.net` on every page load. Both files now live under
+  `internal/dashboard/assets/` and are served same-origin from
+  `/assets/` via `go:embed` (immutable, versioned filenames). This
+  removes unverified remote script execution from the dashboard
+  origin — a compromised CDN or hostile network path could otherwise
+  run arbitrary script in a page that starts/stops live VM migrations
+  — and makes the UI work on air-gapped or egress-restricted clusters
+  where the CDNs never load. Chart.js bytes were verified against the
+  SRI hash that was already pinned in-tree before vendoring. The
+  Content-Security-Policy drops both CDN origins (`script-src` /
+  `style-src` are now `'self' 'unsafe-inline'` only).
+
 - Docs (`README.md`, `docs/INSTALL.md`, `docs/USAGE.md`,
   `docs/TESTING.md`, `internal/orchestrator/templates/job-dest.yaml`):
   fixed every stale reference to `deploy/job-{source,dest}.yaml` (the

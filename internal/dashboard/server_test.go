@@ -915,6 +915,60 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 	if csp := w.Header().Get("Content-Security-Policy"); csp == "" {
 		t.Error("Content-Security-Policy header missing")
+	} else if strings.Contains(csp, "cdn.tailwindcss.com") || strings.Contains(csp, "jsdelivr") {
+		t.Errorf("Content-Security-Policy still allowlists remote script hosts after vendoring: %q", csp)
+	}
+}
+
+func TestMux_ServesVendoredAssets(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	mux := app.newMux(false)
+
+	for _, path := range []string{"/assets/tailwind-3.4.17.js", "/assets/chart-4.5.1.min.js"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %v", w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "text/javascript; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want %q", ct, "text/javascript; charset=utf-8")
+			}
+			if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+				t.Errorf("Cache-Control = %q, want immutable caching for versioned asset", cc)
+			}
+			if w.Body.Len() == 0 {
+				t.Error("asset body is empty")
+			}
+		})
+	}
+
+	t.Run("unknown asset 404", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/assets/evil.js", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for unregistered asset path, got %v", w.Code)
+		}
+	})
+}
+
+// TestIndexHTML_VendoredAssetsOnly pins the dependency-vendoring contract of
+// the dashboard UI: every external script must be served same-origin from the
+// embedded assets directory, never fetched from a public CDN at page load.
+func TestIndexHTML_VendoredAssetsOnly(t *testing.T) {
+	t.Parallel()
+	if bytes.Contains(indexHTML, []byte("https://cdn.")) {
+		t.Error("index.html references a CDN URL; all third-party assets must be vendored under assets/")
+	}
+	n := bytes.Count(indexHTML, []byte(`src="/assets/`))
+	if n != 2 {
+		t.Errorf("index.html has %d /assets/ script tags, want 2", n)
 	}
 }
 
