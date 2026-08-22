@@ -65,7 +65,7 @@ if [[ ! -x "${GOFMT_CMD}" ]]; then
     GOFMT_CMD="gofmt"
 fi
 readonly GOFMT_CMD
-GOFMT_DIFF=$(cd "${PROJECT_ROOT}" && find cmd internal -name '*.go' -exec "${GOFMT_CMD}" -l {} + 2>/dev/null)
+GOFMT_DIFF=$(cd "${PROJECT_ROOT}" && find cmd internal -name '*.go' -exec "${GOFMT_CMD}" -s -l {} + 2>/dev/null)
 if [[ -z "${GOFMT_DIFF}" ]]; then
     pass "gofmt reports no formatting issues"
 else

@@ -32,10 +32,10 @@ build-factory:
 build-adopted-shim:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
 
-# Run go vet and gofmt checks
+# Run go vet and gofmt checks (-s also enforces gofmt simplifications)
 vet:
-	go vet ./cmd/... ./internal/...
-	@test -z "$$(gofmt -l cmd internal)" || (echo "gofmt needed on:"; gofmt -l cmd internal; exit 1)
+	go vet ./...
+	@test -z "$$(gofmt -s -l cmd internal)" || (echo "gofmt needed on:"; gofmt -s -l cmd internal; exit 1)
 
 # Run unit tests with race detector
 test:

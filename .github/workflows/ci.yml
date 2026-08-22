@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      GOVULNCHECK_VERSION: v1.3.0
+      GOVULNCHECK_VERSION: v1.7.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -65,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell scripts
-        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2317,SC2329 scripts/*.sh deploy/migrate.sh
+        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2329 scripts/*.sh deploy/migrate.sh
 
   dependency-review:
     # Surface known-vulnerable / license-incompatible deps newly introduced
