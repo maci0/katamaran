@@ -286,9 +286,13 @@ cmd/
     main_test.go                # CLI validation tests
   katamaran-mgr/
     main.go                     # Migration CRD controller entrypoint
+    webhook.go                  # Admission webhook server (deny RS replacements during adoption)
     debug.go                    # /healthz, /readyz, /metrics, /debug/vars handlers
-    kubeconfig.go               # Out-of-cluster kubeconfig loader
     main_test.go                # Controller CLI helper tests
+    webhook_test.go             # Admission webhook handler tests
+  containerd-shim-katamaran-adopted-v2/
+    main.go                     # Containerd v2 shim skeleton that adopts a migrated QEMU (Approach E)
+    main_test.go                # Shim sandbox-id validation tests
   katamaran-factory/
     main.go                     # Kata VM cache gRPC server entrypoint
     sandbox_config.go           # Reads VMConfig + AgentConfig from sandbox persist.json
@@ -299,6 +303,8 @@ internal/
   controller/
     reconciler.go               # Migration CRD reconcile loop and status patching
     reconciler_test.go          # Controller reconciliation tests
+    admission.go                # Pending-adoption registry + webhook deny decision (ShouldDenyPodCreate)
+    admission_test.go           # Admission decision tests
   dashboard/
     index.html                  # Embedded dashboard frontend (dark theme, Chart.js)
     doc.go                      # Package-level overview
@@ -365,6 +371,7 @@ deploy/
 config/crd/
   migration.yaml                # Migration CRD definition + status subresource
   manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB
+  runtimeclass-adopted.yaml     # RuntimeClass katamaran-adopted resolving to the adoption shim
 docs/
   INSTALL.md                    # Installation guide (binary, container, DaemonSet)
   USAGE.md                      # Usage guide (CLI and Kubernetes Jobs)
