@@ -99,11 +99,17 @@ This validates:
 
 ## 2. Fuzz Tests (Go Native Fuzzing)
 
-Go native fuzz tests cover the QMP protocol parsing layer and configuration formatting — the primary attack surface for untrusted input from QEMU sockets.
+Go native fuzz tests cover every boundary that consumes untrusted input: the QMP protocol parsing layer (the primary attack surface for data from QEMU sockets), `/proc` cmdline and pod-reference parsers in `internal/migration`, orchestrator request validation, dashboard form/target validation, the `katamaran-mgr` admission webhook HTTP handler, and the adoption shim's sandbox-id check.
 
 ### Run Seed Corpus (Unit Test Mode)
 
 The seed corpus runs as standard unit tests — instant, no randomization:
+
+```bash
+make fuzz    # or: go test ./... -run "^Fuzz" -count=1
+```
+
+To run a single package's seeds:
 
 ```bash
 go test ./internal/qmp/ -run "^Fuzz" -count=1
@@ -115,13 +121,12 @@ go test ./internal/migration/ -run "^Fuzz" -count=1
 To exercise the fuzzer with random mutations, specify a target and duration:
 
 ```bash
+make fuzz-long    # every target below, 30s each
+
+# Or individual targets:
 go test ./internal/qmp/ -fuzz=FuzzResponseUnmarshal -fuzztime=30s
-go test ./internal/qmp/ -fuzz=FuzzClientProtocol -fuzztime=30s
-go test ./internal/qmp/ -fuzz=FuzzBlockJobInfoUnmarshal -fuzztime=30s
-go test ./internal/qmp/ -fuzz=FuzzMigrateInfoUnmarshal -fuzztime=30s
-go test ./internal/qmp/ -fuzz=FuzzErrorFormat -fuzztime=30s
-go test ./internal/qmp/ -fuzz=FuzzArgsSerialization -fuzztime=30s
-go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
+go test ./internal/migration/ -fuzz=FuzzParseCmdlineBytes -fuzztime=30s
+go test ./cmd/katamaran-mgr/ -fuzz=FuzzHandleAdmit -fuzztime=30s
 ```
 
 > **Note:** Go fuzzing runs one fuzz target at a time. Each command above fuzzes a single target. Crashing inputs are saved to `testdata/fuzz/<FuzzTargetName>/` and replayed automatically on subsequent `go test` runs.
@@ -137,6 +142,16 @@ go test ./internal/migration/ -fuzz=FuzzFormatQEMUHost -fuzztime=30s
 | `FuzzClientProtocol` | `internal/qmp` | Full QMP wire protocol: handshake + command execution with arbitrary socket data |
 | `FuzzArgsSerialization` | `internal/qmp` | JSON marshaling round-trip for all QMP argument types |
 | `FuzzFormatQEMUHost` | `internal/migration` | `formatQEMUHost` with arbitrary IP addresses (IPv4/IPv6 bracket formatting) |
+| `FuzzParseCmdlineBytes` | `internal/migration` | Raw-byte `/proc/<pid>/cmdline` splitter: never panics, never emits empty fields |
+| `FuzzFindSrcSandboxDir` | `internal/migration` | Source sandbox directory discovery from arbitrary path inputs |
+| `FuzzParsePodRef` | `internal/migration` | `<namespace>/<name>` pod reference parsing |
+| `FuzzValidateSafeArgValue` | `internal/orchestrator` | Shell-safety gate for form values assembled into katamaran CLI args |
+| `FuzzSplitTarget` | `internal/dashboard` | host:port target splitter used by ping/HTTP loadgen validation |
+| `FuzzValidTargetPort` | `internal/dashboard` | Port validator accepts only canonical decimal ports 1-65535 |
+| `FuzzValidFormValue` | `internal/dashboard` | Form value validation on arbitrary input |
+| `FuzzReadRequest` | `cmd/katamaran-orchestrator` | JSON request decoding + validation on stdin bytes |
+| `FuzzHandleAdmit` | `cmd/katamaran-mgr` | Admission webhook HTTP handler with arbitrary request bodies (must never panic or wedge pod creation) |
+| `FuzzValidAdoptedSandboxID` | `cmd/containerd-shim-katamaran-adopted-v2` | Sandbox-id validation cannot produce cgroup path escapes |
 
 ## 3. Minikube Smoke Test (Single-Node, Real QMP)
 

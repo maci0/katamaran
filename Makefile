@@ -61,9 +61,13 @@ fuzz-long:
 	go test ./internal/migration/ -fuzz=FuzzParseCmdlineBytes -fuzztime=30s
 	go test ./internal/migration/ -fuzz=FuzzFindSrcSandboxDir -fuzztime=30s
 	go test ./internal/migration/ -fuzz=FuzzParsePodRef -fuzztime=30s
-	go test ./internal/migration/ -fuzz=FuzzSplitAddrTokens -fuzztime=30s
+	go test ./internal/orchestrator/ -fuzz=FuzzValidateSafeArgValue -fuzztime=30s
+	go test ./internal/dashboard/ -fuzz=FuzzSplitTarget -fuzztime=30s
+	go test ./internal/dashboard/ -fuzz=FuzzValidTargetPort -fuzztime=30s
+	go test ./internal/dashboard/ -fuzz=FuzzValidFormValue -fuzztime=30s
 	go test ./cmd/katamaran-orchestrator/ -fuzz=FuzzReadRequest -fuzztime=30s
 	go test ./cmd/katamaran-mgr/ -fuzz=FuzzHandleAdmit -fuzztime=30s
+	go test ./cmd/containerd-shim-katamaran-adopted-v2/ -fuzz=FuzzValidAdoptedSandboxID -fuzztime=30s
 
 CE ?= $(shell command -v podman 2>/dev/null || echo docker)
 GOARCH ?= $(shell go env GOARCH)

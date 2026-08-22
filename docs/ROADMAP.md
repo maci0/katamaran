@@ -81,7 +81,7 @@ Features that expand what can be migrated or how migration is triggered.
 > (see Long Term section) — creating a new Kata pod on the
 > destination that wraps the migrated QEMU process.
 
-- **Admission webhook for rescheduling prevention** — the current `spec.sourceCleanup: orphan` approach removes ownerReferences from the source pod and deletes it, preventing the owning Deployment/ReplicaSet from replacing it. However, there is a small race window: between migration completion and the orphan patch, the controller could create a replacement. A mutating or validating admission webhook would intercept replacement pod creation at the API level, closing this race. Not needed today (the race window is ~100ms vs. a 5-10s reconcile loop), but worth adding if katamaran operates on latency-sensitive workloads or high-churn Deployments.
+- ~~**Admission webhook for rescheduling prevention**~~ — Done. A validating admission webhook (served by `katamaran-mgr`, see `cmd/katamaran-mgr/webhook.go`) denies replacement pod creation by the source pod's controller while that controller is marked adoption-pending for a migration with `adoptVM: true`. Entries expire after 5 minutes so a crashed reconciler cannot wedge a Deployment forever.
 
 ### Pod Checkpoint / Restore
 

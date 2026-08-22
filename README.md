@@ -272,6 +272,7 @@ Dockerfile.mgr                  # Migration controller container image build
   dependabot.yml                # Dependabot config (GitHub Actions + Go modules, weekly)
   workflows/
     ci.yml                      # GitHub Actions CI (lint, test, fuzz seeds, build, Docker)
+    release.yml                 # Multi-arch release workflow (amd64 + arm64)
 cmd/
   katamaran/
     main.go                     # Thin wrapper around internal/katamaran.Run
@@ -370,7 +371,7 @@ deploy/
                                 #   submit those templates through the Native orchestrator.
 config/crd/
   migration.yaml                # Migration CRD definition + status subresource
-  manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB
+  manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
   runtimeclass-adopted.yaml     # RuntimeClass katamaran-adopted resolving to the adoption shim
 docs/
   INSTALL.md                    # Installation guide (binary, container, DaemonSet)

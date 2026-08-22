@@ -11,12 +11,12 @@
 // socket but Kata's vm_cache_endpoint feature requires the
 // `kata-runtime factory init` lifecycle to register the factory with
 // the runtime. With vm_cache_number=0 (the daemonset default — see
-// deploy/daemonset.yaml's "Configure Kata to use katamaran factory"
-// block for why), kata-shim never dials this socket on the normal
-// pod-creation path. Setting vm_cache_number=1 with our socket
-// confused kata-shim into the cache-handshake codepath and timed out
-// every fresh sandbox creation, which is why the current install
-// keeps it at 0.
+// the "Point Kata's vm_cache_endpoint at the katamaran factory
+// socket" block in deploy/daemonset.yaml for why), kata-shim never
+// dials this socket on the normal pod-creation path. Setting
+// vm_cache_number=1 with our socket confused kata-shim into the
+// cache-handshake codepath and timed out every fresh sandbox
+// creation, which is why the current install keeps it at 0.
 //
 // What the factory IS used for today:
 //   - Holding migration-meta.json + VMConfig payloads written by the
@@ -24,8 +24,9 @@
 //     the data needed for adoption.
 //   - Status / debug introspection via the Status RPC.
 //
-// What the factory will be used for once Kata Sandbox Adoption lands
-// (see docs/ROADMAP.md "Kata Sandbox Adoption" → Approach D):
+// Possible future use (see docs/ROADMAP.md "Kata Sandbox Adoption";
+// the Approach D factory path is currently blocked by Kata's factory
+// ownership model, with Approach E as the active direction):
 //   - Per-sandbox factory_endpoint annotation on adoption pods so
 //     kata-shim dials the factory only for that one pod, gets the
 //     migrated VM via GetBaseVM, and skips the cold-boot path. Until
