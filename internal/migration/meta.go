@@ -14,8 +14,6 @@ type MigrationMeta struct {
 	ID              string          `json:"id"`
 	QEMUPid         int             `json:"qemu_pid"`
 	QMPSocket       string          `json:"qmp_socket"`
-	VsockCID        uint32          `json:"vsock_cid"`
-	UUID            string          `json:"uuid"`
 	VirtiofsdPid    int             `json:"virtiofsd_pid"`
 	HypervisorState json.RawMessage `json:"hypervisor_state,omitempty"`
 	CPU             uint32          `json:"cpu"`

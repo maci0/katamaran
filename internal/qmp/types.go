@@ -48,7 +48,6 @@ type BlockJobInfo struct {
 	Device string         `json:"device"`
 	Len    int64          `json:"len"`
 	Offset int64          `json:"offset"`
-	Speed  int64          `json:"speed"`
 	Ready  bool           `json:"ready"`
 	Status BlockJobStatus `json:"status"`
 	Type   string         `json:"type"`
