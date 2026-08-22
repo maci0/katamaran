@@ -620,6 +620,64 @@ func TestMarkTracking_SingleClaim(t *testing.T) {
 	}
 }
 
+// TestUpdateProgressMetricsAndSnapshot pins the contract behind the
+// /metrics and debug exports: entries are keyed by migration ID, empty
+// IDs are ignored, phase always tracks the latest update while zero
+// numeric fields keep their previous value (high-water semantics), and
+// MigrationProgressSnapshot returns a copy that can be mutated without
+// corrupting the tracked state.
+func TestUpdateProgressMetricsAndSnapshot(t *testing.T) {
+	// Not parallel: mutates the process-global migrationProgress map.
+	const id = "id-progress-test"
+	t.Cleanup(func() { migrationProgress.Delete(id) })
+
+	updateProgressMetrics(orchestrator.StatusUpdate{
+		ID:             id,
+		Phase:          orchestrator.PhaseTransferring,
+		RAMTransferred: 100,
+		RAMTotal:       200,
+	})
+	snap := MigrationProgressSnapshot()
+	e, ok := snap[id]
+	if !ok {
+		t.Fatalf("snapshot missing entry for %q: %v", id, snap)
+	}
+	if e.Phase != string(orchestrator.PhaseTransferring) || e.RAMTransferred != 100 || e.RAMTotal != 200 {
+		t.Fatalf("entry = %+v, want transferring with ram 100/200", e)
+	}
+
+	// Zero-valued fields must not clobber the previously recorded numbers;
+	// the new downtime must still land.
+	updateProgressMetrics(orchestrator.StatusUpdate{
+		ID:         id,
+		Phase:      orchestrator.PhaseCutover,
+		DowntimeMS: 42,
+	})
+	e = MigrationProgressSnapshot()[id]
+	if e.Phase != string(orchestrator.PhaseCutover) {
+		t.Fatalf("phase = %q, want %q", e.Phase, orchestrator.PhaseCutover)
+	}
+	if e.RAMTransferred != 100 || e.RAMTotal != 200 {
+		t.Fatalf("zero-valued fields overwrote progress: %+v", e)
+	}
+	if e.DowntimeMS != 42 {
+		t.Fatalf("DowntimeMS = %d, want 42", e.DowntimeMS)
+	}
+
+	// A snapshot is a copy: mutating it must not affect tracked state.
+	snap = MigrationProgressSnapshot()
+	snap[id] = MigrationProgressEntry{Phase: "tampered"}
+	if got := MigrationProgressSnapshot()[id].Phase; got == "tampered" {
+		t.Fatal("MigrationProgressSnapshot leaked internal state: mutating the snapshot changed tracked state")
+	}
+
+	// Empty-ID updates must be dropped, not stored under "".
+	updateProgressMetrics(orchestrator.StatusUpdate{Phase: orchestrator.PhaseSucceeded})
+	if _, ok := MigrationProgressSnapshot()[""]; ok {
+		t.Fatal("empty migration ID was stored in progress map")
+	}
+}
+
 func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
 	cr := newMigrationCR("m5", []string{finalizerName}, false, map[string]any{
 		"phase":   "submitted",

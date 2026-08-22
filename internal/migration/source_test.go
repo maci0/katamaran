@@ -324,7 +324,9 @@ func postActiveStallGraceForTest(_ *testing.T, d time.Duration) func() {
 // dest had already resumed the VM. The stall grace fires immediately
 // because the function is only entered post-pause.
 func TestWaitForMigrationComplete_QMPStallTreatedAsSuccess(t *testing.T) {
-	t.Parallel()
+	// Not parallel: shrinks the package-level postActiveStallGrace while
+	// running, and sibling parallel tests call waitForMigrationComplete,
+	// which reads it.
 	prevGrace := postActiveStallGraceForTest(t, 200*time.Millisecond)
 	t.Cleanup(prevGrace)
 
