@@ -198,10 +198,13 @@ func main() {
 			slog.Debug("Ignoring KATAMARAN_POD_WAIT_TIMEOUT; --pod-wait-timeout was set explicitly",
 				"flag", podWaitTimeout.String(), "env", envPWT)
 		default:
-			if d, err := time.ParseDuration(envPWT); err == nil && d > 0 {
+			switch d, perr := time.ParseDuration(envPWT); {
+			case perr != nil:
+				slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", perr)
+			case d <= 0:
+				slog.Warn("Ignoring non-positive KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT)
+			default:
 				*podWaitTimeout = d
-			} else {
-				slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", err)
 			}
 		}
 	}

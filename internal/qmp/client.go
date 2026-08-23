@@ -287,7 +287,9 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 				return nil, fmt.Errorf("QMP command %q interrupted: %w", cmd, ctx.Err())
 			}
 			if isTimeout(err) {
-				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, executeTimeout, err)
+				// Report actual elapsed time, not executeTimeout: the effective
+				// deadline may have come from the context instead.
+				return nil, fmt.Errorf("timed out waiting for QMP response to %q after %v: %w", cmd, time.Since(cmdStart).Round(time.Millisecond), err)
 			}
 			if errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("QEMU closed the QMP connection unexpectedly during %q (did QEMU crash?): %w", cmd, err)
@@ -376,6 +378,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		}
 	}()
 
+	eventWaitStart := time.Now()
 	for {
 		line, err := c.readLine()
 		if err != nil {
@@ -383,7 +386,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 				return fmt.Errorf("waiting for QMP event %q interrupted: %w", eventName, ctx.Err())
 			}
 			if isTimeout(err) {
-				return fmt.Errorf("timed out waiting for QMP event %q after %v: %w", eventName, timeout, err)
+				// Report actual elapsed time, not the timeout argument: the
+				// effective deadline may have come from the context instead.
+				return fmt.Errorf("timed out waiting for QMP event %q after %v: %w", eventName, time.Since(eventWaitStart).Round(time.Millisecond), err)
 			}
 			if errors.Is(err, io.EOF) {
 				return fmt.Errorf("QEMU closed the QMP connection unexpectedly while waiting for %q (did QEMU crash?): %w", eventName, err)

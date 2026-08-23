@@ -33,10 +33,26 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
+)
+
+const (
+	// stopAfterSignalTimeout bounds the post-signal Orchestrator.Stop call.
+	// Two Job deletes against the apiserver normally finish in well under a
+	// second; the budget matches the controller's deletion path so a stalled
+	// apiserver cannot pin this goroutine forever.
+	stopAfterSignalTimeout = 30 * time.Second
+
+	// signalExitGrace is how long main waits after a signal for the watch
+	// stream to close before exiting 130 anyway. The normal path closes the
+	// stream as soon as Stop cancels the orchestrator's poll loop; if Stop's
+	// deletes stall past their budget the poll loop keeps running and the
+	// channel would never close, hanging the CLI despite the interrupt.
+	signalExitGrace = 10 * time.Second
 )
 
 func printUsage(w io.Writer) {
@@ -173,9 +189,33 @@ func main() {
 		// PhaseFailed update once the orchestrator finishes tearing down.
 		// A failed Stop leaves the source/dest Jobs running to their natural
 		// end while the CLI reports 130, so surface it instead of discarding.
-		if err := o.Stop(context.Background(), id); err != nil && !errors.Is(err, orchestrator.ErrUnknownID) {
+		// Bounded like every other Orchestrator.Stop caller (dashboard,
+		// controller): run cancellation happens inside Stop after the Job
+		// deletes, so without a deadline a stalled apiserver would keep this
+		// goroutine, and with it the poll loop, alive forever.
+		stopCtx, cancel := context.WithTimeout(context.Background(), stopAfterSignalTimeout)
+		defer cancel()
+		if err := o.Stop(stopCtx, id); err != nil && !errors.Is(err, orchestrator.ErrUnknownID) {
 			slog.Warn("Orchestrator stop after signal failed; migration Jobs may continue until terminal state",
 				"migration_id", string(id), "error", err)
+		}
+	}()
+	// Watchdog: guarantee the 130 exit even when the stream never closes.
+	// If Stop's Job deletes stall, poll keeps running and updates stays open;
+	// without this the CLI would hang after Ctrl-C with no signal to the user.
+	drained := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-drained:
+			return // clean completion; nothing to guard
+		}
+		select {
+		case <-drained:
+		case <-time.After(signalExitGrace):
+			slog.Warn("Status stream did not close after signal; exiting and leaving migration Jobs to their natural end",
+				"migration_id", string(id), "grace", signalExitGrace)
+			os.Exit(130)
 		}
 	}()
 	exit := 0
@@ -188,6 +228,7 @@ func main() {
 			exit = 1
 		}
 	}
+	close(drained)
 	// Signal-induced shutdown surfaces 130 even when the orchestrator
 	// emitted a final PhaseFailed update during teardown — otherwise a
 	// Ctrl-C looks indistinguishable from a real migration failure.
