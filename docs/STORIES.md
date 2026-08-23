@@ -125,7 +125,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 > **so that** I can understand the root cause and decide whether to retry.
 
 **Acceptance criteria:**
-- [x] Migration status is logged at each poll interval
+- [x] Migration status is logged on status change or significant progress (remaining bytes halved) during polling
 - [x] `failed` status includes QEMU's `error-desc` when available
 - [x] `cancelled` status returns a distinct sentinel error
 - [x] Migration polling is bounded by `migrationTimeout` (1h) to prevent infinite loops
@@ -170,7 +170,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] GARP is sent via QEMU's `announce-self` (not host-side `arping`)
 - [x] Uses the guest's actual MAC address on all NICs
 - [x] Sends 5 rounds with incremental backoff (20ms initial, +100ms step, 550ms max)
-- [x] GARP failure is a fatal error (returns from `RunDestination` with error)
+- [x] GARP failure is warn-only: it is logged and the destination run continues (RESUME has already fired by then, so failing the whole job over a convergence accelerator would mark a completed migration failed)
 
 ---
 

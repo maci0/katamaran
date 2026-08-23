@@ -403,6 +403,14 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		r.patchFailedStatus(ctx, key, string(id), "Watch failed", err.Error())
 		return
 	}
+	// If we abandon this stream early (the recovered-panic path below), the
+	// orchestrator's poll goroutine blocks forever on its next send once the
+	// buffered updates fill, pinning its inflight entry and poll/tail
+	// goroutines until process exit. Keep draining in the background so the
+	// producer can always finish and clean up; on the normal path the channel
+	// is already closed by the time this defer runs and the drainer exits
+	// immediately.
+	defer func() { go func() { for range updates {} }() }()
 	var lastPhase string
 	for u := range updates {
 		errStr := ""

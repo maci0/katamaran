@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -15,8 +16,9 @@ import (
 
 // loadVMConfig populates the VMConfig the Config RPC returns by reading any
 // existing Kata sandbox persist.json on the node. If no sandbox is present yet,
-// it starts a background poller that retries until one appears.
-func loadVMConfig(srv *factory.Server, watchDir string) {
+// it starts a background poller that retries until one appears or ctx is
+// cancelled (shutdown).
+func loadVMConfig(ctx context.Context, srv *factory.Server, watchDir string) {
 	sbsDir := filepath.Join(filepath.Dir(strings.TrimRight(watchDir, "/")), "sbs")
 	if tryLoadFromSandbox(srv, sbsDir) {
 		return
@@ -26,9 +28,14 @@ func loadVMConfig(srv *factory.Server, watchDir string) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			if tryLoadFromSandboxSafe(srv, sbsDir) {
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				if tryLoadFromSandboxSafe(srv, sbsDir) {
+					return
+				}
 			}
 		}
 	}()

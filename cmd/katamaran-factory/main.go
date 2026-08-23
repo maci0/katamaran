@@ -182,9 +182,6 @@ func main() {
 	}
 
 	srv := factory.NewServer()
-	loadVMConfig(srv, *watchDir)
-	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(recoverUnaryInterceptor))
-	cachepb.RegisterCacheServiceServer(grpcServer, srv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -193,6 +190,10 @@ func main() {
 		<-ctx.Done()
 		stop() // A second signal will now force exit.
 	}()
+
+	loadVMConfig(ctx, srv, *watchDir)
+	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(recoverUnaryInterceptor))
+	cachepb.RegisterCacheServiceServer(grpcServer, srv)
 
 	// Start the directory watcher.
 	watcher := factory.NewWatcher(*watchDir, srv)

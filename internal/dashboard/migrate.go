@@ -287,6 +287,14 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		a.setMigrationResult("error", err.Error())
 		return
 	}
+	// If we abandon this stream early (the recovered-panic path below), the
+	// orchestrator's poll goroutine blocks forever on its next send once the
+	// buffered updates fill, pinning its inflight entry and poll/tail
+	// goroutines until process exit. Keep draining in the background so the
+	// producer can always finish and clean up; on the normal path the channel
+	// is already closed by the time this defer runs and the drainer exits
+	// immediately.
+	defer drainInBackground(updates)
 	var terminal orchestrator.StatusPhase
 	var terminalErr error
 	phaseAt := map[orchestrator.StatusPhase]time.Time{}
@@ -390,6 +398,15 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		a.setMigrationResult("error", msg)
 		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	}
+}
+
+// drainInBackground consumes ch until it closes. See the defer after
+// orch.Watch in runOrchestrator for why this exists.
+func drainInBackground(ch <-chan orchestrator.StatusUpdate) {
+	go func() {
+		for range ch {
+		}
+	}()
 }
 
 // phaseBreakdown formats the wall-clock split between phases for the
