@@ -285,9 +285,12 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		slog.Info("Network queue plugged. Buffering in-flight packets", "tap_iface", tapIface)
 	}
 
-	// Step 5: Wait for the destination VM to resume.
+	// Step 5: Wait for the destination VM to resume. The wait budget
+	// (resumeWaitTimeout) covers the source's full storage-sync + RAM
+	// phase budgets, so large migrations are never aborted from this end;
+	// the source's own timeouts remain the stall detector.
 	slog.Info("Waiting for QEMU RESUME event")
-	if err = client.WaitForEvent(ctx, "RESUME", eventWaitTimeout); err != nil {
+	if err = client.WaitForEvent(ctx, "RESUME", resumeWaitTimeout); err != nil {
 		return fmt.Errorf("waiting for RESUME event: %w", err)
 	}
 	if qdiscInstalled {

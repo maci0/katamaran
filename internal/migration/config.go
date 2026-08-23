@@ -39,10 +39,6 @@ const (
 	// Set high to ensure the final dirty page flush completes as fast as possible.
 	maxBandwidth = 10_000_000_000
 
-	// eventWaitTimeout is the maximum time to wait for a single QMP event
-	// before assuming the migration has stalled.
-	eventWaitTimeout = 30 * time.Minute
-
 	// storagePollInterval is how often to check drive-mirror sync progress.
 	storagePollInterval = 2 * time.Second
 
@@ -80,6 +76,19 @@ const (
 	// drive-mirror synchronization loop. Prevents infinite polling if the
 	// mirror never converges (e.g., VM write rate exceeds mirror bandwidth).
 	storageSyncTimeout = 2 * time.Hour
+
+	// resumeWaitTimeout is how long the destination waits for QEMU's RESUME
+	// event (the authoritative completion signal of an incoming migration).
+	//
+	// It must cover the source side's full phase budgets: the source spends
+	// up to storageSyncTimeout mirroring storage and up to migrationTimeout
+	// pre-copying RAM before RESUME fires, so a shorter cap here aborts a
+	// healthy multi-hour migration from the dest end (the deferred cleanups
+	// then tear down the NBD server mid-sync). Derived from those constants
+	// rather than hardcoded so the two ends can never drift apart again.
+	// The controller's StatusTimeout (4h) deliberately exceeds this sum to
+	// also cover job startup + CNI convergence.
+	resumeWaitTimeout = storageSyncTimeout + migrationTimeout
 
 	// jobAppearTimeout is the maximum time to wait for a block job to appear
 	// in query-block-jobs after being submitted. If it doesn't appear within

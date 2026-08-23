@@ -54,7 +54,7 @@ func TestConstants_Reasonable(t *testing.T) {
 		ok   bool
 	}{
 		{"maxBandwidth", maxBandwidth > 0},
-		{"eventWaitTimeout", eventWaitTimeout > 0},
+		{"resumeWaitTimeout", resumeWaitTimeout > 0},
 		{"storagePollInterval", storagePollInterval > 0},
 		{"migrationPollInterval", migrationPollInterval > 0},
 		{"postMigrationTunnelDelay", postMigrationTunnelDelay > 0},
@@ -88,6 +88,9 @@ func TestConstants_Reasonable(t *testing.T) {
 		{"migrationPollInterval < migrationTimeout", migrationPollInterval < migrationTimeout},
 		{"jobAppearTimeout < storageSyncTimeout", jobAppearTimeout < storageSyncTimeout},
 		{"garpInitialMS < garpMaxMS", garpInitialMS < garpMaxMS},
+		// The dest's RESUME wait must outlive the source's phase budgets,
+		// or the dest aborts a healthy multi-hour migration mid-transfer.
+		{"resumeWaitTimeout >= storageSyncTimeout+migrationTimeout", resumeWaitTimeout >= storageSyncTimeout+migrationTimeout},
 	} {
 		if !rel.ok {
 			t.Errorf("constant relationship violated: %s", rel.name)
