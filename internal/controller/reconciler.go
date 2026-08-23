@@ -457,7 +457,15 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 	// the webhook will not deny anything for this migration.
 	if req.AdoptVM && r.Kube != nil && req.SourcePod != nil {
 		markCtx, markCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(markCtx, req.SourcePod.Name, metav1.GetOptions{}); err == nil {
+		src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(markCtx, req.SourcePod.Name, metav1.GetOptions{})
+		if err != nil {
+			// Without the pending mark the webhook cannot deny replacement
+			// pods, so surface why marking was skipped instead of failing
+			// open silently.
+			slog.Warn("Adoption-pending mark skipped: source pod lookup failed",
+				"migration", key, "migration_id", id,
+				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
+		} else {
 			for _, o := range src.OwnerReferences {
 				if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {
 					rsUID = o.UID

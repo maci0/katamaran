@@ -23,19 +23,28 @@ func loadVMConfig(srv *factory.Server, watchDir string) {
 
 	slog.Info("VMConfig not yet available; starting background poller", "sandbox_dir", sbsDir, "interval", "2s")
 	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("VMConfig poller panic", "panic", rec, "stack", string(debug.Stack()))
-			}
-		}()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			if tryLoadFromSandbox(srv, sbsDir) {
+			if tryLoadFromSandboxSafe(srv, sbsDir) {
 				return
 			}
 		}
 	}()
+}
+
+// tryLoadFromSandboxSafe wraps tryLoadFromSandbox with per-attempt panic
+// recovery. A recover at goroutine scope would let a single panic kill the
+// poller permanently, leaving VMConfig unavailable forever and every
+// subsequent adoption falling back to cold start with no further signal.
+// Mirrors factory.Watcher.safeScan.
+func tryLoadFromSandboxSafe(srv *factory.Server, sbsDir string) (loaded bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("VMConfig poller panic", "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	return tryLoadFromSandbox(srv, sbsDir)
 }
 
 func tryLoadFromSandbox(srv *factory.Server, sbsDir string) bool {

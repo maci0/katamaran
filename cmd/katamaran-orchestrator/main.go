@@ -24,9 +24,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -169,7 +171,12 @@ func main() {
 		<-ctx.Done()
 		// Best-effort stop on signal. The watcher will still emit the final
 		// PhaseFailed update once the orchestrator finishes tearing down.
-		_ = o.Stop(context.Background(), id)
+		// A failed Stop leaves the source/dest Jobs running to their natural
+		// end while the CLI reports 130, so surface it instead of discarding.
+		if err := o.Stop(context.Background(), id); err != nil && !errors.Is(err, orchestrator.ErrUnknownID) {
+			slog.Warn("Orchestrator stop after signal failed; migration Jobs may continue until terminal state",
+				"migration_id", string(id), "error", err)
+		}
 	}()
 	exit := 0
 	for u := range updates {

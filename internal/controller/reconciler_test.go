@@ -924,6 +924,37 @@ func TestReconciler_AdoptVM_AutoSelectResolvesDestNode(t *testing.T) {
 	}
 }
 
+// When the source pod is already gone (lookup fails), the adoption-pending
+// mark must be skipped without panicking and the migration still reports
+// success. Pins the failure path so it stays a logged no-op rather than a
+// silent or crashing one.
+func TestReconciler_AdoptVM_MissingSourcePodSkipsPendingMark(t *testing.T) {
+	const rsUID types.UID = "rs-uid-missing"
+	updates := make(chan orchestrator.StatusUpdate, 1)
+	updates <- orchestrator.StatusUpdate{ID: "id-missing", Phase: orchestrator.PhaseSucceeded}
+	close(updates)
+	orch := &fakeOrch{applyID: "id-missing", updates: updates}
+	cr := adoptCR("m-missing", "none")
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "Migration"}, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList"}, &unstructured.UnstructuredList{})
+	dyn := fakedyn.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		MigrationGVR: "MigrationList",
+	}, cr)
+	// No pod seeded: the source-pod Get in handleMigrationOutcome fails.
+	kube := fakekube.NewSimpleClientset()
+	rec := NewReconciler(dyn, kube, orch, nil)
+	rec.PollInterval = 10 * time.Millisecond
+	rec.StatusTimeout = 1 * time.Second
+	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-missing"}, cr)
+
+	if got := rec.pending.MigrationFor(rsUID); got != "" {
+		t.Fatalf("pending mark for %s = %q after failed source-pod lookup, want unmarked", rsUID, got)
+	}
+}
+
 // Recovery after a controller restart must run the documented post-success
 // side effects too: sourceCleanup=delete must delete the source pod even
 // though the success was observed via Job inspection rather than the watch.
