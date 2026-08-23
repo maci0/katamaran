@@ -136,8 +136,9 @@ spec:
           path: /run/kata-containers/shared/sandboxes
           type: DirectoryOrCreate
       - name: opt-kata
-        # /opt/kata/bin/qemu-system-x86_64 + libexec/virtiofsd live here on
-        # Kata-installed nodes; the dest binary spawns them directly.
+        # /opt/kata/bin/qemu-system-x86_64 (amd64) or qemu-system-aarch64
+        # (arm64) + libexec/virtiofsd live here on Kata-installed nodes;
+        # the dest binary spawns them directly.
         hostPath:
           path: /opt/kata
           type: Directory

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -343,6 +344,29 @@ func TestCaptureSourceCmdline(t *testing.T) {
 	}
 }
 
+// TestDestReplayQEMUBinary_ArchDefault pins the architecture-specific Kata
+// QEMU default used for cmdline replay. Release images ship linux/amd64 and
+// linux/arm64 (.github/workflows/release.yml), and kata-deploy installs a
+// different qemu-system-<machine> name per host architecture, so an amd64
+// hardcoded default silently breaks replay on arm64 nodes.
+func TestDestReplayQEMUBinary_ArchDefault(t *testing.T) {
+	t.Parallel()
+	got := destReplayQEMUBinary()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("destReplayQEMUBinary() = %q, want absolute path", got)
+	}
+	var want string
+	switch runtime.GOARCH {
+	case "arm64":
+		want = "/opt/kata/bin/qemu-system-aarch64"
+	default:
+		want = "/opt/kata/bin/qemu-system-x86_64"
+	}
+	if got != want {
+		t.Fatalf("destReplayQEMUBinary() on %s = %q, want %q", runtime.GOARCH, got, want)
+	}
+}
+
 func TestSpawnReplayedQEMU_MissingFile(t *testing.T) {
 	t.Parallel()
 	cfg := DestConfig{ReplayCmdlineFile: filepath.Join(t.TempDir(), "missing")}
@@ -496,6 +520,11 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	}
 	if !strings.Contains(spawned[1].name, "qemu") {
 		t.Fatalf("second spawn should be qemu, got %s", spawned[1].name)
+	}
+	// Empty QEMUBinary must fall back to the arch-aware Kata default, not
+	// to the captured argv[0].
+	if spawned[1].name != destReplayQEMUBinary() {
+		t.Fatalf("default QEMU binary = %s, want %s", spawned[1].name, destReplayQEMUBinary())
 	}
 	// Verify QEMU got -incoming defer at tail (no -daemonize: we run foreground).
 	q := spawned[1].args

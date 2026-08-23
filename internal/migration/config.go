@@ -190,9 +190,11 @@ type DestConfig struct {
 	// normally set exactly one.
 	ReplayCmdlineFromPod string
 	// QEMUBinary, when non-empty, overrides the QEMU binary path used for
-	// cmdline replay. Defaults to /opt/kata/bin/qemu-system-x86_64; the
-	// captured cmdline's argv[0] is intentionally not used (it is
-	// attacker-controlled in the source pod). Mostly a test seam.
+	// cmdline replay. Defaults to the bundled Kata QEMU for the current
+	// architecture (/opt/kata/bin/qemu-system-x86_64 on amd64,
+	// /opt/kata/bin/qemu-system-aarch64 on arm64); the captured cmdline's
+	// argv[0] is intentionally not used (it is attacker-controlled in the
+	// source pod). Mostly a test seam.
 	QEMUBinary string
 	// SandboxID, when non-empty, names the synthetic dest sandbox directory
 	// created under /run/vc/vm/<id>/ for cmdline replay. Defaults to

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -30,13 +31,6 @@ var (
 	// Test seam: tests replace it with a writable temp dir to avoid needing
 	// root for the production /run path.
 	kataSharedSandboxRoot = "/run/kata-containers/shared/sandboxes"
-
-	// destReplayDefaultQEMU is the QEMU binary path used to spawn the
-	// destination QEMU when DestConfig.QEMUBinary is empty. The captured
-	// cmdline's argv[0] is intentionally NOT used: a compromised source pod
-	// could write an arbitrary path there and exec a non-QEMU binary on the
-	// dest node (see spawnReplayedQEMU).
-	destReplayDefaultQEMU = "/opt/kata/bin/qemu-system-x86_64"
 
 	// destReplayVirtiofsd is the virtiofsd binary path Kata installs.
 	destReplayVirtiofsd = "/opt/kata/libexec/virtiofsd"
@@ -64,6 +58,24 @@ var (
 	// startup at the 25s mark, returning "Connection refused".
 	destReplaySleep = 60 * time.Second
 )
+
+// destReplayQEMUBinary returns the QEMU binary path used to spawn the
+// destination QEMU when DestConfig.QEMUBinary is empty. The captured
+// cmdline's argv[0] is intentionally NOT used: a compromised source pod
+// could write an arbitrary path there and exec a non-QEMU binary on the
+// dest node (see spawnReplayedQEMU).
+//
+// kata-deploy installs the arch-specific QEMU binary under /opt/kata/bin:
+// qemu-system-x86_64 on amd64 hosts, qemu-system-aarch64 on arm64 hosts.
+// Both are release targets (see .github/workflows/release.yml), so pick by
+// runtime.GOARCH instead of hardcoding one. Any other GOARCH keeps the
+// historical x86_64 path; those targets are unsupported anyway.
+func destReplayQEMUBinary() string {
+	if runtime.GOARCH == "arm64" {
+		return "/opt/kata/bin/qemu-system-aarch64"
+	}
+	return "/opt/kata/bin/qemu-system-x86_64"
+}
 
 // memPathRegex matches `mem-path=<path>` clauses inside a memory-backend-file
 // argument. Used to locate the nvdimm image path in the captured source cmdline.
@@ -456,13 +468,14 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	// a compromised source pod could write an arbitrary path there and use
 	// cmdline replay as a vector to exec a non-QEMU binary on the dest node.
 	// Pin to the configured override or the bundled Kata QEMU path.
+	defaultQEMU := destReplayQEMUBinary()
 	binary := cfg.QEMUBinary
 	if binary == "" {
-		binary = destReplayDefaultQEMU
+		binary = defaultQEMU
 	}
 	if !filepath.IsAbs(binary) {
-		slog.Warn("configured QEMU binary is not absolute, falling back to default", "configured", binary, "fallback", destReplayDefaultQEMU)
-		binary = destReplayDefaultQEMU
+		slog.Warn("configured QEMU binary is not absolute, falling back to default", "configured", binary, "fallback", defaultQEMU)
+		binary = defaultQEMU
 	}
 
 	slog.Info("Spawning destination QEMU via cmdline replay",
