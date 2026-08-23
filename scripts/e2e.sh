@@ -32,6 +32,10 @@ readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deplo
 PROVIDER="minikube"
 KATA_VERSION="3.24.0"
 FLANNEL_VERSION="${FLANNEL_VERSION:-v0.28.4}"
+# Pin third-party CNI sources so test runs are reproducible and never pick up
+# upstream changes without review. Override via env when a newer pin is vetted.
+CILIUM_CHART_VERSION="${CILIUM_CHART_VERSION:-1.20.1}"
+OVN_KUBERNETES_VERSION="${OVN_KUBERNETES_VERSION:-v1.3.0}"
 CNI="auto"
 STORAGE="none"
 METHOD="job"
@@ -274,7 +278,7 @@ if [[ "${CNI}" == "ovn" ]]; then
 
     OVN_K_DIR="/tmp/ovn-kubernetes-${PROFILE}"
     rm -rf "${OVN_K_DIR}"
-    git clone --depth 1 --branch "master" "https://github.com/ovn-org/ovn-kubernetes.git" "${OVN_K_DIR}"
+    git clone --depth 1 --branch "${OVN_KUBERNETES_VERSION}" "https://github.com/ovn-org/ovn-kubernetes.git" "${OVN_K_DIR}"
     # Pre-create namespace to avoid conflict with chart-managed Namespace resource.
     kubectl --context "${CTX}" create namespace ovn-kubernetes 2>/dev/null || true
     helm upgrade --install ovn-kubernetes "${OVN_K_DIR}/helm/ovn-kubernetes" \
@@ -291,6 +295,7 @@ elif [[ "${CNI}" == "cilium" ]]; then
     log "Deploying Cilium..."
     helm upgrade --install cilium oci://quay.io/cilium/charts/cilium \
         --kube-context "${CTX}" --namespace kube-system \
+        --version "${CILIUM_CHART_VERSION}" \
         --set k8sServiceHost="${NODE1_IP}" --set k8sServicePort="6443" \
         --set operator.replicas=1 --wait
 elif [[ "${CNI}" == "flannel" ]]; then
