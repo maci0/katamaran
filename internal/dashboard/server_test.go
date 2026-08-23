@@ -175,6 +175,12 @@ func TestValidTarget(t *testing.T) {
 		{"localhost", false},       // loopback
 		{"127.0.0.1", false},       // loopback
 		{"169.254.169.254", false}, // cloud metadata
+		{"0.0.0.0", false},         // unspecified address
+		{"224.0.0.1", false},       // multicast
+		{"fe80::1", false},         // IPv6 link-local
+		{"[ff02::1]", false},       // IPv6 link-local multicast
+		{"[fd00:ec2::254]", false}, // AWS IMDS IPv6 alias
+		{"100.100.100.200", false}, // Alibaba Cloud metadata (CGNAT range)
 		{"-c1", false},             // flag injection
 		{"10.0.0.1:0", false},      // invalid port
 		{"10.0.0.1:65536", false},  // invalid port
@@ -1843,6 +1849,44 @@ func TestPodsAndNodesEndpoints(t *testing.T) {
 				if arr[0]["name"] != "n1" || arr[0]["internal_ip"] != "192.168.1.10" {
 					t.Fatalf("node payload = %v, want n1 with internal_ip 192.168.1.10", arr[0])
 				}
+			}
+		})
+	}
+}
+
+// TestPodsAndNodesEndpoints_ErrorPaths pins the /api/pods and /api/nodes
+// status contracts for failures: a missing discoverer is a 503 (not wired,
+// same as readyz), while a discoverer that errors is a 502 (upstream
+// apiserver problem) — never a 200 with an empty body, which the UI would
+// render as "no VMs/nodes" instead of an error.
+func TestPodsAndNodesEndpoints_ErrorPaths(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		app  *App
+		path string
+		want int
+	}{
+		{"pods no discoverer", &App{}, "/api/pods", http.StatusServiceUnavailable},
+		{"nodes no discoverer", &App{}, "/api/nodes", http.StatusServiceUnavailable},
+		{"pods list error", &App{discoverer: &stubDiscoverer{podsErr: errors.New("apiserver unreachable")}}, "/api/pods", http.StatusBadGateway},
+		{"nodes list error", &App{discoverer: &stubDiscoverer{nodesErr: errors.New("apiserver unreachable")}}, "/api/nodes", http.StatusBadGateway},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			tt.app.newMux(false).ServeHTTP(w, req)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tt.want, w.Body.String())
+			}
+			var resp map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode JSON error body: %v; body=%s", err, w.Body.String())
+			}
+			if resp["error"] == "" {
+				t.Fatal("expected non-empty error message")
 			}
 		})
 	}

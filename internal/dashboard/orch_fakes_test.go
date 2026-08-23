@@ -140,16 +140,25 @@ func (f *fakeOrchestrator) Resume(_ context.Context, _ orchestrator.MigrationID,
 
 // stubDiscoverer is a no-cluster fake used by the /api/pods, /api/nodes,
 // and pod-mode handlers so the dashboard's HTTP layer can be exercised
-// without an apiserver.
+// without an apiserver. podsErr/nodesErr inject list failures (zero value
+// means success, so existing users are unaffected).
 type stubDiscoverer struct {
-	pods  []orchestrator.PodInfo
-	nodes []orchestrator.NodeInfo
+	pods     []orchestrator.PodInfo
+	nodes    []orchestrator.NodeInfo
+	podsErr  error
+	nodesErr error
 }
 
 func (s *stubDiscoverer) ListKataPods(_ context.Context) ([]orchestrator.PodInfo, error) {
+	if s.podsErr != nil {
+		return nil, s.podsErr
+	}
 	return s.pods, nil
 }
 func (s *stubDiscoverer) ListKataNodes(_ context.Context) ([]orchestrator.NodeInfo, error) {
+	if s.nodesErr != nil {
+		return nil, s.nodesErr
+	}
 	return s.nodes, nil
 }
 func (s *stubDiscoverer) LookupPodNode(_ context.Context, namespace, name string) (string, error) {
