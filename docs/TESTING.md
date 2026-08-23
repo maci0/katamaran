@@ -676,12 +676,12 @@ node1$ sudo katamaran \
 ```text
 time=... level=INFO msg="Starting live migration" dest_ip=192.168.1.20
 time=... level=INFO msg="Initiating storage mirror (drive-mirror)"
-time=... level=INFO msg="Waiting for storage mirror to synchronize"
+time=... level=INFO msg="Waiting for storage mirrors to synchronize"
 time=... level=INFO msg="Storage sync progress" progress_pct=12.50 offset=... len=...
 time=... level=INFO msg="Storage sync progress" progress_pct=25.00 offset=... len=...
 time=... level=INFO msg="Storage sync progress" progress_pct=50.00 offset=... len=...
 time=... level=INFO msg="Storage sync progress" progress_pct=75.00 offset=... len=...
-time=... level=INFO msg="Storage mirror synchronized" elapsed=...
+time=... level=INFO msg="All storage mirrors synchronized" elapsed=...
 time=... level=INFO msg="Configuring RAM migration"
 time=... level=INFO msg="RAM migration started. Waiting for VM to pause (STOP event)"
 time=... level=INFO msg="VM paused. Redirecting in-flight packets to destination"
@@ -690,7 +690,7 @@ time=... level=INFO msg="Waiting for migration to complete"
 time=... level=INFO msg="Migration status" status=active
 time=... level=INFO msg="Migration status" status=completed
 time=... level=INFO msg="Migration completed" actual_downtime_ms=... total_time_ms=... setup_time_ms=...
-time=... level=INFO msg="Storage mirror cancelled"
+time=... level=INFO msg="Storage mirrors cancelled"
 time=... level=INFO msg="Waiting for CNI convergence" delay=5s
 time=... level=INFO msg="Source cleanup complete. Migration succeeded"
 ```

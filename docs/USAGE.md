@@ -233,11 +233,18 @@ echo '{
 }' | bin/katamaran-orchestrator
 ```
 
-Sample stdout:
+Sample stdout (one line per `StatusUpdate`; phases run
+`submitted → dest-starting → src-starting → transferring → cutover →`
+`succeeded` or `failed`, with periodic `transferring` updates in between):
 
 ```jsonl
 {"id":"a1b2c3...","phase":"submitted","time":"2026-04-27T05:25:32.243Z"}
-{"id":"a1b2c3...","phase":"succeeded","time":"2026-04-27T05:25:58.314Z"}
+{"id":"a1b2c3...","phase":"dest-starting","time":"2026-04-27T05:25:33.012Z"}
+{"id":"a1b2c3...","phase":"src-starting","time":"2026-04-27T05:25:40.881Z"}
+{"id":"a1b2c3...","phase":"transferring","msg":"downtime limit applied: 25ms","applied_downtime_ms":25,"time":"2026-04-27T05:25:47.104Z"}
+{"id":"a1b2c3...","phase":"transferring","msg":"status=active","ram_transferred":536870912,"ram_total":2147483648,"time":"2026-04-27T05:25:52.377Z"}
+{"id":"a1b2c3...","phase":"cutover","msg":"source reported cutover","time":"2026-04-27T05:25:57.901Z"}
+{"id":"a1b2c3...","phase":"succeeded","downtime_ms":14,"ram_transferred":2147483648,"ram_total":2147483648,"applied_downtime_ms":25,"time":"2026-04-27T05:25:58.314Z"}
 ```
 
 The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/migrate` handler — anything callable from the dashboard is callable from the CLI and vice versa.

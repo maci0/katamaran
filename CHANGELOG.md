@@ -82,6 +82,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "pods/exec, transient stager pods for replayCmdline" line that
   described the v0.1.x RBAC the controller no longer needs.
 
+## [0.3.0] - 2026-05-07
+
+### Added
+
+- E2E `--tcg` flag for macOS Apple Silicon (experimental): full live
+  migration under QEMU software emulation on kind + Podman, no KVM
+  required. Arch-aware TCG wrapper patches (accel swap on x86_64;
+  gic-version, CPU model, nvdimm, PMU fixes on aarch64), reduced TCG VM
+  memory to prevent OOM, and vhost-vsock/net device mounts plus kernel
+  modules for kind nodes. Documented in TESTING.md section 12.
+- Configurable orchestrator pod-wait timeout with a three-layer
+  override chain: `--pod-wait-timeout` flag, `KATAMARAN_POD_WAIT_TIMEOUT`
+  env var, and `spec.podWaitTimeoutSeconds` in the Migration CRD
+  (`Request.PodWaitTimeoutSeconds`).
+- CI: multi-arch container image builds (linux/amd64 + linux/arm64) via
+  QEMU user-mode emulation.
+
+### Fixed
+
+- E2E destination QEMU cmdline replay now mirrors
+  `internal/migration/destspawn.go`: strips `fd=` / `vhostfd=` / `fds=`
+  args, adds `ifname` / `script=no` for tap, and assigns a fresh vsock
+  guest-cid.
+- E2E scripts are bash 3.2 compatible (macOS default shell); qmp disk
+  hotplug uses a python3 helper instead of netcat; test disk images are
+  created with `truncate` instead of `qemu-img`.
+- E2E harness applies RBAC for migration Jobs and detects the container
+  engine by daemon reachability rather than binary presence.
+- Makefile passes `TARGETARCH=$(GOARCH)` so native ARM64 image builds work.
+
+[0.3.0]: https://github.com/maci0/katamaran/releases/tag/v0.3.0
+
 ## [0.2.0] - 2026-05-01
 
 Architectural refactor: cmdline replay no longer needs a stager pod
@@ -294,5 +326,5 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.3.0...HEAD
 [0.1.0]: https://github.com/maci0/katamaran/releases/tag/v0.1.0

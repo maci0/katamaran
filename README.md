@@ -292,7 +292,7 @@ cmd/
     main_test.go                # Controller CLI helper tests
     webhook_test.go             # Admission webhook handler tests
   containerd-shim-katamaran-adopted-v2/
-    main.go                     # Containerd v2 shim skeleton that adopts a migrated QEMU (Approach E)
+    main.go                     # Containerd v2 shim (ttrpc TaskService) that adopts a migrated QEMU (Approach E)
     main_test.go                # Shim sandbox-id validation tests
   katamaran-factory/
     main.go                     # Kata VM cache gRPC server entrypoint
@@ -372,7 +372,7 @@ internal/
     qmptest.go                  # Shared test helpers for faking a QMP server
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
-  daemonset.yaml                # DaemonSet for node setup (binary, kernel modules, QMP config when present)
+  daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
   migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
   migrate.sh                    # Manual-testing shell wrapper around the Job templates
                                 #   under internal/orchestrator/templates/. Production paths
