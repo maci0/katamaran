@@ -55,10 +55,11 @@ func Validate(req Request) error {
 	if req.DestPod != nil && (req.DestPod.Name == "" || req.DestPod.Namespace == "") {
 		return errors.New("destPod requires both Name and Namespace")
 	}
-	// Enum checks are case-sensitive to match the canonical lowercase values
-	// every downstream consumer enforces (migration.setupSource, the katamaran
-	// CLI, logging.SetupLogger). Accepting case variants here would let a
-	// request pass validation only to fail at runtime in the migration Job.
+	// Enum checks are case-sensitive and accept only the canonical
+	// lowercase values rendered into Job args. The katamaran CLI normalizes
+	// enum flag case before validating, so this is deliberately stricter
+	// than the runtime requires: case variants are rejected at request time
+	// instead of being silently accepted in a running migration Job.
 	if req.TunnelMode != "" && req.TunnelMode != "ipip" && req.TunnelMode != "gre" && req.TunnelMode != "none" {
 		return fmt.Errorf("tunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
 	}

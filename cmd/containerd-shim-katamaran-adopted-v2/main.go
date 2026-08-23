@@ -15,8 +15,10 @@
 //     migrated QEMU pid (Approach E step 1 wrote it into
 //     /sys/fs/cgroup/katamaran-adopted/<sandbox-id>/cgroup.procs)
 //     and answers RPCs against that pid.
-//  3. On Delete or QEMU exit the shim shuts down its ttrpc server
-//     and exits.
+//  3. The shim serves until containerd calls the Shutdown RPC, which
+//     closes shutdownCh and stops the ttrpc server. QEMU exit and
+//     Delete only update task state (exit code, cgroup cleanup); they
+//     do not stop the server.
 //
 // Adoption-specific contract:
 //
@@ -440,9 +442,11 @@ func (s *adoptedTaskService) Kill(_ context.Context, req *taskAPI.KillRequest) (
 	return &emptypb.Empty{}, nil
 }
 
-// Delete waits for QEMU to exit (containerd has already issued Kill
-// by the time it calls Delete) and removes the surviving cgroup dir.
-// Returns the recorded exit code so containerd can close the task.
+// Delete removes the surviving cgroup dir and reports the recorded exit
+// state so containerd can close the task. It does not wait for QEMU to
+// exit: callers observe exit via Wait/watchExit. If QEMU has not exited
+// yet, the response carries a freshly stamped ExitedAt and the recorded
+// (possibly zero) exit code.
 func (s *adoptedTaskService) Delete(_ context.Context, _ *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	s.mu.Lock()
 	pid := s.qemuPid

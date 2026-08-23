@@ -27,14 +27,17 @@
 // Possible future use (see docs/ROADMAP.md "Kata Sandbox Adoption";
 // the Approach D factory path is currently blocked by Kata's factory
 // ownership model, with Approach E as the active direction):
-//   - Per-sandbox factory_endpoint annotation on adoption pods so
-//     kata-shim dials the factory only for that one pod, gets the
-//     migrated VM via GetBaseVM, and skips the cold-boot path. Until
-//     that wiring is in place, the adopted-vm pod created by the
-//     controller still cold-boots a fresh kata sandbox — the K8s view
-//     is correct (Deployment intact, no spurious pods, see Strategy
-//     A in ROADMAP), but the migrated VM state is not yet inherited
-//     by the new pod.
+//   - Per-sandbox factory_endpoint annotation so kata-shim dials the
+//     factory for a single pod and receives the migrated VM via
+//     GetBaseVM instead of cold-booting.
+//
+// Adoption today runs through Approach E, not this server: the
+// controller creates adoption pods with runtimeClassName
+// katamaran-adopted, whose containerd shim adopts the surviving QEMU
+// directly from /sys/fs/cgroup/katamaran-adopted (see
+// cmd/containerd-shim-katamaran-adopted-v2). This factory stays on the
+// sidelines holding migration-meta.json + VMConfig payloads for when
+// the Kata-side blockers clear.
 package main
 
 import (

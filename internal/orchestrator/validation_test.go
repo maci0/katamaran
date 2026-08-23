@@ -303,10 +303,9 @@ func TestValidateRejectsInvalidSourceCleanup(t *testing.T) {
 }
 
 // TestValidateRejectsUppercaseEnums pins the case-sensitive enum contract:
-// downstream consumers (migration.setupSource, the katamaran CLI,
-// logging.SetupLogger) only accept canonical lowercase values, so Validate
-// must reject case variants up front rather than letting them fail later in
-// the migration Job.
+// Validate only accepts canonical lowercase values, keeping submitted
+// requests canonical even though the katamaran CLI normalizes enum flag
+// case at runtime.
 func TestValidateRejectsUppercaseEnums(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

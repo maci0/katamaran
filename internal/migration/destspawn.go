@@ -611,9 +611,11 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// spawnDetachedProcess launches name+args as a detached child process. Stdout
-// and stderr are silenced (matching e2e.sh's `>/dev/null 2>&1`). The child
-// is not waited on; QEMU and virtiofsd run for the lifetime of the dest pod.
+// spawnDetachedProcess launches name+args as a detached child process.
+// Stdout and stderr are captured line-by-line into slog (INFO for stdout,
+// WARN for stderr) so QEMU/virtiofsd diagnostics land in the dest job log.
+// The child is not waited on synchronously; a goroutine logs its exit while
+// QEMU and virtiofsd run for the lifetime of the dest pod.
 //
 // We deliberately do not use exec.CommandContext because the context's
 // cancellation should not kill QEMU mid-migration — QEMU exits on its own

@@ -127,9 +127,12 @@ type Request struct {
 	// deletes (prevents owner controllers from rescheduling).
 	SourceCleanup string
 
-	// AdoptVM, when true, instructs the controller to create a Kata pod
-	// on the destination node after successful migration. The pod
-	// connects via the katamaran VM factory to adopt the migrated QEMU.
+	// AdoptVM, when true, instructs the controller to create an adoption
+	// pod on the destination node after successful migration. The pod uses
+	// runtimeClassName katamaran-adopted so containerd dispatches to the
+	// katamaran-adopted shim, which adopts the surviving migrated QEMU
+	// from /sys/fs/cgroup/katamaran-adopted instead of cold-booting a
+	// fresh VM.
 	AdoptVM bool
 
 	// TapIface is the destination tap interface to buffer with tc sch_plug.

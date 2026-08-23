@@ -369,8 +369,8 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 
 	// Best-effort: re-parent the migrated QEMU out of the dest job
 	// container's cgroup so the VM survives this container's exit.
-	// See surviveContainerExit for the rationale + the next-step
-	// adoption-shim plan it sets up.
+	// See surviveContainerExit for the rationale and for how the
+	// katamaran-adopted shim consumes the surviving cgroup.
 	surviveContainerExit(cfg.QMPSocket)
 
 	return nil
@@ -380,9 +380,9 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 // the current container's cgroup so it isn't SIGKILL'd when the dest
 // job's container exits (cgroup destruction kills every process
 // remaining in it). Step 1 of Approach E (process re-parenting). The
-// surviving QEMU still has no Kubernetes-side adoption — the
-// adoption-shim that picks it up via katamaran-factory and exposes it
-// as a containerd container is a separate follow-up. Without this
+// surviving QEMU is picked up from this cgroup by the katamaran-adopted
+// containerd shim (cmd/containerd-shim-katamaran-adopted-v2), which
+// exposes it as a containerd container for adoption pods. Without this
 // step the migrated VM dies the moment the dest job container exits
 // (~5 min after migration completes via the Job's TTL), so adoption
 // can't even happen retrospectively.
