@@ -599,8 +599,17 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 	return downtimeMS, ramXfer, ramTotal, ok
 }
 
+// parseInt64 decodes an integer field from a scraped KATAMARAN_* marker.
+// Missing fields already yield 0 via the map lookup; parse failures and
+// out-of-range values must yield 0 too. strconv.ParseInt clamps out-of-range
+// input to MaxInt64/MinInt64 alongside its error; letting that clamp through
+// would persist bogus byte/downtime counts into Migration CR status and
+// overflow downstream math like (ramTransferred * 100).
 func parseInt64(s string) int64 {
-	v, _ := strconv.ParseInt(s, 10, 64)
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
 	return v
 }
 

@@ -713,6 +713,37 @@ func TestParseProgressFields(t *testing.T) {
 	}
 }
 
+// TestParseInt64_RejectsMalformedAndOutOfRange pins that marker integer
+// fields decode to 0 unless they are exact int64 values. strconv.ParseInt
+// clamps out-of-range input to MaxInt64/MinInt64 alongside its error; that
+// clamp must never reach consumers (persisted CR status, progress math),
+// where e.g. ram_transferred=99999999999999999999 previously surfaced as
+// math.MaxInt64 bytes.
+func TestParseInt64_RejectsMalformedAndOutOfRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"", 0},
+		{"0", 0},
+		{"42", 42},
+		{"-7", -7},
+		{"abc", 0},
+		{"12abc", 0},
+		{" 12", 0},
+		{"9223372036854775807", 9223372036854775807},
+		{"9223372036854775808", 0},  // MaxInt64+1: ParseInt would clamp to MaxInt64
+		{"-9223372036854775809", 0}, // MinInt64-1: ParseInt would clamp to MinInt64
+		{"99999999999999999999", 0},
+	}
+	for _, tc := range cases {
+		if got := parseInt64(tc.in); got != tc.want {
+			t.Errorf("parseInt64(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestNativeRunSend_AfterClose: poll's defer can close run.updates
 // before tailProgress tries to send. The run.send helper must absorb
 // that race without panicking.
