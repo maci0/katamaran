@@ -1583,6 +1583,64 @@ func TestHandleMigrateStop_WithRunningMigration(t *testing.T) {
 	waitMigrationDone(t, app, 5*time.Second)
 }
 
+// waitForOrchMigrationID polls until the running migration's orchestrator
+// handle has been recorded, closing the startup race between handleMigrate's
+// 202 and runOrchestrator's post-Apply bookkeeping.
+func waitForOrchMigrationID(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		app.migrationMutex.Lock()
+		set := app.orchMigrationID != ""
+		app.migrationMutex.Unlock()
+		if set {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("orchestrator migration ID was never recorded")
+}
+
+// TestHandleMigrateStop_CallsOrchestratorStop pins the contract that the
+// stop endpoint reaches Orchestrator.Stop with the Apply-returned ID. The
+// native orchestrator's poll/tail goroutines ignore the dashboard-side
+// context, so without that call a stop request would silently leave the
+// Kubernetes migration Jobs running to their natural end.
+func TestHandleMigrateStop_CallsOrchestratorStop(t *testing.T) {
+	t.Parallel()
+	orch := slowOrchestrator(t)
+	app := &App{orch: orch}
+	// Start a migration so there's something to stop.
+	form := validMigrateForm()
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start migration: expected 202, got %v", w.Code)
+	}
+	waitForOrchMigrationID(t, app)
+
+	// Now stop it.
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/migrate/stop", nil)
+	stopW := httptest.NewRecorder()
+	app.handleMigrateStop(stopW, stopReq)
+	if stopW.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %v", stopW.Code)
+	}
+	if got := orch.StopCalls(); got != 1 {
+		t.Fatalf("Orchestrator.Stop calls = %d, want 1", got)
+	}
+	waitMigrationDone(t, app, 5*time.Second)
+
+	// A second stop after completion targets nothing: no further Stop call.
+	stopW2 := httptest.NewRecorder()
+	app.handleMigrateStop(stopW2, stopReq)
+	if got := orch.StopCalls(); got != 1 {
+		t.Fatalf("Orchestrator.Stop calls after completion = %d, want still 1", got)
+	}
+}
+
 func TestGenerateID(t *testing.T) {
 	t.Parallel()
 	id := generateID()

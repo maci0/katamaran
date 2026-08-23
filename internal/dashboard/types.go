@@ -82,6 +82,13 @@ type App struct {
 	migrationID      string
 	migrationStart   time.Time // when the current migration began
 	migrationCancel  context.CancelFunc
+	// orchMigrationID is the ID Orchestrator.Apply returned for the
+	// in-flight migration. handleMigrateStop passes it to
+	// Orchestrator.Stop, which is what actually deletes the underlying
+	// Kubernetes Jobs: the native orchestrator's poll/tail goroutines run
+	// on their own Background-derived context, so migrationCancel above
+	// only reaches dashboard-local state. Empty when no migration runs.
+	orchMigrationID orchestrator.MigrationID
 
 	lastMigrationResult string // "success", "error", or "" (no migration run yet)
 	lastMigrationError  string // error message from the last failed migration

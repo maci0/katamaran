@@ -17,6 +17,7 @@ import (
 type fakeOrchestrator struct {
 	mu          sync.Mutex
 	lastRequest orchestrator.Request
+	stopCalls   int
 
 	// behaviour controls the StatusUpdate stream sent on Watch.
 	//   "success" — emit submitted + transferring + succeeded, then close.
@@ -59,6 +60,14 @@ func (f *fakeOrchestrator) LastRequest() orchestrator.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastRequest
+}
+
+// StopCalls returns how many times Stop has been invoked. Tests use this to
+// verify the dashboard's stop endpoint actually reaches the orchestrator.
+func (f *fakeOrchestrator) StopCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
 }
 
 func (f *fakeOrchestrator) Apply(ctx context.Context, req orchestrator.Request) (orchestrator.MigrationID, error) {
@@ -110,6 +119,7 @@ func (f *fakeOrchestrator) Watch(_ context.Context, id orchestrator.MigrationID)
 func (f *fakeOrchestrator) Stop(_ context.Context, id orchestrator.MigrationID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.stopCalls++
 	run, ok := f.runs[id]
 	if !ok {
 		return orchestrator.ErrUnknownID

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -249,6 +250,7 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		a.migrationMutex.Lock()
 		a.isMigrating = false
 		a.migrationCancel = nil
+		a.orchMigrationID = ""
 		outcome := a.lastMigrationResult
 		a.migrationMutex.Unlock()
 		dashboardMigrationsActive.Add(-1)
@@ -274,6 +276,9 @@ func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrato
 		return
 	}
 	a.appendLog(">>> Migration submitted, id=" + string(id))
+	a.migrationMutex.Lock()
+	a.orchMigrationID = id
+	a.migrationMutex.Unlock()
 	updates, err := orch.Watch(ctx, id)
 	if err != nil {
 		dashboardMigrationWatchErrorsTotal.Add(1)
@@ -415,17 +420,41 @@ func humanBytes(n int64) string {
 	}
 }
 
+// migrateStopTimeout bounds the Orchestrator.Stop call in handleMigrateStop.
+// Two Job deletes against the apiserver normally finish in well under a
+// second; the cap keeps a degraded apiserver from stalling the handler past
+// the server's 30s write timeout.
+const migrateStopTimeout = 10 * time.Second
+
 // handleMigrateStop processes a request to cancel an ongoing migration.
+//
+// Cancelling the run's local context alone cannot reach the native
+// orchestrator: its poll/tail goroutines derive from their own
+// Background-based context, so without Orchestrator.Stop the Kubernetes
+// Jobs keep running to their natural end while the UI claims the migration
+// was stopped. Stop is best-effort here (same call the Migration CRD
+// controller's deletion path makes); failures are logged and the watch
+// stream still reports the eventual terminal phase.
 func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	a.migrationMutex.Lock()
 	wasRunning := a.migrationCancel != nil
 	migrationID := a.migrationID
+	orch := a.orch
+	orchID := a.orchMigrationID
 	if wasRunning {
 		a.migrationCancel()
 	}
 	a.migrationMutex.Unlock()
 	if wasRunning {
 		slog.Info("Migration stop requested", "migration_id", migrationID, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
+	}
+	if orch != nil && orchID != "" {
+		stopCtx, cancel := context.WithTimeout(context.Background(), migrateStopTimeout)
+		defer cancel()
+		if err := orch.Stop(stopCtx, orchID); err != nil && !errors.Is(err, orchestrator.ErrUnknownID) {
+			slog.Warn("Orchestrator stop failed; migration Jobs may continue until terminal state",
+				"orchestrator_id", string(orchID), "error", err, "request_id", requestIDFromContext(r.Context()))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
