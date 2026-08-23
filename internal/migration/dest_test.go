@@ -2,15 +2,132 @@ package migration
 
 import (
 	"context"
+	"encoding/base64"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
 	"github.com/maci0/katamaran/internal/qmptest"
 )
+
+// startFakeQMPAt starts a scripted QMP server listening on the exact
+// unix socket path, mimicking qmptest.StartScriptedQMP for paths chosen
+// by the code under test (the replayed QEMU monitor under sandboxRoot).
+// Every command gets {"return":{}}; migrate-incoming additionally emits
+// a RESUME event so RunDestination's event wait completes.
+func startFakeQMPAt(t *testing.T, path string) error {
+	t.Helper()
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return err
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		qmptest.QMPHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, readErr := conn.Read(buf)
+			if readErr != nil {
+				return
+			}
+			line := string(buf[:n])
+			resps := []string{`{"return":{}}`}
+			if strings.Contains(line, `"migrate-incoming"`) {
+				resps = []string{`{"return":{}}`, `{"event":"RESUME"}`}
+			}
+			for _, resp := range resps {
+				if _, writeErr := conn.Write([]byte(resp + "\n")); writeErr != nil {
+					return
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+// TestRunDestination_ReplayFromPod_RemovesTempCmdlineFile pins the
+// cleanup of the temporary cmdline file the dest binary materializes
+// from the source pod log: it lives on a node-wide hostPath that outlives
+// the pod, so leaving it behind would accumulate one stale file per
+// migration on every node. The file must be gone once RunDestination is
+// done with it.
+func TestRunDestination_ReplayFromPod_RemovesTempCmdlineFile(t *testing.T) {
+	// Not t.Parallel(): mutates package-level vars.
+	//
+	// Short temp root: the replayed QEMU monitor socket path must fit the
+	// 108-byte unix-socket limit, which t.TempDir()'s long names exceed.
+	tmp, err := os.MkdirTemp("", "kvmdst")
+	if err != nil {
+		t.Fatalf("mkdir temp root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+
+	prevSandboxRoot, prevSharedRoot, prevCmdlineDir := sandboxRoot, kataSharedSandboxRoot, CmdlineHostDir
+	sandboxRoot = filepath.Join(tmp, "vm")
+	kataSharedSandboxRoot = filepath.Join(tmp, "sandboxes")
+	CmdlineHostDir = filepath.Join(tmp, "cmdlines")
+	if err := os.MkdirAll(CmdlineHostDir, 0o700); err != nil {
+		t.Fatalf("mkdir cmdline dir: %v", err)
+	}
+	t.Cleanup(func() {
+		sandboxRoot = prevSandboxRoot
+		kataSharedSandboxRoot = prevSharedRoot
+		CmdlineHostDir = prevCmdlineDir
+	})
+
+	prevSpawn, prevWait, prevTap := spawnDetachedProcess, waitForSocket, setupTapIface
+	spawnDetachedProcess = func(_ context.Context, _ string, _ []string) error { return nil }
+	setupTapIface = func(ctx context.Context, name string) error { return nil }
+	waitForSocket = func(ctx context.Context, path string, total time.Duration) error {
+		if !strings.HasSuffix(path, extraMonitorSocketName) {
+			return nil // virtiofsd socket: no listener needed
+		}
+		return startFakeQMPAt(t, path)
+	}
+	t.Cleanup(func() {
+		spawnDetachedProcess = prevSpawn
+		waitForSocket = prevWait
+		setupTapIface = prevTap
+	})
+
+	cmdlineBody := "qemu-system-x86_64\n-machine q35\n"
+	marker := cmdlineMarker + base64.StdEncoding.EncodeToString([]byte(cmdlineBody))
+	setupAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, marker+"\n")
+	})
+
+	err = RunDestination(context.Background(), DestConfig{
+		ReplayCmdlineFromPod: "default/test-src-pod",
+		SharedStorage:        true,
+	})
+	if err != nil {
+		t.Fatalf("RunDestination replay-from-pod happy path: %v", err)
+	}
+
+	entries, err := os.ReadDir(CmdlineHostDir)
+	if err != nil {
+		t.Fatalf("read cmdline dir after run: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("temporary cmdline files left behind in %s: %v", CmdlineHostDir, names)
+	}
+}
 
 func TestRunDestination_Failures(t *testing.T) {
 	t.Parallel()

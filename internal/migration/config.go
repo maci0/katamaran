@@ -31,12 +31,6 @@ const (
 	// must stay identical to it.
 	DestDefaultQMPSocket = "/run/vc/vm/katamaran-dest/qmp.sock"
 
-	// CmdlineHostDir is the hostPath mount the source job uses to capture
-	// /proc/<qemu>/cmdline before emitting it to its pod log as a
-	// KATAMARAN_CMDLINE_B64 marker. The dest binary materializes fetched
-	// cmdlines under the same directory.
-	CmdlineHostDir = "/tmp/katamaran-cmdlines"
-
 	// extraMonitorSocketName is the per-sandbox filename Kata binds the
 	// QEMU monitor socket to under /run/vc/vm/<sandbox>/.
 	extraMonitorSocketName = "extra-monitor.sock"
@@ -119,6 +113,13 @@ const (
 	// when measuring round-trip time to the destination.
 	rttDialTimeout = 5 * time.Second
 )
+
+// CmdlineHostDir is the hostPath mount the source job uses to capture
+// /proc/<qemu>/cmdline before emitting it to its pod log as a
+// KATAMARAN_CMDLINE_B64 marker. The dest binary materializes fetched
+// cmdlines under the same directory. Var (not const) so tests can point
+// it at a temp dir instead of the shared hostPath.
+var CmdlineHostDir = "/tmp/katamaran-cmdlines"
 
 // SourceConfig holds all parameters for RunSource.
 type SourceConfig struct {

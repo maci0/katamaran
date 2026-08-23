@@ -24,6 +24,14 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+// maxQueuedVMs caps the pending-VM queue length. With vm_cache disabled
+// (the current daemonset default) nothing calls GetBaseVM, so an unbounded
+// queue would accumulate one entry per successful migration for the life
+// of this long-lived node daemon. Dropping the oldest offer is safe: a
+// fresh migration-meta.json is far more likely to correspond to a still-
+// running surviving QEMU than an old one.
+const maxQueuedVMs = 8
+
 // MigrationState is the metadata written by the destination katamaran
 // process after a successful incoming live migration (migration-meta.json
 // next to the QMP socket). It is the reader-side name for
@@ -55,10 +63,18 @@ func NewServer() *Server {
 
 // OfferVM enqueues a migrated VM so the next GetBaseVM caller can
 // adopt it. Called by the directory watcher when a new
-// migration-meta.json appears.
+// migration-meta.json appears. The queue is capped at maxQueuedVMs;
+// when full, the oldest offer is dropped (same pattern as the QMP
+// client's bounded event buffer).
 func (s *Server) OfferVM(state MigrationState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.queue) >= maxQueuedVMs {
+		slog.Warn("Factory VM queue full, dropping oldest offer",
+			"dropped_id", s.queue[0].ID, "incoming_id", state.ID, "queued", len(s.queue))
+		s.queue[0] = MigrationState{}
+		s.queue = s.queue[1:]
+	}
 	s.queue = append(s.queue, state)
 	slog.Info("VM offered to factory", "id", state.ID, "qemu_pid", state.QEMUPid, "queue_depth", len(s.queue))
 }

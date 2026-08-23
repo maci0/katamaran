@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -72,6 +73,46 @@ func TestServerConfigCopiesConfigBytes(t *testing.T) {
 	}
 	if !bytes.Equal(got.AgentConfig, wantAgentConfig) {
 		t.Fatalf("Config.AgentConfig after response mutation = %s, want %s", got.AgentConfig, wantAgentConfig)
+	}
+}
+
+// TestServerOfferVMBoundsQueue locks the contract that the pending-VM
+// queue never grows past maxQueuedVMs: the factory is a long-lived node
+// daemon and (with vm_cache disabled) nothing drains the queue, so an
+// unbounded OfferVM append would accumulate one entry per migration for
+// the process lifetime. Oldest offers are dropped, newest retained.
+func TestServerOfferVMBoundsQueue(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer()
+	for i := 0; i < maxQueuedVMs+3; i++ {
+		srv.OfferVM(MigrationState{ID: fmt.Sprintf("mig-%03d", i), QEMUPid: 100 + i})
+	}
+
+	st, err := srv.Status(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(st.Vmstatus) != maxQueuedVMs {
+		t.Fatalf("queue depth = %d, want %d", len(st.Vmstatus), maxQueuedVMs)
+	}
+	for i, vm := range st.Vmstatus {
+		wantID := fmt.Sprintf("mig-%03d", i+3) // first three dropped
+		if got := srv.queue[i].ID; got != wantID {
+			t.Fatalf("queue[%d].ID = %q, want %q", i, got, wantID)
+		}
+		if vm.Pid != int64(103+i) {
+			t.Fatalf("Vmstatus[%d].Pid = %d, want %d", i, vm.Pid, 103+i)
+		}
+	}
+
+	// The oldest surviving offer is served first (FIFO preserved).
+	got, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetBaseVM: %v", err)
+	}
+	if got.Id != "mig-003" {
+		t.Fatalf("GetBaseVM Id = %q, want %q", got.Id, "mig-003")
 	}
 }
 

@@ -85,6 +85,16 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 			return fmt.Errorf("replay-cmdline-from-pod: %w", err)
 		}
 		cfg.ReplayCmdlineFile = path
+		// The file is our own temp artifact (spawnReplayedQEMU reads it
+		// exactly once to build QEMU's argv) living on a node-wide
+		// hostPath that outlives this pod; remove it when we're done so
+		// repeated migrations don't accumulate stale cmdlines there.
+		// User-staged --replay-cmdline files are never touched.
+		defer func() {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Warn("Failed to remove temporary cmdline file", "path", path, "error", rmErr)
+			}
+		}()
 	}
 	if cfg.ReplayCmdlineFile != "" {
 		if err := spawnReplayedQEMU(ctx, &cfg); err != nil {
