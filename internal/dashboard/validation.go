@@ -32,14 +32,6 @@ func splitTarget(target string) (host, port string, hasPort bool, ok bool) {
 	return target, "", false, true
 }
 
-func targetHost(target string) string {
-	host, _, _, ok := splitTarget(target)
-	if !ok {
-		return ""
-	}
-	return host
-}
-
 func validTargetPort(port string) bool {
 	if port == "" {
 		return false

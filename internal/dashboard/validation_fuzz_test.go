@@ -11,7 +11,7 @@ import (
 // FuzzSplitTarget exercises the host:port splitter on arbitrary user-supplied
 // target strings. It must never panic and, on success, must report a host that
 // is a substring of the original target (the SSRF checks downstream rely on
-// targetHost returning something derived from the raw input).
+// splitTarget returning something derived from the raw input).
 func FuzzSplitTarget(f *testing.F) {
 	seeds := []string{
 		"", "host", "host:80", "10.0.0.1:65535", "[::1]", "[fe80::1]:443",
@@ -32,10 +32,6 @@ func FuzzSplitTarget(f *testing.F) {
 		}
 		if hasPort && port != "" && !strings.Contains(target, port) {
 			t.Fatalf("split port %q not contained in target %q", port, target)
-		}
-		// targetHost must agree with splitTarget on the same input.
-		if got := targetHost(target); got != host {
-			t.Fatalf("targetHost(%q)=%q disagrees with splitTarget host %q", target, got, host)
 		}
 	})
 }
