@@ -376,7 +376,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	r.setTrackCancel(key, cancel)
 	defer cancel()
 
-	req, err := specToRequest(obj.Object)
+	req, err := specToRequest(obj.Object, key.Namespace)
 	if err != nil {
 		slog.Warn("Migration spec invalid", "migration", key, "error", err)
 		r.patchFailedStatus(ctx, key, "", "invalid spec", err.Error())
@@ -560,7 +560,16 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 		// Wait for the factory to load VMConfig from the migration
 		// state or a sandbox persist.json before creating the pod.
 		slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", adoptionVMConfigDelay.String())
-		time.Sleep(adoptionVMConfigDelay)
+		timer := time.NewTimer(adoptionVMConfigDelay)
+		select {
+		case <-adoptCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			slog.Info("Adoption wait cancelled", "migration", key, "migration_id", id, "error", adoptCtx.Err())
+			return
+		case <-timer.C:
+		}
 		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode, srcLabels, srcOwnerRefs); err != nil {
 			// The source pod may already be deleted at this point, so a
 			// failed adoption-pod create leaves the migrated VM with no
@@ -664,7 +673,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				// (sourceCleanup, adoptVM) exactly like the dispatch
 				// path — a controller restart mid-migration must not
 				// silently drop them.
-				req, sErr := specToRequest(obj.Object)
+				req, sErr := specToRequest(obj.Object, key.Namespace)
 				if sErr != nil {
 					slog.Warn("recover: specToRequest failed; skipping post-success cleanup/adoption", "migration", key, "migration_id", id, "error", sErr)
 					return
@@ -699,7 +708,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		// into the running source Job's argv, so the Discoverer round-trip
 		// the dispatch path uses would be dead work here.
 		if dest == nil && src != nil && orchestrator.TerminalJobCondition(src) == "" {
-			req, sErr := specToRequest(obj.Object)
+			req, sErr := specToRequest(obj.Object, key.Namespace)
 			if sErr != nil {
 				slog.Warn("recover: specToRequest failed; cannot resume", "migration", key, "error", sErr)
 				continue
@@ -746,10 +755,12 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migration_id", id)
 	if id != "" {
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id)); err != nil {
-			slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migration_id", id, "error", err)
-		}
-		cancel()
+		func() {
+			defer cancel()
+			if err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id)); err != nil {
+				slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migration_id", id, "error", err)
+			}
+		}()
 	}
 	r.mu.Lock()
 	if t, ok := r.tracking[key]; ok && t.cancel != nil {
@@ -804,16 +815,29 @@ func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unst
 }
 
 // specToRequest extracts the .spec fields into an orchestrator.Request.
-func specToRequest(obj map[string]any) (orchestrator.Request, error) {
+//
+// crNamespace is the Migration CR's own namespace. Pod references are pinned
+// to it because this controller's ServiceAccount acts on pods cluster-wide:
+// without the check, a principal allowed to create Migrations in namespace X
+// could reference a pod in any other namespace and have the controller migrate
+// it away or delete it (spec.sourceCleanup=delete/orphan) — escalating
+// migration rights into arbitrary-pod disruption across the cluster.
+func specToRequest(obj map[string]any, crNamespace string) (orchestrator.Request, error) {
 	var req orchestrator.Request
 	srcNS, _, _ := unstructured.NestedString(obj, "spec", "sourcePod", "namespace")
 	srcName, _, _ := unstructured.NestedString(obj, "spec", "sourcePod", "name")
 	if srcNS == "" || srcName == "" {
 		return req, fmt.Errorf("spec.sourcePod.{namespace,name} are required")
 	}
+	if srcNS != crNamespace {
+		return req, fmt.Errorf("spec.sourcePod.namespace %q must match the Migration's own namespace %q", srcNS, crNamespace)
+	}
 	req.SourcePod = &orchestrator.PodRef{Namespace: srcNS, Name: srcName}
 
 	if dstNS, found, _ := unstructured.NestedString(obj, "spec", "destPod", "namespace"); found && dstNS != "" {
+		if dstNS != crNamespace {
+			return req, fmt.Errorf("spec.destPod.namespace %q must match the Migration's own namespace %q", dstNS, crNamespace)
+		}
 		dstName, _, _ := unstructured.NestedString(obj, "spec", "destPod", "name")
 		req.DestPod = &orchestrator.PodRef{Namespace: dstNS, Name: dstName}
 	}

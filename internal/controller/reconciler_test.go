@@ -35,7 +35,7 @@ func TestSpecToRequest_Minimal(t *testing.T) {
 			"image":    "localhost/katamaran:dev",
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatalf("specToRequest: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSpecToRequest_AllFields(t *testing.T) {
 			"multifdChannels": int64(4),
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatalf("specToRequest: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSpecToRequest_MissingRequired(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := specToRequest(tc.obj)
+			_, err := specToRequest(tc.obj, "default")
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -129,7 +129,7 @@ func TestSpecToRequest_OptionalDestNode(t *testing.T) {
 			"image":     "localhost/katamaran:dev",
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatalf("specToRequest: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestSpecToRequest_DestNodeSelector(t *testing.T) {
 			"destNodeSelector": map[string]any{"gpu": "true", "zone": "us-east-1a"},
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatalf("specToRequest: %v", err)
 	}
@@ -886,7 +886,7 @@ func TestSpecToRequest_AdoptVM(t *testing.T) {
 			"adoptVM":   true,
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,7 +902,7 @@ func TestSpecToRequest_AdoptVM_DefaultFalse(t *testing.T) {
 			"image":     "test:latest",
 		},
 	}
-	req, err := specToRequest(obj)
+	req, err := specToRequest(obj, "default")
 	if err != nil {
 		t.Fatal(err)
 	}

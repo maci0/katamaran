@@ -231,7 +231,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 	reqID := requestIDFromContext(r.Context())
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", reqID, "remote_addr", r.RemoteAddr, "source_node", req.SourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", req.DestIP, "vm_ip", req.VMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
-	go a.runOrchestrator(ctx, a.orch, req, migrationID, reqID)
+	go a.runOrchestrator(ctx, cancel, a.orch, req, migrationID, reqID)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
@@ -240,12 +240,17 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 // dashboard log buffer, and finalises migration counters when the watch
 // channel closes, so /api/status behaves identically regardless of which
 // orchestrator backs the migration.
-func (a *App) runOrchestrator(ctx context.Context, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID, requestID string) {
+func (a *App) runOrchestrator(ctx context.Context, cancel context.CancelFunc, orch orchestrator.Orchestrator, req orchestrator.Request, migrationID, requestID string) {
 	logger := slog.Default().With("migration_id", migrationID)
 	if requestID != "" {
 		logger = logger.With("request_id", requestID)
 	}
 	start := time.Now()
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	defer func() {
 		a.migrationMutex.Lock()
 		a.isMigrating = false

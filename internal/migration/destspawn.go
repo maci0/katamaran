@@ -663,10 +663,14 @@ var waitForSocket = func(ctx context.Context, path string, total time.Duration) 
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timed out after %s", total)
 		}
+		timer := time.NewTimer(destReplaySocketPollInterval)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return ctx.Err()
-		case <-time.After(destReplaySocketPollInterval):
+		case <-timer.C:
 		}
 	}
 }

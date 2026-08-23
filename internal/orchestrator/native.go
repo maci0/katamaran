@@ -922,6 +922,7 @@ func (n *native) Stop(ctx context.Context, id MigrationID) error {
 //	source=Failed && dest pending → wait up to sourceFailGrace (90s) for dest
 //	source=Failed && dest still pending after grace → PhaseFailed
 func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
+	defer run.cancel()
 	defer func() {
 		// Signal finished BEFORE closing updates so concurrent senders
 		// (tailProgress, stageThenStartDest) can break out via the

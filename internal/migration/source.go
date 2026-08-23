@@ -210,9 +210,13 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	if cfg.EmitCmdlineTo != "" {
 		slog.Info("Waiting (sleep) for dest QEMU to come up",
 			"sleep", destReplaySleep)
+		timer := time.NewTimer(destReplaySleep)
 		select {
-		case <-time.After(destReplaySleep):
+		case <-timer.C:
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return ctx.Err()
 		}
 	}

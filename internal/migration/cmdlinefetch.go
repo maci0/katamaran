@@ -170,10 +170,14 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 		// Retry every 2s. Either the pod isn't up yet (404), the
 		// cmdline marker hasn't been emitted (apiserver returns the
 		// log so far), or a transient apiserver error.
+		timer := time.NewTimer(2 * time.Second)
 		select {
 		case <-deadline.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return "", timeoutErr(lastFetchErr)
-		case <-time.After(2 * time.Second):
+		case <-timer.C:
 		}
 	}
 }

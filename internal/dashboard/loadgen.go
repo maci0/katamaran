@@ -78,6 +78,9 @@ func (a *App) tryStartLoadgen(w http.ResponseWriter, r *http.Request, loadgenTyp
 // resetLoadgen clears the load generator state after its goroutine exits.
 func (a *App) resetLoadgen() {
 	a.loadgenMutex.Lock()
+	if a.loadgenCancel != nil {
+		a.loadgenCancel()
+	}
 	a.loadgenRunning = false
 	a.loadgenType = ""
 	a.loadgenCancel = nil
