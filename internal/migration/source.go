@@ -126,6 +126,16 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if err := captureSourceCmdline(resolvedQEMUPID, cfg.EmitCmdlineTo); err != nil {
 			return fmt.Errorf("capture source QEMU cmdline: %w", err)
 		}
+		// The captured file is a replay-staging artifact. Its consumers (the
+		// KATAMARAN_CMDLINE_B64 marker emitted below and deploy/migrate.sh's
+		// kubectl cp, which copies it while this process is still running)
+		// all read it mid-run. Remove it at exit so repeated migrations don't
+		// accumulate stale cmdline files on the node-wide cmdline hostPath.
+		defer func() {
+			if rmErr := os.Remove(cfg.EmitCmdlineTo); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Warn("Failed to remove captured cmdline file", "path", cfg.EmitCmdlineTo, "error", rmErr)
+			}
+		}()
 		// Marker line consumed by deploy/migrate.sh — print on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
 		fmt.Printf("KATAMARAN_CMDLINE_AT=%s\n", cfg.EmitCmdlineTo)

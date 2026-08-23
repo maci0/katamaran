@@ -150,7 +150,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	podNS := fs.String("pod-namespace", "", "Source pod namespace (required with --pod-name)")
 	destPodName := fs.String("dest-pod-name", "", "Destination pod name (alternative to --qmp)")
 	destPodNS := fs.String("dest-pod-namespace", "", "Destination pod namespace (required with --dest-pod-name)")
-	emitCmdlineTo := fs.String("emit-cmdline-to", "", "Source mode: capture /proc/<qemu_pid>/cmdline to this path before migration")
+	emitCmdlineTo := fs.String("emit-cmdline-to", "", "Source mode: capture /proc/<qemu_pid>/cmdline to this path before migration (the file is removed when the source run ends)")
 	replayCmdline := fs.String("replay-cmdline", "", "Dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
 	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "Dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
 	showVersion := fs.Bool("version", false, "Show version and exit")

@@ -102,7 +102,9 @@ spec:
         # deploy/migrate.sh kubectl-cps the captured file from this dir
         # to the dest node's matching mount. Always mounted so the job
         # manifest is identical between modes; harmless when the flag is
-        # not set (the file is simply never written).
+        # not set (the file is simply never written). The source binary
+        # removes its captured file at run end so migrations don't
+        # accumulate stale cmdlines in this node-wide directory.
         hostPath:
           path: /tmp/katamaran-cmdlines
           type: DirectoryOrCreate

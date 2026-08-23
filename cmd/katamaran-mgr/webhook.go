@@ -147,6 +147,12 @@ func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *c
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		// Bound the whole request lifecycle and idle keep-alives. Without
+		// these a stalled apiserver connection holds its goroutine and fd
+		// indefinitely on this long-lived server (same budget as serveDebug).
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,

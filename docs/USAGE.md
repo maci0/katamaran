@@ -44,7 +44,7 @@ katamaran --mode <source|dest> [flags]
 | `--vm-ip` | when not in pod mode | `""` | VM pod IP used for route/tunnel cutover |
 | `--pod-name` | alt to --vm-ip+--qmp | `""` | Source pod name; resolver finds sandbox + VM IP at runtime |
 | `--pod-namespace` | with --pod-name | `""` | Source pod namespace |
-| `--emit-cmdline-to` | no | `""` | Capture source QEMU `/proc/<pid>/cmdline` to this path before migration; used by replay-cmdline orchestration |
+| `--emit-cmdline-to` | no | `""` | Capture source QEMU `/proc/<pid>/cmdline` to this path before migration; used by replay-cmdline orchestration. The file is removed when the source run ends so the shared hostPath dir does not accumulate one file per migration |
 | `--tunnel-mode` | no | `ipip` | `ipip`, `gre`, or `none` |
 | `--downtime` | no | `25` | Maximum allowed downtime during VM pause, 1-60000 (ms) |
 | `--auto-downtime` | no | `false` | Auto-calculate downtime based on RTT (overrides `--downtime`) |

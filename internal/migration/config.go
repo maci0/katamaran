@@ -155,7 +155,11 @@ type SourceConfig struct {
 	// success the source prints two stdout markers: KATAMARAN_CMDLINE_AT=
 	// (path on the source node, used by deploy/migrate.sh) and
 	// KATAMARAN_CMDLINE_B64= (base64 payload, scraped from the pod log by
-	// the Native orchestrator).
+	// the Native orchestrator). The file is a replay-staging artifact whose
+	// consumers all read it mid-run (deploy/migrate.sh kubectl-cps it while
+	// the source job is still running), so RunSource removes it at exit
+	// rather than leaving one file per migration to accumulate on the
+	// node-wide cmdline hostPath.
 	EmitCmdlineTo string
 }
 

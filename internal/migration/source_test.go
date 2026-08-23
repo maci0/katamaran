@@ -975,6 +975,68 @@ func TestRunSource_PodResolver_PopulatesConfig(t *testing.T) {
 	}
 }
 
+// TestRunSource_EmitCmdline_RemovesFileAtExit pins the lifecycle of the
+// captured cmdline file: it exists while the source runs (consumed by the
+// KATAMARAN_CMDLINE_B64 marker emission and deploy/migrate.sh's mid-run
+// kubectl cp) but must be removed when RunSource exits, so repeated
+// migrations don't accumulate stale cmdline files on the node-wide
+// /tmp/katamaran-cmdlines hostPath.
+func TestRunSource_EmitCmdline_RemovesFileAtExit(t *testing.T) {
+	const (
+		sandboxUUID = "11111111-2222-3333-4444-555555555555"
+		resolvedIP  = "10.244.1.15" // same family as testDestIP so validation passes
+	)
+
+	origLookup := lookupPodIP
+	lookupPodIP = func(_ context.Context, _, _ string) (string, error) {
+		return resolvedIP, nil
+	}
+	t.Cleanup(func() { lookupPodIP = origLookup })
+
+	// PIDForSandbox returns this process's PID so captureSourceCmdline can
+	// read a real /proc/<pid>/cmdline without special privileges.
+	origProc := procImpl
+	procImpl = fakeProcFS{
+		pids:       map[string]int{sandboxUUID: os.Getpid()},
+		netnsByPID: map[int][]string{os.Getpid(): {resolvedIP}},
+	}
+	t.Cleanup(func() { procImpl = origProc })
+
+	tmpRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpRoot, sandboxUUID), 0o755); err != nil {
+		t.Fatalf("setup tmp sandbox dir: %v", err)
+	}
+	origRoot := sandboxRoot
+	sandboxRoot = tmpRoot
+	t.Cleanup(func() { sandboxRoot = origRoot })
+
+	cmdlinePath := filepath.Join(t.TempDir(), "cmdline-test.txt")
+	// Replay mode sleeps for destReplaySleep before dialing QMP; collapse it
+	// so this lifecycle pin doesn't cost a minute of wall clock.
+	origSleep := destReplaySleep
+	destReplaySleep = 10 * time.Millisecond
+	t.Cleanup(func() { destReplaySleep = origSleep })
+	// The run fails at the first QMP dial (nonexistent socket) — after the
+	// capture, which is the point: removal must happen on failure paths too.
+	err := RunSource(context.Background(), SourceConfig{
+		PodName:         "vm-a",
+		PodNamespace:    "default",
+		DestIP:          testDestIP,
+		QMPSocket:       "/nonexistent/qmp.sock",
+		DriveIDs:        []string{"drive-virtio-disk0"},
+		SharedStorage:   true,
+		TunnelMode:      TunnelModeNone,
+		DowntimeLimitMS: 25,
+		EmitCmdlineTo:   cmdlinePath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "QMP") {
+		t.Fatalf("expected QMP dial error after capture, got: %v", err)
+	}
+	if _, statErr := os.Stat(cmdlinePath); !os.IsNotExist(statErr) {
+		t.Fatalf("captured cmdline file %s still exists after RunSource returned (leaks one file per migration on the shared hostPath)", cmdlinePath)
+	}
+}
+
 // TestRunSource_PodResolver_LookupError ensures lookup failures surface as a
 // clear "lookup pod IP" error rather than a downstream validation failure.
 func TestRunSource_PodResolver_LookupError(t *testing.T) {
