@@ -317,18 +317,29 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		resultMarker        = "KATAMARAN_RESULT "
 		downtimeLimitMarker = "KATAMARAN_DOWNTIME_LIMIT "
 		phaseMarker         = "KATAMARAN_PHASE "
-		// logFetchOverlapSec bounds how much of the source pod's log we
-		// re-fetch per tick. The ticker fires every 2s; a 30s window gives
-		// generous slack for transient apiserver hiccups while keeping the
-		// per-tick payload small even on long-running migrations (without
-		// SinceSeconds the entire log is re-streamed every poll).
+		// The log is consumed as ONE followed stream instead of re-fetching
+		// a rolling SinceSeconds window every tick: polling a 30s window at
+		// a 2s cadence re-transfers every log byte ~15x through the
+		// apiserver-to-kubelet proxy and sets up a fresh HTTP stream per
+		// tick. With Follow=true each marker is delivered exactly once as
+		// the source emits it.
+		//
+		// SinceSeconds bounds the initial backfill on (re)connect;
+		// LimitBytes bounds the total stream size. Both also cap what a
+		// reconnect re-downloads after an error, so worst-case behavior
+		// degrades to today's polling cost rather than exceeding it.
 		logFetchOverlapSec int64 = 30
 		logFetchLimitBytes int64 = 4 * 1024 * 1024
+		// logStreamTTL bounds how long one followed stream is trusted. A
+		// kubelet/apiserver hiccup can leave a stream silently stalled;
+		// closing and redialing periodically guarantees tailProgress keeps
+		// up with the source and cannot block forever on a dead stream.
+		logStreamTTL = time.Minute
 	)
-	seen := map[string]bool{} // dedupe identical marker lines within the SinceSeconds window
+	seen := map[string]bool{} // dedupe identical marker lines across reconnects
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	// Reused scanner buffer: avoids allocating 64KB per tick over multi-hour migrations.
+	// Reused scanner buffer: avoids allocating 64KB per (re)connect over multi-hour migrations.
 	scanBuf := make([]byte, 0, 64*1024)
 	send := func(u StatusUpdate) bool {
 		select {
@@ -343,8 +354,8 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 	}
 	overlap := logFetchOverlapSec
 	limitBytes := logFetchLimitBytes
-	// Hoisted outside the loop: same value every tick, no need to re-allocate.
-	logOpts := &corev1.PodLogOptions{Container: "katamaran", SinceSeconds: &overlap, LimitBytes: &limitBytes}
+	// Hoisted outside the loop: same value every connect, no need to re-allocate.
+	logOpts := &corev1.PodLogOptions{Container: "katamaran", Follow: true, SinceSeconds: &overlap, LimitBytes: &limitBytes}
 	var consecStreamErrors int
 	for {
 		select {
@@ -354,15 +365,17 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			return
 		case <-ticker.C:
 		}
-		// Cap the dedup map: only markers from within the fetch window can
-		// recur, so anything beyond it is dead weight. Resetting periodically
-		// keeps memory bounded on multi-hour migrations.
+		// Cap the dedup map: only markers from within the reconnect
+		// backfill window can recur, so anything beyond it is dead weight.
+		// Resetting periodically keeps memory bounded on multi-hour migrations.
 		if len(seen) > 1024 {
 			clear(seen)
 		}
 		req := n.client.CoreV1().Pods(n.namespace).GetLogs(srcPod, logOpts)
-		stream, err := req.Stream(ctx)
+		streamCtx, streamCancel := context.WithTimeout(ctx, logStreamTTL)
+		stream, err := req.Stream(streamCtx)
 		if err != nil {
+			streamCancel()
 			if ctx.Err() == nil {
 				consecStreamErrors++
 				attrs := []any{"migration_id", id, "pod", srcPod, "error", err, "consecutive_errors", consecStreamErrors}
@@ -375,9 +388,9 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			continue
 		}
 		consecStreamErrors = 0
-		// Stream line-by-line instead of materializing the whole 30s log
-		// window as a single string + slice; per-tick payload can be hundreds
-		// of KB on chatty migrations.
+		// Stream line-by-line instead of materializing the log window as a
+		// single string + slice; the backfill can be hundreds of KB on
+		// chatty migrations.
 		scanner := bufio.NewScanner(stream)
 		scanner.Buffer(scanBuf, 1024*1024)
 		done := false
@@ -474,9 +487,10 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				break
 			}
 		}
-		if scanErr := scanner.Err(); scanErr != nil && ctx.Err() == nil {
+		if scanErr := scanner.Err(); scanErr != nil && ctx.Err() == nil && streamCtx.Err() == nil {
 			slog.Debug("tailProgress: reading source pod log stream failed", "migration_id", id, "pod", srcPod, "error", scanErr)
 		}
+		streamCancel()
 		_ = stream.Close()
 		if done {
 			return
@@ -919,6 +933,12 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	const sourceFailGrace = 90 * time.Second // how long to wait for dest after source dies
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Serve both Job GETs from the apiserver watch cache: unset
+	// ResourceVersion makes every Get a quorum read against etcd, which at
+	// 2 GETs per tick per migration sustains hours of pointless etcd load
+	// for data that changes twice per migration. A tick of staleness is
+	// irrelevant on a 2s polling loop with a 90s failure grace window.
+	cacheRead := metav1.GetOptions{ResourceVersion: "0"}
 	announcedTransferring := false
 	var sourceFailedAt time.Time
 	var destStatusErrors, srcStatusErrors int
@@ -929,8 +949,8 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: ctx.Err()}
 			return
 		case <-ticker.C:
-			srcJob, srcErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.srcJob, metav1.GetOptions{})
-			destJob, destErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.destJob, metav1.GetOptions{})
+			srcJob, srcErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.srcJob, cacheRead)
+			destJob, destErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.destJob, cacheRead)
 
 			// Dest=Complete → success, even if source failed.
 			if destErr == nil {

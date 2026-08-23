@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -29,11 +30,11 @@ import (
 var sandboxUUIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // procFS abstracts the host-process / netns probing so tests can stub it.
-// PIDForSandbox locates the QEMU PID for a given sandbox UUID. NetnsHasIP
-// reports whether the network namespace of the given PID contains the given
-// IP address on any interface.
+// PIDsForSandboxes locates the QEMU PID for each of the given sandbox UUIDs
+// in a single pass over /proc. NetnsHasIP reports whether the network
+// namespace of the given PID contains the given IP address on any interface.
 type procFS interface {
-	PIDForSandbox(uuid string) (int, error)
+	PIDsForSandboxes(uuids []string) map[string]int
 	NetnsHasIP(pid int, ip string) (bool, error)
 }
 
@@ -45,35 +46,41 @@ type Resolved struct {
 }
 
 // resolveSandbox scans root (typically /run/vc/vm) for sandbox directories,
-// asks p for each sandbox's QEMU PID, and returns the unique sandbox whose
-// network namespace contains podIP. It returns an error on zero matches or
-// on multiple matches (it refuses to guess).
+// resolves the QEMU PID for every sandbox in a single /proc pass, and returns
+// the unique sandbox whose network namespace contains podIP. It returns an
+// error on zero matches or on multiple matches (it refuses to guess).
 //
-// PIDForSandbox / NetnsHasIP errors for individual entries are tolerated and
-// logged at debug level so that a single transient failure (e.g. a sandbox
-// that has just been torn down) does not abort the whole scan.
+// Sandboxes whose PID lookup fails and NetnsHasIP errors for individual
+// entries are tolerated and logged so that a single transient failure (e.g.
+// a sandbox that has just been torn down) does not abort the whole scan.
 func resolveSandbox(root string, p procFS, podIP string) (Resolved, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("read %s: %w", root, err)
 	}
-	var matches []Resolved
+	var uuids []string
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if e.IsDir() {
+			uuids = append(uuids, e.Name())
 		}
-		pid, err := p.PIDForSandbox(e.Name())
-		if err != nil {
-			slog.Warn("PIDForSandbox failed; skipping", "sandbox", e.Name(), "error", err)
+	}
+	// One /proc scan for all sandboxes: per-sandbox scans would cost
+	// O(sandboxes x processes) cmdline reads on a busy node.
+	pids := p.PIDsForSandboxes(uuids)
+	var matches []Resolved
+	for _, uuid := range uuids {
+		pid, ok := pids[uuid]
+		if !ok {
+			slog.Warn("No QEMU process found for sandbox; skipping", "sandbox", uuid)
 			continue
 		}
 		ok, err := p.NetnsHasIP(pid, podIP)
 		if err != nil {
-			slog.Warn("NetnsHasIP failed; skipping", "sandbox", e.Name(), "pid", pid, "error", err)
+			slog.Warn("NetnsHasIP failed; skipping", "sandbox", uuid, "pid", pid, "error", err)
 			continue
 		}
 		if ok {
-			matches = append(matches, Resolved{Sandbox: e.Name(), PID: pid})
+			matches = append(matches, Resolved{Sandbox: uuid, PID: pid})
 		}
 	}
 	switch len(matches) {
@@ -89,46 +96,71 @@ func resolveSandbox(root string, p procFS, podIP string) (Resolved, error) {
 // realProc is the production implementation of procFS.
 type realProc struct{}
 
-// PIDForSandbox locates the QEMU PID associated with the given sandbox UUID by
-// scanning /proc/<pid>/cmdline for the literal substring "sandbox-<uuid>".
-// This is a native scan rather than a `pgrep -f` shellout: no external binary,
-// and the substring is matched literally so a `.` in the UUID cannot act as a
-// regex wildcard and match unrelated processes. If several processes match
-// (e.g. helpers whose cmdline mentions the sandbox path), the lowest PID is
-// returned and the rest are logged.
-func (realProc) PIDForSandbox(uuid string) (int, error) {
-	if !sandboxUUIDRe.MatchString(uuid) {
-		return 0, fmt.Errorf("invalid sandbox identifier %q", uuid)
+// PIDsForSandboxes locates the QEMU PID associated with each given sandbox
+// UUID by scanning /proc/<pid>/cmdline for the literal substring
+// "sandbox-<uuid>". The whole set is resolved in one pass over /proc so N
+// sandboxes cost N cmdline reads rather than N scans of every process. This
+// is a native scan rather than a `pgrep -f` shellout: no external binary, and
+// the substring is matched literally against the raw NUL-separated cmdline so
+// a `.` in the UUID cannot act as a regex wildcard and match unrelated
+// processes. If several processes match a sandbox (e.g. helpers whose cmdline
+// mentions the sandbox path), the lowest PID wins. UUIDs with no matching
+// process are absent from the returned map; invalid identifiers are skipped.
+func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
+	type want struct {
+		needle string
+		best   int // lowest matching PID so far; 0 = none yet
 	}
-	needle := "sandbox-" + uuid
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return 0, fmt.Errorf("read /proc: %w", err)
-	}
-	var pids []int
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue // not a PID directory
-		}
-		// cmdline args are NUL-separated; join with spaces before matching.
-		// A read error means the process exited mid-scan or is unreadable; skip.
-		raw, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
-		if err != nil {
+	wanted := make(map[string]*want, len(uuids))
+	for _, uuid := range uuids {
+		if !sandboxUUIDRe.MatchString(uuid) {
+			slog.Warn("Skipping invalid sandbox identifier", "sandbox", uuid)
 			continue
 		}
-		if strings.Contains(strings.ReplaceAll(string(raw), "\x00", " "), needle) {
-			pids = append(pids, pid)
+		wanted[uuid] = &want{needle: "sandbox-" + uuid}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		slog.Warn("Cannot read /proc; no sandbox PIDs resolvable", "error", err)
+		return nil
+	}
+	var multi []string
+	for _, e := range entries {
+		pid, perr := strconv.Atoi(e.Name())
+		if perr != nil {
+			continue // not a PID directory
+		}
+		// A read error means the process exited mid-scan or is unreadable; skip.
+		raw, rerr := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if rerr != nil {
+			continue
+		}
+		for uuid, w := range wanted {
+			if w.best != 0 && pid >= w.best {
+				continue // already matched a lower PID for this sandbox
+			}
+			if bytes.Contains(raw, []byte(w.needle)) {
+				if w.best != 0 {
+					multi = append(multi, uuid)
+				}
+				w.best = pid
+			}
 		}
 	}
-	if len(pids) == 0 {
-		return 0, fmt.Errorf("no process cmdline contains %q", needle)
+	out := make(map[string]int, len(wanted))
+	for uuid, w := range wanted {
+		if w.best != 0 {
+			out[uuid] = w.best
+		}
 	}
-	slices.Sort(pids)
-	if len(pids) > 1 {
-		slog.Warn("multiple processes match sandbox; using lowest PID", "sandbox", uuid, "pids", pids)
+	if len(multi) > 0 {
+		slices.Sort(multi)
+		slog.Warn("multiple processes match sandboxes; using lowest PID", "sandboxes", multi)
 	}
-	return pids[0], nil
+	return out
 }
 
 // NetnsHasIP returns true if the network namespace of pid has an interface

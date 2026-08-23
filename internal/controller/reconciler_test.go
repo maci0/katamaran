@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -401,6 +402,121 @@ func TestReconciler_DispatchResolvesPodRequest(t *testing.T) {
 	}
 	if got.DestIP != "10.0.0.20" {
 		t.Fatalf("DestIP = %q, want 10.0.0.20", got.DestIP)
+	}
+}
+
+func TestReconciler_DispatchCoalescesProgressUpdates(t *testing.T) {
+	cr := newMigrationCR("m-coalesce", []string{finalizerName}, false, nil)
+	updates := make(chan orchestrator.StatusUpdate, 16)
+	updates <- orchestrator.StatusUpdate{ID: "id-coalesce", Phase: orchestrator.PhaseDestStarting}
+	// Rapid-fire transferring updates: only RAM counters differ, exactly the
+	// shape tailProgress emits per KATAMARAN_PROGRESS marker during bulk RAM
+	// transfer.
+	for i := int64(1); i <= 8; i++ {
+		updates <- orchestrator.StatusUpdate{ID: "id-coalesce", Phase: orchestrator.PhaseTransferring, RAMTransferred: i * 1000, RAMTotal: 8000}
+	}
+	updates <- orchestrator.StatusUpdate{ID: "id-coalesce", Phase: orchestrator.PhaseSucceeded, RAMTransferred: 8000, DowntimeMS: 12}
+	close(updates)
+	orch := &fakeOrch{applyID: "id-coalesce", updates: updates}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr)
+	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-coalesce"}, cr)
+
+	var statusPatches int
+	var sawSucceededPatch bool
+	for _, a := range dyn.Actions() {
+		if a.GetVerb() != "patch" || a.GetSubresource() != "status" {
+			continue
+		}
+		statusPatches++
+		if bytes.Contains(a.(clienttesting.PatchAction).GetPatch(), []byte(string(orchestrator.PhaseSucceeded))) {
+			sawSucceededPatch = true
+		}
+	}
+	// Exactly four patches must land: submitted (pre-watch), dest-starting
+	// (first watch update), transferring (phase transition), succeeded
+	// (terminal). The seven intermediate RAM-only refreshes are coalesced
+	// away instead of each becoming an API write.
+	if statusPatches != 4 {
+		t.Fatalf("status patch count = %d, want 4 (intermediate RAM-only updates must be coalesced)", statusPatches)
+	}
+	if !sawSucceededPatch {
+		t.Fatal("terminal succeeded update was never patched")
+	}
+
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-coalesce", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get m-coalesce: %v", err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	if phase != string(orchestrator.PhaseSucceeded) {
+		t.Fatalf("final status.phase = %q, want %q", phase, orchestrator.PhaseSucceeded)
+	}
+	downtime, _, _ := unstructured.NestedInt64(got.Object, "status", "actualDowntimeMS")
+	if downtime != 12 {
+		t.Fatalf("final status.actualDowntimeMS = %d, want 12 (terminal facts must survive coalescing)", downtime)
+	}
+}
+
+func TestShouldPatchStatusUpdate(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	recent := now.Add(-time.Second)
+	old := now.Add(-2 * progressPatchInterval)
+	cases := []struct {
+		name        string
+		u           orchestrator.StatusUpdate
+		lastPatched orchestrator.StatusPhase
+		lastPatchAt time.Time
+		want        bool
+	}{
+		{"first ever", orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring}, "", time.Time{}, true},
+		{"phase transition", orchestrator.StatusUpdate{Phase: orchestrator.PhaseCutover}, orchestrator.PhaseTransferring, recent, true},
+		{"terminal", orchestrator.StatusUpdate{Phase: orchestrator.PhaseFailed}, orchestrator.PhaseFailed, recent, true},
+		{
+			name:        "ram refresh too soon",
+			u:           orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring, RAMTransferred: 5},
+			lastPatched: orchestrator.PhaseTransferring,
+			lastPatchAt: recent,
+			want:        false,
+		},
+		{
+			name:        "ram refresh after interval",
+			u:           orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring, RAMTransferred: 5},
+			lastPatched: orchestrator.PhaseTransferring,
+			lastPatchAt: old,
+			want:        true,
+		},
+		{
+			name:        "error bearing",
+			u:           orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring, Error: errors.New("boom")},
+			lastPatched: orchestrator.PhaseTransferring,
+			lastPatchAt: recent,
+			want:        true,
+		},
+		{
+			name:        "applied downtime fact",
+			u:           orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring, AppliedDowntimeMS: 30},
+			lastPatched: orchestrator.PhaseTransferring,
+			lastPatchAt: recent,
+			want:        true,
+		},
+		{
+			name:        "measured downtime fact",
+			u:           orchestrator.StatusUpdate{Phase: orchestrator.PhaseTransferring, DowntimeMS: 7},
+			lastPatched: orchestrator.PhaseTransferring,
+			lastPatchAt: recent,
+			want:        true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldPatchStatusUpdate(tc.u, tc.lastPatched, tc.lastPatchAt); got != tc.want {
+				t.Fatalf("shouldPatchStatusUpdate = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

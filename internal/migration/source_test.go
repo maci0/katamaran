@@ -886,19 +886,21 @@ func TestRunSource_ContextCancelled(t *testing.T) {
 type fakeProcFS struct {
 	pids       map[string]int   // sandbox UUID -> PID
 	netnsByPID map[int][]string // PID -> IPs that exist in that netns
-	pidErr     error            // forced error from PIDForSandbox
+	pidErr     error            // when set, PIDsForSandboxes resolves nothing
 	netnsErr   error            // forced error from NetnsHasIP
 }
 
-func (f fakeProcFS) PIDForSandbox(uuid string) (int, error) {
+func (f fakeProcFS) PIDsForSandboxes(uuids []string) map[string]int {
 	if f.pidErr != nil {
-		return 0, f.pidErr
+		return nil
 	}
-	pid, ok := f.pids[uuid]
-	if !ok {
-		return 0, errors.New("no such sandbox")
+	out := make(map[string]int, len(uuids))
+	for _, uuid := range uuids {
+		if pid, ok := f.pids[uuid]; ok {
+			out[uuid] = pid
+		}
 	}
-	return pid, nil
+	return out
 }
 
 func (f fakeProcFS) NetnsHasIP(pid int, ip string) (bool, error) {

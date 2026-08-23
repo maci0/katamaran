@@ -99,44 +99,42 @@ func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 
 // validateLoadgenTarget runs the shared validation preamble for both load
 // generator start endpoints: form content-type check, unknown-field
-// rejection, and SSRF-safe target validation. Writes the error response and
-// returns ok=false on rejection.
-func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, label string) (string, bool) {
+// rejection, and SSRF-safe target validation. The resolved, screened IPs are
+// returned alongside the target so callers that probe by IP literal can pin
+// to the validated address without a second DNS lookup. Writes the error
+// response and returns ok=false on rejection.
+func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, label string) (target string, ips []net.IP, ok bool) {
 	if !parseFormPOST(w, r, label) {
-		return "", false
+		return "", nil, false
 	}
 	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, label) {
-		return "", false
+		return "", nil, false
 	}
-	target := r.FormValue("target")
+	target = r.FormValue("target")
 	if target == "" {
 		slog.Warn("Load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Missing required field: target", http.StatusBadRequest)
-		return "", false
+		return "", nil, false
 	}
-	if !validTarget(target) {
+	ips, ok = safeTargetIPs(target)
+	if !ok {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid value for target", http.StatusBadRequest)
-		return "", false
+		return "", nil, false
 	}
-	return target, true
+	return target, ips, true
 }
 
 // handlePingStart processes a request to start the ping load generator.
 func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
-	target, ok := a.validateLoadgenTarget(w, r, "Ping load generator request")
+	_, ips, ok := a.validateLoadgenTarget(w, r, "Ping load generator request")
 	if !ok {
 		return
 	}
 
-	// Resolve once and pass ping an IP literal so it cannot resolve to a
-	// different address after validation.
-	pingTarget, ok := resolvedTargetIP(target)
-	if !ok {
-		slog.Warn("Failed to resolve safe ping target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for target", http.StatusBadRequest)
-		return
-	}
+	// Pin ping to the IP literal resolved during validation so it cannot
+	// resolve to a different address afterwards.
+	pingTarget := ips[0].String()
 
 	ctx, ok := a.tryStartLoadgen(w, r, "ping")
 	if !ok {
@@ -218,7 +216,9 @@ func (a *App) addPing(lat float64, errStr string) {
 
 // handleHTTPStart processes a request to start the HTTP load generator.
 func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
-	target, ok := a.validateLoadgenTarget(w, r, "HTTP load generator request")
+	// The HTTP client revalidates DNS in its dialer (safeDialContext), so the
+	// validated IP list from validation is not reused here.
+	target, _, ok := a.validateLoadgenTarget(w, r, "HTTP load generator request")
 	if !ok {
 		return
 	}

@@ -100,64 +100,64 @@ func lookupSafeTargetIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
-func resolvedTargetIP(target string) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), targetDNSTimeout)
-	defer cancel()
-	ips, err := lookupSafeTargetIPs(ctx, targetHost(target))
-	if err != nil || len(ips) == 0 {
-		return "", false
-	}
-	return ips[0].String(), true
-}
-
-// validTarget checks that the target is a plausible IP or hostname for
-// ping/HTTP probing. Rejects loopback, link-local, cloud metadata
-// addresses, and unresolvable hostnames to prevent SSRF.
-//
-// HTTP probes revalidate DNS in the custom dialer, and ping probes use the
-// resolved IP literal so a hostname cannot rebind after this check.
-func validTarget(target string) bool {
+// safeTargetIPs runs every static and SSRF check that validTarget performs
+// and additionally resolves the host, returning the screened IPs so callers
+// can pin the target to the exact address that was validated instead of
+// paying for (and racing) a second lookup. ok=false means the target must be
+// rejected: unresolvable hostnames fail closed here to prevent SSRF bypass
+// via names that the Go resolver cannot resolve but the target process
+// (ping, HTTP client) might resolve differently.
+func safeTargetIPs(target string) ([]net.IP, bool) {
 	if len(target) > maxTargetLen+len(":65535") {
-		return false
+		return nil, false
 	}
 	if strings.HasPrefix(target, "-") {
-		return false
+		return nil, false
 	}
 	// Reject path separators: valid targets are host or host:port only.
 	// Without this, "service:8080/admin/action" would be constructed into
 	// "http://service:8080/admin/action", enabling path-controlled SSRF.
 	if strings.Contains(target, "/") {
-		return false
+		return nil, false
 	}
 	host, port, hasPort, ok := splitTarget(target)
 	if !ok || host == "" || len(host) > maxTargetLen {
-		return false
+		return nil, false
 	}
 	if hasPort && !validTargetPort(port) {
-		return false
+		return nil, false
 	}
 	// Reject shell metacharacters and null bytes that could escape into
 	// arguments. Null bytes are rejected explicitly because C-based system
 	// calls (ping, DNS resolver with cgo) truncate at \x00, which could
 	// cause the validated hostname to differ from what the subprocess sees.
 	if strings.ContainsAny(host, "\x00;|&$`\\\"'<>(){}!\n\r\t @#%") {
-		return false
+		return nil, false
 	}
 	// Reject ".." sequences in the host: prevents abuse of resolver quirks
 	// or downstream URL-construction edge cases where ".." could traverse
 	// or confuse host parsing.
 	if strings.Contains(host, "..") {
-		return false
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), targetDNSTimeout)
 	defer cancel()
-	if _, err := lookupSafeTargetIPs(ctx, host); err != nil {
-		// Fail closed: reject unresolvable hostnames to prevent SSRF bypass
-		// via names that the Go resolver cannot resolve but the target process
-		// (ping, HTTP client) might resolve differently.
-		return false
+	ips, err := lookupSafeTargetIPs(ctx, host)
+	if err != nil {
+		return nil, false
 	}
-	return true
+	return ips, true
+}
+
+// validTarget checks that the target is a plausible IP or hostname for
+// ping/HTTP probing. Rejects loopback, link-local, cloud metadata
+// addresses, and unresolvable hostnames to prevent SSRF.
+//
+// Callers that probe by IP literal should use safeTargetIPs instead so the
+// validated addresses are reused rather than resolved twice.
+func validTarget(target string) bool {
+	_, ok := safeTargetIPs(target)
+	return ok
 }
 
 // validFormValue wraps orchestrator.ValidateSafeArgValue to check that a form

@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,26 +17,22 @@ import (
 )
 
 // fakeProc is a stub implementation of the procFS interface used by the
-// resolveSandbox tests. PIDForSandbox and NetnsHasIP are driven by simple
+// resolveSandbox tests. PIDsForSandboxes and NetnsHasIP are driven by simple
 // per-uuid maps so each test case can declare exactly which sandboxes match.
 type fakeProc struct {
-	pids     map[string]int   // sandbox uuid -> pid (errors if absent)
-	hasIP    map[int]bool     // pid -> whether netns contains the queried IP
-	pidErr   map[string]error // optional per-uuid PIDForSandbox error
-	netnsErr map[int]error    // optional per-pid NetnsHasIP error
+	pids     map[string]int // sandbox uuid -> pid (absent = no process found)
+	hasIP    map[int]bool   // pid -> whether netns contains the queried IP
+	netnsErr map[int]error  // optional per-pid NetnsHasIP error
 }
 
-func (f *fakeProc) PIDForSandbox(uuid string) (int, error) {
-	if f.pidErr != nil {
-		if err, ok := f.pidErr[uuid]; ok {
-			return 0, err
+func (f *fakeProc) PIDsForSandboxes(uuids []string) map[string]int {
+	out := make(map[string]int, len(uuids))
+	for _, uuid := range uuids {
+		if pid, ok := f.pids[uuid]; ok {
+			out[uuid] = pid
 		}
 	}
-	pid, ok := f.pids[uuid]
-	if !ok {
-		return 0, errors.New("no pid for sandbox " + uuid)
-	}
-	return pid, nil
+	return out
 }
 
 func (f *fakeProc) NetnsHasIP(pid int, ip string) (bool, error) {

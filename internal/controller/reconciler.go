@@ -417,12 +417,24 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		}()
 	}()
 	var lastPhase string
+	// Coalescing state: during bulk RAM transfer the orchestrator emits a
+	// PhaseTransferring update per progress marker (ram_transferred changes
+	// continuously), and patching each one to the API server produces one
+	// etcd write per marker for data only the latest value of matters.
+	// Intermediate RAM-only updates are dropped; durable state changes are
+	// always patched (see shouldPatchStatusUpdate).
+	var lastPatched orchestrator.StatusPhase
+	var lastPatchAt time.Time
 	for u := range updates {
 		errStr := ""
 		if u.Error != nil {
 			errStr = u.Error.Error()
 		}
-		_ = r.patchStatusUpdate(ctx, key, u, errStr)
+		if shouldPatchStatusUpdate(u, lastPatched, lastPatchAt) {
+			_ = r.patchStatusUpdate(ctx, key, u, errStr)
+			lastPatched = u.Phase
+			lastPatchAt = time.Now()
+		}
 		lastPhase = string(u.Phase)
 		updateProgressMetrics(u)
 	}
@@ -829,6 +841,29 @@ func (r *Reconciler) patchFailedStatus(ctx context.Context, key types.Namespaced
 	if err := r.patchStatus(ctx, key, migrationID, string(orchestrator.PhaseFailed), message, errStr); err == nil {
 		mFailed.Add(1)
 	}
+}
+
+// progressPatchInterval is the minimum spacing between coalesced status
+// patches during a single phase. RAM-transfer progress markers arrive every
+// few seconds for up to hours (storage sync is budgeted 2h, RAM migration 1h);
+// patching each marker to the API server would sustain one etcd write per
+// marker. Intermediate values have no consumers: only the latest RAM counters
+// are ever displayed, so dropping all but one patch per interval loses nothing.
+const progressPatchInterval = 10 * time.Second
+
+// shouldPatchStatusUpdate reports whether an incoming StatusUpdate must be
+// patched to the Migration CR rather than coalesced away. Terminal phases,
+// phase transitions, error-bearing updates, and one-shot downtime facts are
+// always patched; within a phase only RAM-progress refreshes are throttled to
+// one per progressPatchInterval.
+func shouldPatchStatusUpdate(u orchestrator.StatusUpdate, lastPatched orchestrator.StatusPhase, lastPatchAt time.Time) bool {
+	if u.Phase.IsTerminal() || u.Phase != lastPatched {
+		return true
+	}
+	if u.Error != nil || u.AppliedDowntimeMS > 0 || u.DowntimeMS > 0 {
+		return true // durable one-shot facts, not just RAM counters
+	}
+	return time.Since(lastPatchAt) >= progressPatchInterval
 }
 
 func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {

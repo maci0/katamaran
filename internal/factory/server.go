@@ -67,16 +67,25 @@ func NewServer() *Server {
 // when full, the oldest offer is dropped (same pattern as the QMP
 // client's bounded event buffer).
 func (s *Server) OfferVM(state MigrationState) {
+	droppedID := ""
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.queue) >= maxQueuedVMs {
-		slog.Warn("Factory VM queue full, dropping oldest offer",
-			"dropped_id", s.queue[0].ID, "incoming_id", state.ID, "queued", len(s.queue))
+		// Zero the dropped slot before re-slicing so its ID string is not
+		// retained by the underlying array.
+		droppedID = s.queue[0].ID
 		s.queue[0] = MigrationState{}
 		s.queue = s.queue[1:]
 	}
 	s.queue = append(s.queue, state)
-	slog.Info("VM offered to factory", "id", state.ID, "qemu_pid", state.QEMUPid, "queue_depth", len(s.queue))
+	depth := len(s.queue)
+	s.mu.Unlock()
+	// Logging happens after unlocking: slog writes to stderr, and a slow
+	// log consumer must not stall the watcher or gRPC handlers behind s.mu.
+	if droppedID != "" {
+		slog.Warn("Factory VM queue full, dropping oldest offer",
+			"dropped_id", droppedID, "incoming_id", state.ID, "queued", depth)
+	}
+	slog.Info("VM offered to factory", "id", state.ID, "qemu_pid", state.QEMUPid, "queue_depth", depth)
 }
 
 // Config returns the stored VMConfig + AgentConfig from the most recent

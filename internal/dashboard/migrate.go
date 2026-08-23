@@ -523,15 +523,24 @@ func (a *App) appendLog(msg string) {
 	if len(msg) > maxLogLineSize {
 		msg = msg[:maxLogLineSize] + " ... [truncated]"
 	}
+	wrapped := false
+	wrappedMigrationID := ""
 	a.migrationMutex.Lock()
-	defer a.migrationMutex.Unlock()
 	a.migrationLogSeq++
 	a.migrationOutput = append(a.migrationOutput, msg)
 	if len(a.migrationOutput) > maxLogLines {
 		a.migrationOutput = slices.Delete(a.migrationOutput, 0, len(a.migrationOutput)-maxLogLines)
 		if !a.logBufferWrapped {
 			a.logBufferWrapped = true
-			slog.Warn("Migration output buffer full, oldest lines dropped", "max_lines", maxLogLines, "migration_id", a.migrationID)
+			wrapped = true
+			// Snapshot under lock; log after unlocking so a stalled stderr
+			// write can never block /api/status, /api/migrate, and
+			// /api/history behind migrationMutex.
+			wrappedMigrationID = a.migrationID
 		}
+	}
+	a.migrationMutex.Unlock()
+	if wrapped {
+		slog.Warn("Migration output buffer full, oldest lines dropped", "max_lines", maxLogLines, "migration_id", wrappedMigrationID)
 	}
 }
