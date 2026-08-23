@@ -6,7 +6,7 @@ Current release: **v0.3.0** (2026-05-07)
 
 ## Project Status
 
-katamaran is feature-complete for single-pod, multi-disk, single-NIC live migration within a single Kubernetes cluster. All 15 user stories are implemented and verified. The CRD controller, web dashboard, and CLI all drive the same Native orchestrator path.
+katamaran is feature-complete for single-pod, multi-disk, single-NIC live migration within a single Kubernetes cluster. All user stories in `docs/STORIES.md` are implemented and verified. The CRD controller, web dashboard, and CLI all drive the same Native orchestrator path.
 
 | Area | Status |
 |------|--------|
@@ -44,7 +44,7 @@ Improvements that harden existing functionality without adding new migration cap
 
 ### Multi-Disk VMs
 
-- ~~**Parallel or sequential NBD mirrors for multi-disk pods**~~ — Done in the current branch. `--drive-id` accepts comma-separated IDs. All mirrors run in parallel and must reach Ready before RAM pre-copy starts.
+- ~~**Parallel or sequential NBD mirrors for multi-disk pods**~~ — Done. `--drive-id` accepts comma-separated IDs. All mirrors run in parallel and must reach Ready before RAM pre-copy starts.
 
 ### Test Robustness
 

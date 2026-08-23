@@ -26,6 +26,8 @@ spec:
             properties:
               sourcePod:
                 description: Reference to the source kata pod (namespace + name).
+                  The namespace must match the Migration CR's own namespace;
+                  the controller rejects cross-namespace pod references.
                 type: object
                 required: [namespace, name]
                 properties:
@@ -46,7 +48,9 @@ spec:
                   Optional reference to a kata pod on the destination node whose
                   sandbox QMP socket the dest job should connect to. Use this when
                   replayCmdline is false unless a destination QMP socket is already
-                  available at the controller's default path.
+                  available at the controller's default path. The namespace must
+                  match the Migration CR's own namespace; the controller rejects
+                  cross-namespace pod references.
                 type: object
                 required: [namespace, name]
                 properties:

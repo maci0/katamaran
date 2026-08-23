@@ -4,7 +4,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 
 ### TL;DR
 
-15 stories across 6 areas: **core migration** (local storage, shared storage, zero-drop network cutover), **IPv4/IPv6** support, **graceful shutdown** (SIGINT/SIGTERM cleanup, idempotent setup), **error handling** (storage/RAM failure detection, CLI validation), **destination ops** (packet buffering, GARP), and **testing** (smoke, single-node QMP, two-node E2E).
+22 stories across 8 areas: **core migration** (local storage, shared storage, multi-disk pods, zero-drop network cutover, pod-picker mode, cmdline replay, auto-downtime from RTT, multifd RAM channels), **IPv4/IPv6** support, **graceful shutdown** (SIGINT/SIGTERM cleanup, idempotent setup), **error handling** (storage/RAM failure detection, CLI validation), **destination ops** (packet buffering, GARP), **declarative orchestration** (Migration CRD + HA controller), the **web dashboard**, and **testing** (smoke, single-node QMP, two-node E2E).
 
 ---
 
@@ -42,8 +42,66 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 **Acceptance criteria:**
 - [x] A `tc sch_plug` qdisc buffers packets on the destination tap interface during the STOP→RESUME window
 - [x] An IPIP tunnel on the source forwards packets arriving at the stale IP to the destination
-- [x] After RESUME, the queue is flushed (`release_indefinite`) delivering all buffered packets in order
+- [x] After RESUME, the queue is switched to `release_indefinite`, flushing all buffered packets in order
 - [x] GARP (`announce-self`) updates switch MAC tables to the destination port
+- [x] The tunnel stays up after RESUME for `--cni-convergence-delay` (default 5s) while the CNI propagates the destination binding, then is torn down
+
+### US-16: Migrate a multi-disk Kata VM
+
+> **As a** cluster operator running Kata pods with more than one block device,
+> **I want to** mirror all disks during migration,
+> **so that** multi-disk workloads move without leaving any volume behind on the source node.
+
+**Acceptance criteria:**
+- [x] `--drive-id` accepts comma-separated QEMU block device IDs for multi-disk pods
+- [x] All drive-mirror jobs are started before any is waited on, so mirrors run in parallel (job ID `mirror-<drive-id>` per disk)
+- [x] The destination adds an NBD export for every drive before mirroring begins
+- [x] RAM pre-copy starts only after every mirror job has reached Ready
+
+### US-17: Resolve sandboxes at runtime (pod-picker mode)
+
+> **As a** cluster operator who cannot know the sandbox UUID at scheduling time,
+> **I want to** pass pod names instead of raw QMP socket paths and VM IPs,
+> **so that** katamaran works from inside Jobs where the sandbox ID is only discoverable at runtime.
+
+**Acceptance criteria:**
+- [x] `--pod-name` / `--pod-namespace` replace `--qmp` and `--vm-ip` on the source side; the pod IP is looked up via the in-cluster apiserver
+- [x] The source sandbox is resolved by matching the sandbox whose network namespace contains that pod IP; zero matches and multiple matches are errors (it refuses to guess)
+- [x] `--dest-pod-name` / `--dest-pod-namespace` resolve the destination QMP socket the same way, overriding the placeholder path baked into Job templates
+
+### US-18: Replay the source QEMU cmdline on the destination
+
+> **As an** operator migrating without a pre-created destination pod,
+> **I want** the dest side to spawn its own QEMU using the exact source command line,
+> **so that** disk topology, memory layout, and device configuration match without a hand-maintained dest config.
+
+**Acceptance criteria:**
+- [x] Source mode captures `/proc/<qemu_pid>/cmdline` via `--emit-cmdline-to` before migration starts and prints it base64-encoded as a `KATAMARAN_CMDLINE_B64=` log marker
+- [x] Dest mode fetches the marker from the source pod's log (`--replay-cmdline-from-pod <ns>/<name>`), decodes it, and spawns QEMU with `-incoming defer`
+- [x] A file-based `--replay-cmdline <path>` variant remains for manual testing; user-staged files are never deleted (only fetched ones are cleaned up)
+
+### US-19: Auto-calculate downtime from measured RTT
+
+> **As a** cluster operator deploying across networks with varying latency,
+> **I want** the downtime limit derived from the measured RTT to the destination instead of a static flag default,
+> **so that** migrations converge on both low-latency LANs and higher-latency inter-AZ links without manual tuning.
+
+**Acceptance criteria:**
+- [x] `--auto-downtime` measures RTT to the destination via ICMP echo (5s timeout per probe)
+- [x] The applied limit is 2× RTT plus a floor; the floor defaults to 25ms and is overridden by `--auto-downtime-floor-ms`
+- [x] On RTT measurement failure, the static `--downtime` value is used and the marker reports `auto=false`
+- [x] The applied limit surfaces in the `KATAMARAN_DOWNTIME_LIMIT applied_ms=… rtt_ms=… auto=…` marker so orchestrators can record it
+
+### US-20: Parallelize RAM transfer over multifd channels
+
+> **As a** cluster operator migrating memory-heavy VMs over bandwidth-limited links,
+> **I want** RAM pre-copy spread across parallel TCP channels,
+> **so that** migration throughput is not capped by a single connection.
+
+**Acceptance criteria:**
+- [x] QEMU's `multifd` capability is enabled with N channels when `--multifd-channels` > 0 (default 4)
+- [x] Setting 0 disables multifd; negative values are rejected before any side effect
+- [x] The channel count is passed via migrate parameters on both source and destination
 
 ---
 
@@ -171,6 +229,40 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] Uses the guest's actual MAC address on all NICs
 - [x] Sends 5 rounds with incremental backoff (20ms initial, +100ms step, 550ms max)
 - [x] GARP failure is warn-only: it is logged and the destination run continues (RESUME has already fired by then, so failing the whole job over a convergence accelerator would mark a completed migration failed)
+
+---
+
+## Declarative Orchestration
+
+### US-21: Drive migrations declaratively via a Migration CRD
+
+> **As a** platform engineer managing migrations across a fleet,
+> **I want to** declare a Migration resource and have a controller run the whole flow,
+> **so that** migrations survive leader restarts, integrate with RBAC, and do not depend on someone babysitting two shell jobs.
+
+**Acceptance criteria:**
+- [x] A `Migration` CRD declares source/dest pod refs, image, node selection (`spec.destNode`, optional `spec.destNodeSelector`), cleanup policy (`spec.sourceCleanup`), and adoption (`spec.adoptVM`)
+- [x] katamaran-mgr runs as multiple replicas safely: Lease-based leader election ensures only the leader reconciles
+- [x] The controller dispatches source and dest Jobs, watches them to a terminal phase, and patches CR status along the way
+- [x] If the leader restarts between source-Job and dest-Job creation, recovery re-submits the missing dest Job idempotently
+- [x] Deleted Migration CRs are cleaned up through a finalizer
+- [x] With `adoptVM: true`, a validating admission webhook denies replacement pod creation by the source controller for 5 minutes after migration success, and an adoption pod inheriting the source's labels and ownerReferences is created
+
+---
+
+## Web Dashboard
+
+### US-22: Track live migration progress from a web dashboard
+
+> **As a** cluster operator driving migrations during a maintenance window,
+> **I want** a web UI showing live migration phase, RAM progress, and history,
+> **so that** I can watch and trigger migrations from a browser without kubectl access to the internals.
+
+**Acceptance criteria:**
+- [x] `POST /api/migrate` starts a migration; the `KATAMARAN_MIGRATION_IMAGE` env pins the single allowed image and the server warns when it is unset
+- [x] Live progress is derived from structured markers tailed off the source pod log (`KATAMARAN_PROGRESS`, `KATAMARAN_DOWNTIME_LIMIT`)
+- [x] `/api/history` returns the last 100 completed/failed migrations kept in memory
+- [x] The server exposes `/metrics`, `/healthz`, and `/readyz`
 
 ---
 
