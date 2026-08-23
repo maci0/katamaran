@@ -1,7 +1,7 @@
 # Example Migration CR. Apply with:
 #
 #   kubectl apply -f config/crd/migration.yaml      # one-time CRD install
-#   kubectl apply -f config/crd/manager.yaml        # one-time controller install
+#   kubectl apply -f deploy/manager.yaml           # one-time controller install
 #   kubectl apply -f deploy/migration-example.yaml  # this file
 #   kubectl get migration -w                        # watch the phase column
 #

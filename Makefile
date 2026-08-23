@@ -12,7 +12,7 @@ build:
 
 # Build the dashboard binary
 build-dashboard:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/dashboard/
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/katamaran-dashboard/
 
 # Build the orchestrator CLI (JSON-in / NDJSON-out wrapper around the
 # orchestrator package). Used by scripts and local orchestration workflows.

@@ -119,7 +119,7 @@ func patchWebhookConfigCABundle(ctx context.Context, kube kubernetes.Interface, 
 }
 
 // webhookConfigName is the name of the ValidatingWebhookConfiguration
-// shipped in config/crd/manager.yaml. Hard-coded because the patch is
+// shipped in deploy/manager.yaml. Hard-coded because the patch is
 // install-time, not user-configurable.
 const webhookConfigName = "katamaran-mgr"
 

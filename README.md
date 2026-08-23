@@ -47,7 +47,7 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Future Ideas](#future-ideas)
 - [Roadmap](docs/ROADMAP.md)
 
-See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/dashboard/README.md)** · **[Roadmap](docs/ROADMAP.md)**
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/katamaran-dashboard/README.md)** · **[Roadmap](docs/ROADMAP.md)**
 
 ---
 
@@ -373,13 +373,13 @@ internal/
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
   daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
+  manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
   migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
   migrate.sh                    # Manual-testing shell wrapper around the Job templates
                                 #   under internal/orchestrator/templates/. Production paths
                                 #   submit those templates through the Native orchestrator.
 config/crd/
   migration.yaml                # Migration CRD definition + status subresource
-  manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
   runtimeclass-adopted.yaml     # RuntimeClass katamaran-adopted resolving to the adoption shim
 docs/
   INSTALL.md                    # Installation guide (binary, container, DaemonSet)
@@ -657,7 +657,7 @@ flowchart TD
 
 ## Dashboard
 
-A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. Includes a **pod-picker** that auto-discovers kata-qemu pods + nodes and a **cmdline-replay** mode that spawns the destination QEMU itself (no kata pod required on the dest node). See [cmd/dashboard/README.md](cmd/dashboard/README.md) for the full UI flow + screenshots.
+A web UI for orchestrating migrations, visualizing ping latency (zero-drop proof), and running HTTP load generators during cutover. Includes a **pod-picker** that auto-discovers kata-qemu pods + nodes and a **cmdline-replay** mode that spawns the destination QEMU itself (no kata pod required on the dest node). See [cmd/katamaran-dashboard/README.md](cmd/katamaran-dashboard/README.md) for the full UI flow + screenshots.
 
 ![Dashboard pod picker](docs/screenshots/02-dashboard-form-filled.png)
 
@@ -699,7 +699,7 @@ minikube image load mgr.tar
 
 # Install the CRD + controller (one-time)
 kubectl apply -f config/crd/migration.yaml
-kubectl apply -f config/crd/manager.yaml
+kubectl apply -f deploy/manager.yaml
 
 # Submit a migration
 kubectl apply -f deploy/migration-example.yaml

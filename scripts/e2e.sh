@@ -812,7 +812,7 @@ elif [[ "${METHOD}" == "crd" ]]; then
     fi
     log "Installing Migration CRD + katamaran-mgr controller..."
     kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/migration.yaml" >/dev/null
-    kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/config/crd/manager.yaml" >/dev/null
+    kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/manager.yaml" >/dev/null
     kubectl --context "${CTX}" -n kube-system rollout status deploy/katamaran-mgr --timeout=60s
     MIG_NAME="e2e-$(date +%s)"
     log "Submitting Migration CR ${MIG_NAME}..."

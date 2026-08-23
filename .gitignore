@@ -3,7 +3,7 @@
 
 # Build output
 bin/
-cmd/dashboard/main
+cmd/katamaran-dashboard/main
 test_signal
 *.tar
 

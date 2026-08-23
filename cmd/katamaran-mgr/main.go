@@ -10,7 +10,7 @@
 // /metrics, and /debug/vars for controller counters and per-migration
 // progress gauges.
 //
-// Deployment: config/crd/migration.yaml holds the CRD; config/crd/manager.yaml
+// Deployment: config/crd/migration.yaml holds the CRD; deploy/manager.yaml
 // holds the ServiceAccount + ClusterRole + ClusterRoleBinding granting access
 // to Migration CRs and status, Jobs, pod/node discovery, pods/log, and
 // coordination.k8s.io/leases for leader election, plus the controller

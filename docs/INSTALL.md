@@ -130,7 +130,7 @@ same Native orchestrator the dashboard uses.
 make mgr
 minikube image load mgr.tar     # or kind load docker-image, etc.
 kubectl apply -f config/crd/migration.yaml
-kubectl apply -f config/crd/manager.yaml
+kubectl apply -f deploy/manager.yaml
 ```
 
 Submit a Migration:

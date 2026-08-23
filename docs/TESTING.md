@@ -266,7 +266,7 @@ The harness will:
 1. Provision the cluster (or reuse an existing profile) and install
    Kata.
 2. Build + load `katamaran-mgr.tar` into the cluster.
-3. Apply `config/crd/migration.yaml` and `config/crd/manager.yaml`,
+3. Apply `config/crd/migration.yaml` and `deploy/manager.yaml`,
    wait for the controller Deployment to roll out.
 4. Submit a `Migration` CR derived from the discovered source pod and
    destination node:

@@ -206,7 +206,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/migrate \
   -d replay_cmdline=true
 ```
 
-See [`cmd/dashboard/README.md`](../cmd/dashboard/README.md) for the full UI flow + screenshots.
+See [`cmd/katamaran-dashboard/README.md`](../cmd/katamaran-dashboard/README.md) for the full UI flow + screenshots.
 
 Show orchestrator help:
 

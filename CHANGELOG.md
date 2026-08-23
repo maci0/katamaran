@@ -145,7 +145,7 @@ works for manual `deploy/migrate.sh` runs.
 - `katamaran-mgr` RBAC: dropped `pods/exec` create + `pods` create /
   delete. Only `pods get/list/watch` and `pods/log get` remain on
   the controller's SA. **Note for upgraders:** apply the new
-  `config/crd/manager.yaml` to align RBAC; the controller will not
+  `deploy/manager.yaml` to align RBAC; the controller will not
   attempt the removed verbs but stale grants are harmless.
 - `katamaran-source` SA gains `pods/log get` so the dest job's
   binary can read the source pod's log over the apiserver. Apply
