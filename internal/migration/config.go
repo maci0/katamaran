@@ -222,8 +222,9 @@ type DestConfig struct {
 
 // kataSBSRoot is where Kata stages per-sandbox state directories, each
 // holding the persist.json both VMConfig emission (source) and
-// migration-meta enrichment (dest) read.
-const kataSBSRoot = "/run/vc/sbs"
+// migration-meta enrichment (dest) read. Var (not const) so tests can
+// point it at a temp dir instead of the node-wide runtime path.
+var kataSBSRoot = "/run/vc/sbs"
 
 // KataPersistConfig is the subset of Kata's per-sandbox persist.json
 // Config object shared by every reader of that file: the source/dest

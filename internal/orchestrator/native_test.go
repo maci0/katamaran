@@ -285,6 +285,50 @@ func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testi
 	}
 }
 
+// TestNative_Apply_AutoSelectSameNodeRejectedCleansUpDestJob locks the
+// auto-select safety guard: if Kubernetes schedules the dest pod onto the
+// source node, Apply must fail loudly (migrating a VM to its own node would
+// corrupt it) AND delete the already-created dest Job via cleanupDestJob,
+// leaving no orphan Jobs behind.
+func TestNative_Apply_AutoSelectSameNodeRejectedCleansUpDestJob(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		jobName, ok := jobNameFromPodListAction(action)
+		if !ok || !strings.HasPrefix(jobName, "katamaran-dest-") {
+			return false, nil, nil
+		}
+		return true, &corev1.PodList{Items: []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName + "-pod",
+				Namespace: DefaultJobNamespace,
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			},
+			Spec: corev1.PodSpec{NodeName: "worker-a"}, // same as req.SourceNode
+		}}}, nil
+	})
+	n := newFromClient(cs)
+	req := validRequest()
+	req.SourceNode = "worker-a"
+	req.DestNode = ""
+	req.DestIP = ""
+
+	id, err := n.Apply(context.Background(), req)
+	if err == nil {
+		t.Fatalf("Apply with dest pod on source node must fail; got id %q", id)
+	}
+	if !strings.Contains(err.Error(), "same node") {
+		t.Fatalf("error should mention same-node scheduling, got: %v", err)
+	}
+	jobs, err := cs.BatchV1().Jobs(DefaultJobNamespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatalf("rejected migration left %d Job(s) behind: %+v", len(jobs.Items), jobs.Items)
+	}
+}
+
 // TestNative_Apply_EmitsStartingPhases_LegacyMode: legacy mode creates the
 // dest Job first (migrate-incoming listener before source connects), then the
 // source Job. The update stream must surface that staging order as
