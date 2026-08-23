@@ -43,6 +43,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/maci0/katamaran/internal/adopt"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
@@ -1085,11 +1086,11 @@ func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Req
 		"annotations": map[string]any{
 			// The katamaran-adopted shim reads this annotation from the
 			// pod's OCI bundle config.json to pick which surviving QEMU
-			// (under /sys/fs/cgroup/katamaran-adopted/<id>/) to adopt.
-			// "katamaran-dest" is the fixed sandbox id the dest job
-			// template uses; if a future release parameterises that
-			// per-migration, plumb the actual id through here.
-			"katamaran.io/adopted-sandbox-id": "katamaran-dest",
+			// (under adopt.CgroupRoot/<id>/) to adopt. DefaultSandboxID is
+			// the fixed sandbox id the dest job template uses; if a future
+			// release parameterises that per-migration, plumb the actual id
+			// through here.
+			adopt.SandboxIDAnnotation: adopt.DefaultSandboxID,
 		},
 	}
 	if len(ownerRefs) > 0 {

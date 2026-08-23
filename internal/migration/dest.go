@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/katamaran/internal/adopt"
 	"github.com/maci0/katamaran/internal/qmp"
 )
 
@@ -500,10 +501,11 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 // adoptedCgroupRoot is where surviveContainerExit moves migrated QEMU
 // processes. var (not const) so a future test or alternate hierarchy
 // path (cgroup v1 hosts, sysctl-restricted environments) can override
-// it. The default targets cgroup v2 unified hierarchy under the host
-// /sys/fs/cgroup tree, which the dest container mounts via its
+// it. The default comes from internal/adopt, the single definition the
+// adopted shim reads; it targets cgroup v2 unified hierarchy under the
+// host /sys/fs/cgroup tree, which the dest container mounts via its
 // hostPath sys volume.
-var adoptedCgroupRoot = "/sys/fs/cgroup/katamaran-adopted"
+var adoptedCgroupRoot = adopt.CgroupRoot
 
 // writeMigrationMeta writes a migration-meta.json file next to the QMP socket.
 // The factory watcher picks this up and offers the VM to Kata shims via

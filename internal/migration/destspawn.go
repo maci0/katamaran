@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/maci0/katamaran/internal/adopt"
 )
 
 // Defaults for cmdline replay. Var-not-const so tests can swap them.
@@ -24,7 +26,9 @@ var (
 	// dest VM directory under /run/vc/vm/<id>/ when DestConfig.SandboxID is
 	// empty. The directory must already match the QMPSocket parent so that
 	// the existing dest QMP-connect path picks up the spawned QEMU's monitor.
-	destReplayDefaultSandbox = "katamaran-dest"
+	// Defaults to adopt.DefaultSandboxID, the id the controller stamps on
+	// adoption Pods and the shim falls back to.
+	destReplayDefaultSandbox = adopt.DefaultSandboxID
 
 	// kataSharedSandboxRoot is where Kata stages per-sandbox virtiofs shared
 	// directories. virtiofsd is started with --shared-dir under this root.

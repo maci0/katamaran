@@ -299,6 +299,8 @@ cmd/
     sandbox_config.go           # Reads VMConfig + AgentConfig from sandbox persist.json
     main_test.go                # Factory CLI tests
 internal/
+  adopt/
+    adopt.go                    # Sandbox-adoption contract constants (cgroup root, annotation, default id)
   buildinfo/
     buildinfo.go                # Build version variable (overridden via ldflags)
   controller/
@@ -352,6 +354,7 @@ internal/
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
     tunnel_test.go              # Tunnel unit tests
+    vmconfig_test.go            # VMConfig emission + persist.json/migration-meta enrichment tests
   orchestrator/
     orchestrator.go             # Public orchestrator interface and shared helpers
     orchestrator_test.go        # Interface contract tests

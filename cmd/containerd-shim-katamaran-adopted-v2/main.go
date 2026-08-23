@@ -59,13 +59,16 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/maci0/katamaran/internal/adopt"
 )
 
 const (
-	// adoptedCgroupRoot mirrors the path where Approach E step 1's
-	// surviveContainerExit writes the migrated QEMU + its KVM helper
-	// kernel threads. Keep in sync with internal/migration/dest.go.
-	adoptedCgroupRoot = "/sys/fs/cgroup/katamaran-adopted"
+	// adoptedCgroupRoot is where Approach E step 1's surviveContainerExit
+	// (internal/migration/dest.go) writes the migrated QEMU + its KVM
+	// helper kernel threads. Defined once in internal/adopt so the writer
+	// and this reader cannot drift.
+	adoptedCgroupRoot = adopt.CgroupRoot
 
 	// shimSocketDir is the well-known location containerd uses for
 	// shim ttrpc sockets.
@@ -73,11 +76,11 @@ const (
 
 	// adoptedSandboxAnnotation lets the controller pin which sandbox
 	// id (under adoptedCgroupRoot) this pod adopts. Defaults to
-	// `katamaran-dest` (the dest job template's well-known name) when
-	// absent.
-	adoptedSandboxAnnotation = "katamaran.io/adopted-sandbox-id"
+	// adopt.DefaultSandboxID (the dest job template's well-known name)
+	// when absent.
+	adoptedSandboxAnnotation = adopt.SandboxIDAnnotation
 
-	defaultAdoptedSandboxID = "katamaran-dest"
+	defaultAdoptedSandboxID = adopt.DefaultSandboxID
 
 	// shimLogPath is where the shim writes operational logs since it
 	// must not pollute stdout (containerd parses stdout for the ttrpc
