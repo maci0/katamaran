@@ -529,8 +529,8 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 			slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
 			return
 		}
-		// Deliberately do NOT call r.pending.Clear(rsUID)
-		// here. Live e2e showed RS sometimes deletes the
+		// Deliberately leave the pending mark in place after the
+		// adoption pod is created. Live e2e showed RS sometimes deletes the
 		// freshly-created adoption pod (RS sees adopted +
 		// terminating-source as 2 matches and scales down,
 		// often picking adopted) and then RS spawns a new
@@ -951,6 +951,9 @@ func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Req
 		}
 	}
 
+	// labels must be map[string]any: the dynamic fake (and any
+	// DeepCopy of this Unstructured) panics on map[string]string via
+	// runtime.DeepCopyJSONValue, even though both marshal identically.
 	labelsAny := make(map[string]any, len(labels))
 	for k, v := range labels {
 		labelsAny[k] = v

@@ -30,7 +30,7 @@ func TestNativeDiscoverer_ListKataPods(t *testing.T) {
 			Status:     corev1.PodStatus{PodIP: "10.0.0.7"},
 		},
 	)
-	got, err := NewDiscovererFromClient(cs).ListKataPods(context.Background())
+	got, err := newDiscovererFromClient(cs).ListKataPods(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestNativeDiscoverer_ListKataNodes(t *testing.T) {
 			Status:     corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.99"}}},
 		},
 	)
-	got, err := NewDiscovererFromClient(cs).ListKataNodes(context.Background())
+	got, err := newDiscovererFromClient(cs).ListKataNodes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestNativeDiscoverer_DeletePod(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "victim"},
 	})
-	d := NewDiscovererFromClient(cs)
+	d := newDiscovererFromClient(cs)
 	if err := d.DeletePod(context.Background(), "default", "victim"); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestNativeDiscoverer_OrphanAndDeletePod(t *testing.T) {
 			}},
 		},
 	})
-	d := NewDiscovererFromClient(cs)
+	d := newDiscovererFromClient(cs)
 	if err := d.OrphanAndDeletePod(context.Background(), "default", "owned-pod"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestNativeDiscoverer_OrphanAndDeletePod_NoOwner(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "bare-pod"},
 	})
-	d := NewDiscovererFromClient(cs)
+	d := newDiscovererFromClient(cs)
 	if err := d.OrphanAndDeletePod(context.Background(), "default", "bare-pod"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestNativeDiscoverer_OrphanAndDeletePod_NoOwner(t *testing.T) {
 func TestNativeDiscoverer_DeletePod_NotFound(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	d := NewDiscovererFromClient(cs)
+	d := newDiscovererFromClient(cs)
 	if err := d.DeletePod(context.Background(), "default", "missing"); err == nil {
 		t.Fatal("expected error for missing pod")
 	}
@@ -137,7 +137,7 @@ func TestNativeDiscoverer_LookupErrors(t *testing.T) {
 		Spec:       corev1.PodSpec{}, // NodeName empty
 	}
 	cs := fake.NewSimpleClientset(pending)
-	d := NewDiscovererFromClient(cs)
+	d := newDiscovererFromClient(cs)
 	if _, err := d.LookupPodNode(context.Background(), "default", "pending"); err == nil {
 		t.Fatal("expected error for pending pod with no nodeName")
 	}

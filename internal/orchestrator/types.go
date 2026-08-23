@@ -144,11 +144,6 @@ type Request struct {
 	// Empty means "use the binary default".
 	LogLevel  string
 	LogFormat string
-
-	// KubectlContext, when non-empty, is passed to kubectl invocations made
-	// by the orchestrator. The native orchestrator ignores it (uses its own
-	// in-cluster client).
-	KubectlContext string
 }
 
 // PodRef identifies a Kubernetes pod by namespace + name.

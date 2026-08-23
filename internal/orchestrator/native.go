@@ -50,7 +50,7 @@ import (
 // cmdline by reading the source pod's log via the in-cluster apiserver
 // (KATAMARAN_CMDLINE_B64 marker).
 //
-// Use New for the in-cluster path and NewFromClient for tests.
+// Use New for the in-cluster path; tests construct newFromClient directly.
 type native struct {
 	client         kubernetes.Interface
 	namespace      string
@@ -123,11 +123,6 @@ func newFromRestConfig(cfg *rest.Config) (*native, error) {
 		return nil, fmt.Errorf("clientset: %w", err)
 	}
 	return newFromClient(cs), nil
-}
-
-// NewFromClient is the test-friendly constructor.
-func NewFromClient(c kubernetes.Interface) Orchestrator {
-	return newFromClient(c)
 }
 
 const defaultPodWaitTimeout = 60 * time.Second

@@ -1,5 +1,15 @@
 # katamaran-e2e-helper Design Spec
 
+Date: 2026-03-20
+Status: Proposed — not implemented
+
+> Nothing in this document exists in the tree: there is no
+> `cmd/katamaran-e2e-helper`, no `internal/e2ehelper` package, and no
+> `BlockdevAddArgs`/`DeviceAddArgs` types in `internal/qmp/types.go`.
+> `scripts/e2e.sh` still contains the bash implementations this spec
+> proposed to replace. Treat it as a design proposal, not a description
+> of current behavior.
+
 ## Problem
 
 The E2E test harness (`scripts/e2e.sh`) has outgrown bash for several operations:

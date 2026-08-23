@@ -36,7 +36,7 @@ type NodeInfo struct {
 // The only implementation lives in discovery_native.go and uses client-go
 // directly against the apiserver (in-cluster service-account credentials,
 // or a kubeconfig fallback for local development). Construct via
-// NewDiscoverer / NewDiscovererFromClient.
+// NewDiscoverer (tests: newDiscovererFromClient).
 type Discoverer interface {
 	// ListKataPods returns all pods in the cluster whose runtimeClassName is
 	// kata-qemu (across all namespaces).

@@ -63,8 +63,7 @@ func (p *pendingAdoptionRegistry) Mark(uid types.UID, migrationID string) {
 	// Sweep expired entries here (the cold path: once per migration) so the
 	// map doesn't accumulate stale entries for controllers that are never
 	// re-queried. MigrationFor only prunes the single UID it reads, so a
-	// reconciler that Marks but crashes before Clear (and whose RS never
-	// creates another pod the webhook checks) would otherwise leak forever.
+	// reconciler that Marks and then crashes would otherwise leak forever.
 	now := time.Now()
 	for k, e := range p.entries {
 		if now.After(e.expiresAt) {
@@ -75,17 +74,6 @@ func (p *pendingAdoptionRegistry) Mark(uid types.UID, migrationID string) {
 		migrationID: migrationID,
 		expiresAt:   now.Add(pendingAdoptionTTL),
 	}
-}
-
-// Clear removes the entry for uid (if any). Called after the adoption
-// pod has been successfully created.
-func (p *pendingAdoptionRegistry) Clear(uid types.UID) {
-	if uid == "" {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.entries, uid)
 }
 
 // MigrationFor returns the migration ID this RS is pending adoption

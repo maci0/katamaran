@@ -6,7 +6,7 @@
 // One implementation exists: the in-cluster client-go path
 // (native.go). It renders the Jobs in-process, submits them via the
 // apiserver, and reconciles status by polling Job conditions.
-// Constructed via New / NewFromClient and consumed
+// Constructed via New and consumed
 // by the dashboard, the Migration CRD controller, and the
 // katamaran-orchestrator CLI.
 //

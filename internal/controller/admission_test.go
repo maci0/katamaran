@@ -61,21 +61,10 @@ func TestPendingAdoption_MarkPrunesExpiredEntries(t *testing.T) {
 	}
 }
 
-func TestPendingAdoption_Clear(t *testing.T) {
-	t.Parallel()
-	reg := newPendingAdoptionRegistry()
-	reg.Mark("rs-2", "mig-xyz")
-	reg.Clear("rs-2")
-	if got := reg.MigrationFor("rs-2"); got != "" {
-		t.Fatalf("MigrationFor after Clear = %q, want empty", got)
-	}
-}
-
 func TestPendingAdoption_EmptyUIDIgnored(t *testing.T) {
 	t.Parallel()
 	reg := newPendingAdoptionRegistry()
 	reg.Mark("", "mig-x")
-	reg.Clear("")
 	if got := reg.MigrationFor(""); got != "" {
 		t.Fatalf("MigrationFor empty UID = %q, want empty", got)
 	}

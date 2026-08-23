@@ -128,7 +128,6 @@ func validateRequestArgValues(req Request) error {
 		{"TapNetns", req.TapNetns},
 		{"LogLevel", req.LogLevel},
 		{"LogFormat", req.LogFormat},
-		{"KubectlContext", req.KubectlContext},
 	}
 	if req.SourcePod != nil {
 		fields = append(fields,

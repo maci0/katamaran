@@ -14,6 +14,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -394,20 +395,10 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 // handleHistory returns completed migrations, newest first.
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	a.migrationMutex.Lock()
-	hist := reverseCopyHistory(a.migrationHistory)
+	hist := slices.Clone(a.migrationHistory)
 	a.migrationMutex.Unlock()
+	slices.Reverse(hist)
 	writeJSON(w, http.StatusOK, hist)
-}
-
-// reverseCopyHistory returns a newest-first copy of src in a single pass,
-// avoiding the make+copy+slices.Reverse two-pass pattern on a hot path.
-func reverseCopyHistory(src []MigrationHistoryEntry) []MigrationHistoryEntry {
-	n := len(src)
-	out := make([]MigrationHistoryEntry, n)
-	for i := 0; i < n; i++ {
-		out[i] = src[n-1-i]
-	}
-	return out
 }
 
 // handleStatus returns the current dashboard state, including active
@@ -455,8 +446,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		p := *a.latestProgress // copy under lock so caller mutation is safe
 		progress = &p
 	}
-	hist := reverseCopyHistory(a.migrationHistory)
+	hist := slices.Clone(a.migrationHistory)
 	a.migrationMutex.Unlock()
+	slices.Reverse(hist)
 
 	var elapsedSeconds int64
 	if status && !migrationStart.IsZero() {

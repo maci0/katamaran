@@ -31,9 +31,9 @@ func NewDiscoverer(kubeconfig string) (Discoverer, error) {
 	return &nativeDiscoverer{client: cs}, nil
 }
 
-// NewDiscovererFromClient is the test-friendly constructor: pass any
+// newDiscovererFromClient is the test-friendly constructor: pass any
 // kubernetes.Interface (e.g. fake.NewSimpleClientset).
-func NewDiscovererFromClient(c kubernetes.Interface) Discoverer {
+func newDiscovererFromClient(c kubernetes.Interface) Discoverer {
 	return &nativeDiscoverer{client: c}
 }
 

@@ -33,7 +33,7 @@ func validRequest() Request {
 func TestNative_Apply_LegacyModeSourceCarriesVMIP(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	req := Request{
 		SourceNode: "n1",
 		DestNode:   "n2",
@@ -116,7 +116,7 @@ func TestInjectReplayFromPod_NoKatamaranContainer(t *testing.T) {
 func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -187,7 +187,7 @@ func TestNative_Apply_ReplayCmdlineStagesDestAfterSourcePodAppears(t *testing.T)
 			},
 		}}}, nil
 	})
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	req := validRequest()
 	req.ReplayCmdline = true
 
@@ -237,7 +237,7 @@ func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testi
 			Spec: corev1.PodSpec{NodeName: "worker-b"},
 		}}}, nil
 	})
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	req := validRequest()
 	req.SourceNode = "worker-a"
 	req.DestNode = ""
@@ -310,7 +310,7 @@ func TestNative_Apply_EmitsStartingPhases_LegacyMode(t *testing.T) {
 		}, nil
 	})
 
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestStageThenStartDest_EmitsDestStarting(t *testing.T) {
 			},
 		}}}, nil
 	})
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	id := MigrationID("replayid")
 	req := validRequest()
 	req.ReplayCmdline = true
@@ -448,7 +448,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 		}, nil
 	})
 
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +511,7 @@ func TestNative_Watch_DestFailedIncludesConditionDetails(t *testing.T) {
 		}
 	})
 
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -542,7 +542,7 @@ func TestNative_Watch_DestFailedIncludesConditionDetails(t *testing.T) {
 func TestNative_Stop_DeletesJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs)
+	n := newFromClient(cs)
 	id, err := n.Apply(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -623,7 +623,7 @@ func TestSucceededUpdate_RecoversFromTailRace(t *testing.T) {
 	// fake-pod-log helper. Bypass the real GetLogs by setting up
 	// resultCaptured pre-emptively, then assert succeededUpdate copies
 	// the values onto the StatusUpdate.
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	run := &nativeRun{
 		srcJob:           "katamaran-source-id1",
 		destJob:          "katamaran-dest-id1",
@@ -657,7 +657,7 @@ func TestSucceededUpdate_RecoversFromTailRace(t *testing.T) {
 func TestSucceededUpdate_NoCaptureFallsBackCleanly(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	run := &nativeRun{
 		srcJob:   "katamaran-source-empty",
 		destJob:  "katamaran-dest-empty",
@@ -791,7 +791,7 @@ func drainUpdates(c <-chan StatusUpdate, timeout time.Duration) []StatusUpdate {
 func TestNative_Resume_NoOpWhenNotReplay(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	created, err := n.Resume(context.Background(), MigrationID("abc"), validRequest())
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -814,7 +814,7 @@ func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
 	cs := fake.NewSimpleClientset(&batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: DestJobName(id), Namespace: "kube-system"},
 	})
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	req := validRequest()
 	req.ReplayCmdline = true
 	created, err := n.Resume(context.Background(), id, req)
@@ -836,7 +836,7 @@ func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
 func TestNative_Resume_ErrorsWhenSourceMissing(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	req := validRequest()
 	req.ReplayCmdline = true
 	created, err := n.Resume(context.Background(), MigrationID("ghost"), req)
@@ -871,7 +871,7 @@ func TestNative_Resume_CreatesDestWithReplayFromPod(t *testing.T) {
 			},
 		},
 	)
-	n := NewFromClient(cs).(*native)
+	n := newFromClient(cs)
 	req := validRequest()
 	req.ReplayCmdline = true
 	created, err := n.Resume(context.Background(), id, req)
