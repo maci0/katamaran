@@ -130,6 +130,42 @@ func TestNativeDiscoverer_DeletePod_NotFound(t *testing.T) {
 	}
 }
 
+// TestNativeDiscoverer_LookupPodScheduling covers the constraint copy the
+// auto-selected-dest path relies on (reconciler dispatch → native.Apply):
+// the source pod's nodeSelector and tolerations must be surfaced so the
+// dest Job lands on the same kind of node. An empty result here would
+// silently schedule migrations onto non-kata nodes.
+func TestNativeDiscoverer_LookupPodScheduling(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "src"},
+		Spec: corev1.PodSpec{
+			NodeSelector: map[string]string{"katamaran.io/enabled": "true"},
+			Tolerations: []corev1.Toleration{{
+				Key:      "katamaran",
+				Operator: corev1.TolerationOpExists,
+				Effect:   corev1.TaintEffectNoSchedule,
+			}},
+		},
+	})
+	d := newDiscovererFromClient(cs)
+
+	sched, err := d.LookupPodScheduling(context.Background(), "default", "src")
+	if err != nil {
+		t.Fatalf("LookupPodScheduling: %v", err)
+	}
+	if len(sched.NodeSelector) != 1 || sched.NodeSelector["katamaran.io/enabled"] != "true" {
+		t.Fatalf("NodeSelector = %v, want katamaran.io/enabled=true", sched.NodeSelector)
+	}
+	if len(sched.Tolerations) != 1 || sched.Tolerations[0].Key != "katamaran" || sched.Tolerations[0].Operator != corev1.TolerationOpExists {
+		t.Fatalf("Tolerations = %+v, want source toleration copied", sched.Tolerations)
+	}
+
+	if _, err := d.LookupPodScheduling(context.Background(), "default", "missing"); err == nil {
+		t.Fatal("expected error for missing pod")
+	}
+}
+
 func TestNativeDiscoverer_LookupErrors(t *testing.T) {
 	t.Parallel()
 	pending := &corev1.Pod{

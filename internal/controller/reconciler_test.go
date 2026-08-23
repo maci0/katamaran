@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	fakedyn "k8s.io/client-go/dynamic/fake"
 	fakekube "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
@@ -615,6 +617,37 @@ func TestMarkTracking_SingleClaim(t *testing.T) {
 	rec.untrack(key)
 	if !rec.markTracking(key) {
 		t.Fatal("after untrack, markTracking should succeed again")
+	}
+}
+
+// TestTickOnce_SurvivesPanicAndListErrors pins tickOnce's recovery
+// contract: Run drives tickOnce on a ticker for the life of the leader,
+// so a panicking reconcile pass must be absorbed (counted in
+// mWorkerPanics) and a List failure must surface as a counted
+// mReconcileErrors bump — neither may kill the goroutine, which would
+// silently halt all reconciliation while the pod stays "healthy".
+func TestTickOnce_SurvivesPanicAndListErrors(t *testing.T) {
+	// Not parallel: asserts deltas on process-global expvar counters.
+	cr := newMigrationCR("m-tick", nil, false, nil)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+
+	startPanics := mWorkerPanics.Value()
+	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		panic("synthetic reconcile panic")
+	})
+	rec.tickOnce(context.Background()) // must not panic out of the test
+	if delta := mWorkerPanics.Value() - startPanics; delta < 1 {
+		t.Fatalf("mWorkerPanics delta = %d, want >= 1 after panicking tick", delta)
+	}
+
+	// A prepended non-panicking reaction shadows the panic one.
+	startErrors := mReconcileErrors.Value()
+	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("synthetic list failure")
+	})
+	rec.tickOnce(context.Background())
+	if delta := mReconcileErrors.Value() - startErrors; delta < 1 {
+		t.Fatalf("mReconcileErrors delta = %d, want >= 1 after failed tick", delta)
 	}
 }
 

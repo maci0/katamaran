@@ -1484,6 +1484,84 @@ func TestCSRFCheck_NonAPIPath(t *testing.T) {
 	}
 }
 
+// TestHandleHistory_NewestFirst pins the /api/history contract: completed
+// migrations are returned newest-first, with the JSON content type and
+// no-store cache policy the history panel relies on to always show fresh
+// results.
+func TestHandleHistory_NewestFirst(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+
+	app.migrationMutex.Lock()
+	app.migrationID = "mig-first"
+	app.migrationMutex.Unlock()
+	app.setMigrationResult("success", "")
+
+	app.migrationMutex.Lock()
+	app.migrationID = "mig-second"
+	app.migrationMutex.Unlock()
+	app.setMigrationResult("error", "boom")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	w := httptest.NewRecorder()
+	app.handleHistory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %v", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json prefix", ct)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-store")
+	}
+
+	var hist []MigrationHistoryEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &hist); err != nil {
+		t.Fatalf("failed to unmarshal history: %v; body=%s", err, w.Body.String())
+	}
+	if len(hist) != 2 {
+		t.Fatalf("history length = %d, want 2: %+v", len(hist), hist)
+	}
+	if hist[0].MigrationID != "mig-second" || hist[0].Result != "error" || hist[0].Error != "boom" {
+		t.Fatalf("newest entry = %+v, want mig-second/error with boom", hist[0])
+	}
+	if hist[1].MigrationID != "mig-first" || hist[1].Result != "success" {
+		t.Fatalf("oldest entry = %+v, want mig-first/success", hist[1])
+	}
+}
+
+// TestHandleHistory_CappedAtMaxHistoryEntries pins the retention bound on
+// setMigrationResult's history append: the dashboard is a long-lived
+// process and an unbounded history slice would leak one entry per
+// migration for its lifetime. Oldest entries are dropped, newest kept.
+func TestHandleHistory_CappedAtMaxHistoryEntries(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	for i := 0; i < maxHistoryEntries+5; i++ {
+		app.migrationMutex.Lock()
+		app.migrationID = fmt.Sprintf("mig-%03d", i)
+		app.migrationMutex.Unlock()
+		app.setMigrationResult("success", "")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/history", nil)
+	w := httptest.NewRecorder()
+	app.handleHistory(w, req)
+
+	var hist []MigrationHistoryEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &hist); err != nil {
+		t.Fatalf("failed to unmarshal history: %v", err)
+	}
+	if len(hist) != maxHistoryEntries {
+		t.Fatalf("history length = %d, want capped at %d", len(hist), maxHistoryEntries)
+	}
+	wantNewest := fmt.Sprintf("mig-%03d", maxHistoryEntries+4)
+	if hist[0].MigrationID != wantNewest {
+		t.Fatalf("newest entry = %q, want %q (oldest must be dropped)", hist[0].MigrationID, wantNewest)
+	}
+}
+
 func TestSetMigrationResult(t *testing.T) {
 	t.Parallel()
 	app := &App{}

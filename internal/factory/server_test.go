@@ -97,22 +97,22 @@ func TestServerOfferVMBoundsQueue(t *testing.T) {
 		t.Fatalf("queue depth = %d, want %d", len(st.Vmstatus), maxQueuedVMs)
 	}
 	for i, vm := range st.Vmstatus {
-		wantID := fmt.Sprintf("mig-%03d", i+3) // first three dropped
-		if got := srv.queue[i].ID; got != wantID {
-			t.Fatalf("queue[%d].ID = %q, want %q", i, got, wantID)
-		}
 		if vm.Pid != int64(103+i) {
 			t.Fatalf("Vmstatus[%d].Pid = %d, want %d", i, vm.Pid, 103+i)
 		}
 	}
 
-	// The oldest surviving offer is served first (FIFO preserved).
-	got, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
-	if err != nil {
-		t.Fatalf("GetBaseVM: %v", err)
-	}
-	if got.Id != "mig-003" {
-		t.Fatalf("GetBaseVM Id = %q, want %q", got.Id, "mig-003")
+	// Drain the whole queue through the public API: the three oldest
+	// offers were dropped and the survivors are served in FIFO order.
+	for i := 0; i < maxQueuedVMs; i++ {
+		got, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
+		if err != nil {
+			t.Fatalf("GetBaseVM %d: %v", i, err)
+		}
+		wantID := fmt.Sprintf("mig-%03d", i+3) // first three dropped
+		if got.Id != wantID {
+			t.Fatalf("GetBaseVM %d Id = %q, want %q", i, got.Id, wantID)
+		}
 	}
 }
 
