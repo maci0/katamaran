@@ -671,7 +671,7 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 						dt := time.Since(js.lastLogTime).Seconds()
 						if dt > 0 {
 							mbps := float64(job.Offset-js.lastOffset) / dt / (1024 * 1024)
-							attrs = append(attrs, "throughput_mbps", mbps)
+							attrs = append(attrs, "throughput_mibps", mbps)
 						}
 					}
 					slog.Info("Storage sync progress", attrs...)

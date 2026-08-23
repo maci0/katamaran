@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// maxPodWaitTimeoutSeconds caps spec.podWaitTimeoutSeconds at 24 hours. See
+// the comment on the PodWaitTimeoutSeconds check in Validate for why an upper
+// bound is required.
+const maxPodWaitTimeoutSeconds = 86400
+
 // Validate checks a Request for required fields and mode consistency. Exposed
 // so callers (e.g. the dashboard's HTTP handler) can pre-validate before
 // calling Apply.
@@ -80,8 +85,15 @@ func Validate(req Request) error {
 	if req.LogFormat != "" && req.LogFormat != "text" && req.LogFormat != "json" {
 		return fmt.Errorf("logFormat must be one of text or json, got %q", req.LogFormat)
 	}
-	if req.PodWaitTimeoutSeconds < 0 {
-		return fmt.Errorf("podWaitTimeoutSeconds must be non-negative, got %d", req.PodWaitTimeoutSeconds)
+	// PodWaitTimeoutSeconds is multiplied by time.Second when building the
+	// pod-wait deadline (waitForJobPod). That product overflows int64
+	// nanoseconds above ~9.2e9 seconds and wraps negative, making the wait
+	// context expire instantly instead of honoring the requested timeout.
+	// 24h is already far beyond any legitimate pod start (the orchestrator
+	// default is 60s) and keeps the multiplication far from overflow, so any
+	// larger value is treated as a typo rather than an intent to wait days.
+	if req.PodWaitTimeoutSeconds < 0 || req.PodWaitTimeoutSeconds > maxPodWaitTimeoutSeconds {
+		return fmt.Errorf("podWaitTimeoutSeconds must be between 0 and %d, got %d", maxPodWaitTimeoutSeconds, req.PodWaitTimeoutSeconds)
 	}
 	if req.SourceCleanup != "" && req.SourceCleanup != "none" && req.SourceCleanup != "delete" && req.SourceCleanup != "orphan" {
 		return fmt.Errorf("sourceCleanup must be one of none, delete, or orphan, got %q", req.SourceCleanup)

@@ -117,6 +117,8 @@ type Request struct {
 	// migration Job pods to appear. Zero falls back to the orchestrator's
 	// configured default (flag/env), which itself defaults to 60s.
 	// Useful under TCG (software emulation) where pod startup is slower.
+	// Must be between 0 and 86400 (24h); larger values are rejected because
+	// they overflow the deadline computation in waitForJobPod.
 	PodWaitTimeoutSeconds int
 
 	// SourceCleanup controls what happens to the source pod after a

@@ -265,6 +265,29 @@ func TestValidateRejectsNegativePodWaitTimeout(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsOversizedPodWaitTimeout pins the overflow guard: values
+// above maxPodWaitTimeoutSeconds would wrap negative in the
+// time.Duration(x) * time.Second computation inside waitForJobPod and make
+// the pod-wait context expire instantly.
+func TestValidateRejectsOversizedPodWaitTimeout(t *testing.T) {
+	t.Parallel()
+	req := validRequestForValidation()
+	req.PodWaitTimeoutSeconds = maxPodWaitTimeoutSeconds + 1
+
+	err := Validate(req)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "podWaitTimeoutSeconds") {
+		t.Fatalf("expected podWaitTimeoutSeconds error, got: %v", err)
+	}
+
+	req.PodWaitTimeoutSeconds = maxPodWaitTimeoutSeconds
+	if err := Validate(req); err != nil {
+		t.Fatalf("Validate at upper bound %d: %v", maxPodWaitTimeoutSeconds, err)
+	}
+}
+
 func TestValidateRejectsInvalidSourceCleanup(t *testing.T) {
 	t.Parallel()
 	req := validRequestForValidation()
