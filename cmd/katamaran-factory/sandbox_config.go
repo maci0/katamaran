@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maci0/katamaran/internal/factory"
+	"github.com/maci0/katamaran/internal/migration"
 )
 
 // loadVMConfig populates the VMConfig the Config RPC returns by reading any
@@ -62,23 +63,14 @@ func tryLoadFromSandbox(srv *factory.Server, sbsDir string) bool {
 			continue
 		}
 		var persist struct {
-			Config struct {
-				HypervisorType   string          `json:"HypervisorType"`
-				HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
-				KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
-			} `json:"Config"`
+			Config migration.KataPersistConfig `json:"Config"`
 		}
 		if err := json.Unmarshal(raw, &persist); err != nil {
 			slog.Warn("Failed to parse Kata persist.json; skipping", "path", persistPath, "error", err)
 			continue
 		}
 
-		// Data must match Kata's VMConfig.ToGrpc JSON shape.
-		vmCfg, _ := json.Marshal(map[string]any{
-			"HypervisorType":   persist.Config.HypervisorType,
-			"HypervisorConfig": json.RawMessage(persist.Config.HypervisorConfig),
-			"AgentConfig":      json.RawMessage(persist.Config.KataAgentConfig),
-		})
+		vmCfg := migration.MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		srv.SetConfig(vmCfg, persist.Config.KataAgentConfig)
 		slog.Info("VMConfig loaded from sandbox", "sandbox", entry.Name(), "size", len(vmCfg))
 		return true

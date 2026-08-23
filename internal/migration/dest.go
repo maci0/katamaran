@@ -520,7 +520,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	if persistBytes != nil {
 		var persist struct {
 			HypervisorState json.RawMessage   `json:"HypervisorState"`
-			Config          kataPersistConfig `json:"Config"`
+			Config          KataPersistConfig `json:"Config"`
 		}
 		if err := json.Unmarshal(persistBytes, &persist); err != nil {
 			slog.Warn("Failed to parse persist.json (VMConfig will be unavailable)", "path", persistPath, "error", err)
@@ -529,7 +529,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 				meta.HypervisorState = persist.HypervisorState
 			}
 			if len(persist.Config.HypervisorConfig) > 0 {
-				meta.VMConfig = marshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
+				meta.VMConfig = MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 				meta.AgentConfig = persist.Config.KataAgentConfig
 			}
 			slog.Info("Loaded state from persist.json", "path", persistPath)
@@ -552,7 +552,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		}
 	}
 
-	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "migration-meta.json")
+	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), MigrationMetaFile)
 	metaJSON, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		slog.Warn("Failed to marshal migration metadata", "error", err)

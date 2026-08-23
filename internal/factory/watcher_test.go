@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/maci0/katamaran/internal/migration"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -63,7 +64,7 @@ func TestWatcherScanIgnoresInvalidMetadata(t *testing.T) {
 	if err := os.Mkdir(sandboxDir, 0o755); err != nil {
 		t.Fatalf("mkdir sandbox: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sandboxDir, migrationMetaFile), []byte(`{"id":`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sandboxDir, migration.MigrationMetaFile), []byte(`{"id":`), 0o600); err != nil {
 		t.Fatalf("write invalid metadata: %v", err)
 	}
 
@@ -116,7 +117,7 @@ func writeMigrationMeta(t *testing.T, root, sandbox string, state MigrationState
 	if err != nil {
 		t.Fatalf("marshal migration state: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sandboxDir, migrationMetaFile), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sandboxDir, migration.MigrationMetaFile), data, 0o600); err != nil {
 		t.Fatalf("write migration metadata: %v", err)
 	}
 }

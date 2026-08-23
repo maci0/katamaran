@@ -2,6 +2,11 @@ package migration
 
 import "encoding/json"
 
+// MigrationMetaFile is the on-disk filename of the MigrationMeta contract
+// below. Both the writer (dest binary) and the reader (factory Watcher)
+// must reference this constant so the name cannot drift.
+const MigrationMetaFile = "migration-meta.json"
+
 // MigrationMeta is the on-disk migration-meta.json contract between the
 // dest binary (writer: writeMigrationMeta) and the factory server
 // (reader: internal/factory Watcher/Server). Both sides must use this one

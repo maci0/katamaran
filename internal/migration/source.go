@@ -808,7 +808,7 @@ func emitVMConfig(qemuPID int) {
 			HypervisorState struct {
 				Pid int `json:"Pid"`
 			} `json:"HypervisorState"`
-			Config kataPersistConfig `json:"Config"`
+			Config KataPersistConfig `json:"Config"`
 		}
 		if err := json.Unmarshal(raw, &persist); err != nil {
 			slog.Warn("Failed to parse Kata persist.json for VMConfig emission", "path", persistPath, "error", err)
@@ -817,7 +817,7 @@ func emitVMConfig(qemuPID int) {
 		if persist.HypervisorState.Pid != qemuPID {
 			continue
 		}
-		vmCfg := marshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
+		vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		agentCfg := persist.Config.KataAgentConfig
 		fmt.Printf("KATAMARAN_VMCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(vmCfg))
 		fmt.Printf("KATAMARAN_AGENTCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(agentCfg))

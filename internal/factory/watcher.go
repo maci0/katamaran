@@ -8,13 +8,11 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"time"
+
+	"github.com/maci0/katamaran/internal/migration"
 )
 
 const (
-	// migrationMetaFile is the filename the destination katamaran process
-	// writes after a successful incoming live migration.
-	migrationMetaFile = "migration-meta.json"
-
 	// defaultPollInterval is the directory scan interval. Polling is
 	// simpler and sufficient for the expected event rate (one migration
 	// every few seconds at most).
@@ -92,7 +90,7 @@ func (w *Watcher) scan() {
 		if !e.IsDir() {
 			continue
 		}
-		metaPath := filepath.Join(w.dir, e.Name(), migrationMetaFile)
+		metaPath := filepath.Join(w.dir, e.Name(), migration.MigrationMetaFile)
 		current[metaPath] = struct{}{}
 		if _, ok := w.seen[metaPath]; ok {
 			continue

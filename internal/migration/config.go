@@ -212,10 +212,11 @@ type DestConfig struct {
 // migration-meta enrichment (dest) read.
 const kataSBSRoot = "/run/vc/sbs"
 
-// kataPersistConfig is the subset of Kata's per-sandbox persist.json
-// Config object shared by every reader of that file in this package.
-// Keep field tags identical to Kata's marshalling.
-type kataPersistConfig struct {
+// KataPersistConfig is the subset of Kata's per-sandbox persist.json
+// Config object shared by every reader of that file: the source/dest
+// migration paths and the katamaran-factory VMConfig loader. Keep field
+// tags identical to Kata's marshalling.
+type KataPersistConfig struct {
 	HypervisorType   string          `json:"HypervisorType"`
 	HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
 	KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
@@ -230,10 +231,10 @@ func cleanupCtx(baseCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(baseCtx), cleanupTimeout)
 }
 
-// marshalVMConfig builds the JSON blob matching Kata's VMConfig.ToGrpc shape
+// MarshalVMConfig builds the JSON blob matching Kata's VMConfig.ToGrpc shape
 // from the pieces stored in a sandbox persist.json. The marshal cannot fail for
 // these string/RawMessage inputs, so the error is dropped.
-func marshalVMConfig(hypervisorType string, hypervisorConfig, agentConfig json.RawMessage) []byte {
+func MarshalVMConfig(hypervisorType string, hypervisorConfig, agentConfig json.RawMessage) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"HypervisorType":   hypervisorType,
 		"HypervisorConfig": hypervisorConfig,
