@@ -410,7 +410,12 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	// producer can always finish and clean up; on the normal path the channel
 	// is already closed by the time this defer runs and the drainer exits
 	// immediately.
-	defer func() { go func() { for range updates {} }() }()
+	defer func() {
+		go func() {
+			for range updates {
+			}
+		}()
+	}()
 	var lastPhase string
 	for u := range updates {
 		errStr := ""

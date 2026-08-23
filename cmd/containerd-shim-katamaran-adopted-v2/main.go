@@ -443,7 +443,7 @@ func (s *adoptedTaskService) Kill(_ context.Context, req *taskAPI.KillRequest) (
 // Delete waits for QEMU to exit (containerd has already issued Kill
 // by the time it calls Delete) and removes the surviving cgroup dir.
 // Returns the recorded exit code so containerd can close the task.
-func (s *adoptedTaskService) Delete(ctx context.Context, _ *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+func (s *adoptedTaskService) Delete(_ context.Context, _ *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	s.mu.Lock()
 	pid := s.qemuPid
 	exited := s.exited
@@ -458,7 +458,6 @@ func (s *adoptedTaskService) Delete(ctx context.Context, _ *taskAPI.DeleteReques
 		exitedAt = time.Now()
 	}
 	s.logFn("Delete: pid=%d exited=%v code=%d", pid, exited, exitCode)
-	_ = ctx
 	return &taskAPI.DeleteResponse{
 		Pid:        uint32(pid),
 		ExitStatus: exitCode,
