@@ -285,6 +285,142 @@ func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testi
 	}
 }
 
+// TestNative_Apply_EmitsStartingPhases_LegacyMode: legacy mode creates the
+// dest Job first (migrate-incoming listener before source connects), then the
+// source Job. The update stream must surface that staging order as
+// submitted → dest-starting → src-starting so CR / dashboard consumers see
+// the lifecycle the type system and CRD schema document.
+func TestNative_Apply_EmitsStartingPhases_LegacyMode(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("get", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		ga, ok := action.(clienttesting.GetAction)
+		if !ok {
+			return false, nil, nil
+		}
+		name := ga.GetName()
+		if !strings.HasPrefix(name, "katamaran-source-") && !strings.HasPrefix(name, "katamaran-dest-") {
+			return false, nil, nil
+		}
+		return true, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system"},
+			Status: batchv1.JobStatus{
+				Conditions: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}},
+			},
+		}, nil
+	})
+
+	n := NewFromClient(cs)
+	id, err := n.Apply(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create the source pod so succeededUpdate's synchronous
+	// KATAMARAN_RESULT scrape finds it instantly instead of burning its
+	// 5s bounded-scrape window (mirrors TestNative_Watch_TerminalSucceeded).
+	srcJob := "katamaran-source-" + string(id)
+	if _, err := cs.CoreV1().Pods(DefaultJobNamespace).Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      srcJob + "-pod",
+			Namespace: DefaultJobNamespace,
+			Labels:    map[string]string{"batch.kubernetes.io/job-name": srcJob},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create source pod for log scrape fallback: %v", err)
+	}
+	updates, err := n.Watch(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := drainUpdates(updates, 10*time.Second)
+	wantPrefix := []StatusPhase{PhaseSubmitted, PhaseDestStarting, PhaseSrcStarting}
+	if len(got) < len(wantPrefix)+1 {
+		t.Fatalf("want >=%d updates, got %d: %+v", len(wantPrefix)+1, len(got), got)
+	}
+	for i, want := range wantPrefix {
+		if got[i].Phase != want {
+			t.Fatalf("update[%d].phase = %s, want %s (all: %+v)", i, got[i].Phase, want, got)
+		}
+	}
+	if last := got[len(got)-1]; last.Phase != PhaseSucceeded {
+		t.Fatalf("last phase = %s, want %s", last.Phase, PhaseSucceeded)
+	}
+}
+
+// TestStageThenStartDest_EmitsDestStarting drives the ReplayCmdline staging
+// goroutine body synchronously and asserts it emits exactly one
+// PhaseDestStarting once the dest Job is created.
+func TestStageThenStartDest_EmitsDestStarting(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		jobName, ok := jobNameFromPodListAction(action)
+		if !ok || !strings.HasPrefix(jobName, "katamaran-source-") {
+			return false, nil, nil
+		}
+		return true, &corev1.PodList{Items: []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName + "-pod",
+				Namespace: DefaultJobNamespace,
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			},
+		}}}, nil
+	})
+	n := NewFromClient(cs).(*native)
+	id := MigrationID("replayid")
+	req := validRequest()
+	req.ReplayCmdline = true
+	destJob, err := renderDestJob(req, id, buildExtraArgs(req))
+	if err != nil {
+		t.Fatalf("renderDestJob: %v", err)
+	}
+	run := &nativeRun{
+		srcJob:   SourceJobName(id),
+		destJob:  DestJobName(id),
+		updates:  make(chan StatusUpdate, 4),
+		cancel:   func() {},
+		finished: make(chan struct{}),
+	}
+	n.stageThenStartDest(context.Background(), id, run, destJob)
+	select {
+	case u := <-run.updates:
+		if u.Phase != PhaseDestStarting {
+			t.Fatalf("phase = %s, want %s", u.Phase, PhaseDestStarting)
+		}
+	default:
+		t.Fatal("stageThenStartDest emitted no status update")
+	}
+	if _, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), DestJobName(id), metav1.GetOptions{}); err != nil {
+		t.Fatalf("dest job not created: %v", err)
+	}
+}
+
+// TestPhaseFromMarker covers KATAMARAN_PHASE validation. Only non-terminal
+// lifecycle phases may be surfaced from a log marker; terminal outcomes are
+// owned by the Job-condition poll's outcome matrix.
+func TestPhaseFromMarker(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in    string
+		want  StatusPhase
+		wantK bool
+	}{
+		{in: "cutover", want: PhaseCutover, wantK: true},
+		{in: "transferring", want: PhaseTransferring, wantK: true},
+		{in: "succeeded", wantK: false},
+		{in: "failed", wantK: false},
+		{in: "submitted", wantK: false},
+		{in: "", wantK: false},
+		{in: "bogus", wantK: false},
+	}
+	for _, tc := range cases {
+		gotPhase, ok := phaseFromMarker(tc.in)
+		if ok != tc.wantK || gotPhase != tc.want {
+			t.Errorf("phaseFromMarker(%q) = (%q, %v), want (%q, %v)", tc.in, gotPhase, ok, tc.want, tc.wantK)
+		}
+	}
+}
+
 func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()

@@ -280,6 +280,14 @@ func (f *fakeDiscoverer) OrphanAndDeletePod(_ context.Context, namespace, name s
 	return nil
 }
 
+// deletedPodsSnapshot returns a locked copy of deletedPods. Recovery runs in
+// a goroutine, so test assertions must not read the slice unsynchronized.
+func (f *fakeDiscoverer) deletedPodsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deletedPods...)
+}
+
 func newMigrationCR(name string, finalizers []string, withDeletion bool, status map[string]any) *unstructured.Unstructured {
 	obj := map[string]any{
 		"apiVersion": "katamaran.io/v1alpha1",
@@ -949,10 +957,11 @@ func TestReconciler_RecoverFromDestComplete_RunsSourceCleanup(t *testing.T) {
 	// Recovery runs in a goroutine; allow it a few ticks to converge.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := len(disc.deletedPods); got == 1 && disc.deletedPods[0] == "default/kata-demo" {
+		deleted := disc.deletedPodsSnapshot()
+		if len(deleted) == 1 && deleted[0] == "default/kata-demo" {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("recovery deleted pods %v, want [default/kata-demo]", disc.deletedPods)
+	t.Fatalf("recovery deleted pods %v, want [default/kata-demo]", disc.deletedPodsSnapshot())
 }

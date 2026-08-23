@@ -30,11 +30,14 @@ import (
 //
 //   - Apply / Watch / Stop for both legacy explicit-fields and pod-picker
 //     mode requests.
-//   - Status updates: PhaseSubmitted on submit, PhaseTransferring once the
-//     source Job becomes Active/Ready (and from source KATAMARAN_PROGRESS log
-//     markers when available), PhaseSucceeded when the
-//     destination Job reaches condition=Complete, and PhaseFailed when the
-//     destination fails or the source fails without a successful handover.
+//   - Status updates: PhaseSubmitted on submit, PhaseDestStarting /
+//     PhaseSrcStarting as each side's Job is created, PhaseTransferring once
+//     the source Job becomes Active/Ready (and from source
+//     KATAMARAN_PROGRESS log markers when available), PhaseCutover from the
+//     source KATAMARAN_PHASE marker (VM paused, downtime window open),
+//     PhaseSucceeded when the destination Job reaches condition=Complete,
+//     and PhaseFailed when the destination fails or the source fails
+//     without a successful handover.
 //
 // Limitations: only structured KATAMARAN_PROGRESS / KATAMARAN_RESULT /
 // KATAMARAN_DOWNTIME_LIMIT marker lines are tailed from the source pod. Full
@@ -170,6 +173,14 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	cmdlinePath := cmdlinePathFor(id)
 	srcExtra := sourceExtraArgs(req)
 	destExtra := buildExtraArgs(req)
+	// staged collects the starting-phase updates emitted while the Jobs are
+	// created below. They are flushed onto run.updates only after run is
+	// registered, so an Apply error path still leaves no inflight entry and
+	// no goroutines behind (the phase sequence stays submitted-first).
+	var staged []StatusUpdate
+	emitStarting := func(p StatusPhase) {
+		staged = append(staged, StatusUpdate{ID: id, Phase: p, When: time.Now()})
+	}
 	if req.ReplayCmdline {
 		// Source captures /proc/<qemu>/cmdline locally so it can compute
 		// the KATAMARAN_CMDLINE_B64 marker on the way out. The dest then
@@ -194,6 +205,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
 			return "", fmt.Errorf("create source job: %w", err)
 		}
+		emitStarting(PhaseSrcStarting)
 		slog.Info("Migration source job created; destination waits for cmdline replay", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	} else if req.DestNode == "" {
 		// Auto-select mode: create dest Job first (it has no nodeName and
@@ -203,6 +215,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
 			return "", fmt.Errorf("create dest job: %w", err)
 		}
+		emitStarting(PhaseDestStarting)
 		slog.Info("Auto-select: dest job created, waiting for scheduling", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace)
 
 		destNodeName, err := n.waitForDestNodeName(ctx, destJob.Name, req.PodWaitTimeoutSeconds)
@@ -235,16 +248,19 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
 			return "", fmt.Errorf("create source job: %w", err)
 		}
+		emitStarting(PhaseSrcStarting)
 		slog.Info("Auto-select: migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "source_node", req.SourceNode, "dest_node", req.DestNode, "namespace", n.namespace)
 	} else {
 		// Dest first so the migrate-incoming listener is up before source connects.
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
 			return "", fmt.Errorf("create dest job: %w", err)
 		}
+		emitStarting(PhaseDestStarting)
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
 			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
 			return "", fmt.Errorf("create source job: %w", err)
 		}
+		emitStarting(PhaseSrcStarting)
 		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	}
 
@@ -262,6 +278,9 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	n.mu.Unlock()
 
 	run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
+	for _, u := range staged {
+		run.updates <- u
+	}
 
 	if req.ReplayCmdline {
 		// Stage cmdline + create dest job in a goroutine so Apply returns
@@ -300,6 +319,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		progressMarker      = "KATAMARAN_PROGRESS "
 		resultMarker        = "KATAMARAN_RESULT "
 		downtimeLimitMarker = "KATAMARAN_DOWNTIME_LIMIT "
+		phaseMarker         = "KATAMARAN_PHASE "
 		// logFetchOverlapSec bounds how much of the source pod's log we
 		// re-fetch per tick. The ticker fires every 2s; a 30s window gives
 		// generous slack for transient apiserver hiccups while keeping the
@@ -420,6 +440,24 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				}
 				continue
 			}
+			if i := strings.Index(line, phaseMarker); i >= 0 {
+				fields := parseProgressFields(line[i+len(phaseMarker):])
+				ph, ok := phaseFromMarker(fields["phase"])
+				if !ok {
+					continue
+				}
+				seen[line] = true
+				if !send(StatusUpdate{
+					ID:      id,
+					Phase:   ph,
+					When:    time.Now(),
+					Message: "source reported " + string(ph),
+				}) {
+					done = true
+					break
+				}
+				continue
+			}
 			i := strings.Index(line, progressMarker)
 			if i < 0 {
 				continue
@@ -463,6 +501,18 @@ func parseProgressFields(s string) map[string]string {
 		out[kv[:eq]] = kv[eq+1:]
 	}
 	return out
+}
+
+// phaseFromMarker validates the phase= value of a KATAMARAN_PHASE marker
+// emitted by the source/dest binaries. Only non-terminal lifecycle phases
+// may be fabricated from log markers: terminal outcomes are owned by the
+// Job-condition poll (its outcome matrix), never by a scraped line.
+func phaseFromMarker(s string) (StatusPhase, bool) {
+	switch StatusPhase(s) {
+	case PhaseTransferring, PhaseCutover:
+		return StatusPhase(s), true
+	}
+	return "", false
 }
 
 // succeededUpdate builds the final PhaseSucceeded StatusUpdate, attaching
@@ -620,6 +670,7 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 		run.cancel()
 		return
 	}
+	run.send(StatusUpdate{ID: id, Phase: PhaseDestStarting, When: time.Now()})
 	slog.Info("Replay-from-pod wired; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 }
 

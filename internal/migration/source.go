@@ -386,6 +386,11 @@ stopLoop:
 		tunnelCreated = true
 		slog.Info("IP tunnel established. Traffic redirected", "tunnel", tunnelName)
 	}
+	// Stable, parser-friendly phase marker: the VM is paused and in-flight
+	// traffic is now buffered/redirected, so the downtime window is open. The
+	// orchestrator scrapes this from the pod log and surfaces it as the
+	// PhaseCutover status update.
+	fmt.Printf("KATAMARAN_PHASE phase=cutover\n")
 	slog.Info("Waiting for migration to complete")
 
 	migrationErr := waitForMigrationComplete(ctx, client)

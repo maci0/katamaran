@@ -30,15 +30,17 @@ spec:
                 required: [namespace, name]
                 properties:
                   namespace:
+                    description: DNS-1123 label (Kubernetes namespace naming).
                     type: string
                     minLength: 1
-                    maxLength: 253
-                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                    maxLength: 63
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                   name:
+                    description: DNS-1123 subdomain (Kubernetes pod naming).
                     type: string
                     minLength: 1
                     maxLength: 253
-                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
               destPod:
                 description: |
                   Optional reference to a kata pod on the destination node whose
@@ -49,15 +51,17 @@ spec:
                 required: [namespace, name]
                 properties:
                   namespace:
+                    description: DNS-1123 label (Kubernetes namespace naming).
                     type: string
                     minLength: 1
-                    maxLength: 253
-                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                    maxLength: 63
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                   name:
+                    description: DNS-1123 subdomain (Kubernetes pod naming).
                     type: string
                     minLength: 1
                     maxLength: 253
-                    pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
               destNode:
                 description: |
                   Kubernetes node name to migrate to. When omitted, the
@@ -66,7 +70,7 @@ spec:
                   with an anti-affinity to exclude the source node.
                 type: string
                 maxLength: 253
-                pattern: '^[a-zA-Z0-9_./:@=-]+$'
+                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
               destNodeSelector:
                 description: |
                   Optional label selector for destination node. When destNode
