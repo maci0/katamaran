@@ -119,8 +119,8 @@ sudo /usr/local/bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.
 When `--auto-downtime` is set, the source binary measures network RTT to
 the destination node by sending three ICMP echo requests (the source
 pod runs privileged, so it can open a raw socket). The downtime limit
-programmed into QEMU is then `max(rtt × 2 + 25ms, 25ms)` — the floor
-exists so an idle kata-noble VM still converges. Override that floor with
+programmed into QEMU is then `rtt × 2 + floor`, where the floor defaults
+to 25 ms so an idle kata-noble VM still converges. Override that floor with
 `--auto-downtime-floor-ms` when you need a larger minimum budget. Both the
 chosen limit and the measured RTT are surfaced:
 

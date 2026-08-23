@@ -34,7 +34,7 @@ spec:
   # Manual downtime budget in milliseconds. Ignored when autoDowntime: true.
   downtimeMS: 25
   # When true, the source binary ICMP-pings the destination node and sets
-  # the QEMU downtime limit to max(rtt × 2 + 25ms, 25ms). The chosen value
+  # the QEMU downtime limit to rtt × 2 + 25ms. The chosen value
   # is exposed in .status.appliedDowntimeMS along with .status.rttMS and
   # .status.autoDowntime once the migration starts.
   autoDowntime: false

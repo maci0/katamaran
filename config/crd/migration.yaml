@@ -109,7 +109,7 @@ spec:
                 description: |
                   Optional override for the auto-downtime calculation's floor +
                   per-call overhead, in milliseconds. The source binary
-                  computes max(rtt × 2 + autoDowntimeFloorMS, autoDowntimeFloorMS).
+                  computes rtt × 2 + autoDowntimeFloorMS.
                   Zero falls back to the source binary's compile-time default
                   (25ms). Ignored when .spec.autoDowntime is false.
                 type: integer
@@ -155,10 +155,12 @@ spec:
                 default: none
               adoptVM:
                 description: |
-                  When true, the controller creates a new Kata pod on the
-                  destination node after successful migration. The pod connects
-                  to the katamaran VM factory which serves the migrated QEMU,
-                  making the VM visible to Kubernetes as a managed pod.
+                  When true, the controller creates an adoption pod
+                  (adopted-<id8>) on the destination node after successful
+                  migration. With the katamaran-adopted RuntimeClass
+                  installed, the pod's containerd shim adopts the surviving
+                  migrated QEMU process; without it the pod falls back to
+                  kata-qemu and cold-boots a fresh VM. Experimental.
                 type: boolean
                 default: false
           status:

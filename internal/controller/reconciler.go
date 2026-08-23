@@ -891,9 +891,12 @@ func (r *Reconciler) lookupDestPodNode(ctx context.Context, id orchestrator.Migr
 }
 
 // createAdoptionPod creates a minimal Kata pod on the destination node.
-// When the Kata shim starts, it calls the factory's GetBaseVM which returns
-// the migrated QEMU. The pause container is just a placeholder — the real
-// workload is already running inside the migrated VM.
+// Its runtimeClassName (katamaran-adopted) dispatches to the
+// containerd-shim-katamaran-adopted-v2 shim, which adopts the surviving
+// migrated QEMU re-parented into /sys/fs/cgroup/katamaran-adopted by the
+// dest job, instead of cold-booting a fresh VM. The pause container is
+// just a placeholder: the real workload is already running inside the
+// migrated VM.
 //
 // Strategy A part 1 (label/owner inheritance): when the source pod was
 // owned by a ReplicaSet (i.e. part of a Deployment), copy its
