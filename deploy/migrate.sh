@@ -408,6 +408,8 @@ deploy_dest_job() {
     export QMP_SOCKET="$QMP_DEST"
     export IMAGE="$IMAGE_REF"
     export EXTRA_ARGS="$DEST_EXTRA_ARGS_FULL"
+    # Single quotes are intentional: envsubst only substitutes listed vars.
+    # shellcheck disable=SC2016
     envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/../internal/orchestrator/templates/job-dest.yaml" | "${KUBECTL[@]}" apply -f -
 
     echo ">>> Waiting for destination pod to appear..."
@@ -444,6 +446,8 @@ deploy_source_job() {
     export DEST_IP="$DEST_IP"
     export VM_IP="$VM_IP"
     export EXTRA_ARGS="$SRC_EXTRA_ARGS"
+    # Single quotes are intentional: envsubst only substitutes listed vars.
+    # shellcheck disable=SC2016
     envsubst '$NODE_NAME $QMP_SOCKET $IMAGE $DEST_IP $VM_IP $EXTRA_ARGS $KATAMARAN_MIGRATION_ID $JOB_SUFFIX' < "${SCRIPT_DIR}/../internal/orchestrator/templates/job-source.yaml" | "${KUBECTL[@]}" apply -f -
 }
 

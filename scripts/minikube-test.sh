@@ -20,8 +20,10 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+readonly PROJECT_ROOT
 readonly BINARY="${PROJECT_ROOT}/bin/katamaran"
 readonly PROFILE="katamaran-test"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
@@ -62,6 +64,8 @@ fail() {
     FAIL=$((FAIL + 1))
 }
 
+# Invoked via `trap cleanup EXIT` below; shellcheck -x misses that linkage.
+# shellcheck disable=SC2329
 cleanup() {
     if [[ "${ENV_ONLY}" == "true" ]]; then
         echo ">>> --env-only specified, leaving minikube profile '${PROFILE}' intact"

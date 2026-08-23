@@ -23,9 +23,12 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+readonly PROJECT_ROOT
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+# shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 readonly KATA_CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 
@@ -446,6 +449,8 @@ if [[ "${STORAGE}" == "nfs" ]]; then
     log "Deploying NFS server on Node 1..."
     export NODE_NAME="${NODE1}"
     export NFS_EXPORT_PATH="/exports"
+    # Single quotes are intentional: envsubst only substitutes listed vars.
+    # shellcheck disable=SC2016
     envsubst '$NODE_NAME $NFS_EXPORT_PATH' < "${SCRIPT_DIR}/manifests/nfs-server.yaml" \
         | kubectl --context "${CTX}" apply -f -
 

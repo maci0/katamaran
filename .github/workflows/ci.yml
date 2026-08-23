@@ -87,7 +87,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell scripts
-        run: shellcheck -x -e SC1091,SC2016,SC2155,SC2329 scripts/*.sh deploy/migrate.sh
+        run: shellcheck -x scripts/*.sh deploy/migrate.sh
 
   dependency-review:
     # Surface known-vulnerable / license-incompatible deps newly introduced

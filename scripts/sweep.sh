@@ -8,9 +8,12 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+readonly PROJECT_ROOT
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
+# shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
 PROVIDER="minikube"
@@ -115,7 +118,8 @@ get_node_ip() {
 get_qmp_socket() {
     local pod="$1"
     local node="$2"
-    local pod_uid=$("${KUBECTL[@]}" get pod "$pod" -o jsonpath='{.metadata.uid}')
+    local pod_uid
+    pod_uid=$("${KUBECTL[@]}" get pod "$pod" -o jsonpath='{.metadata.uid}')
     node_exec "${node}" "${SUDO} crictl inspect -o go-template --template '{{.info.runtimeSpec.annotations.io\\.katacontainers\\.config\\.hypervisor\\.monitor_path}}' \$(${SUDO} crictl ps --label io.kubernetes.pod.uid=${pod_uid} -q) 2>/dev/null"
 }
 
