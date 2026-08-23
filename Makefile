@@ -32,10 +32,12 @@ build-factory:
 build-adopted-shim:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
 
-# Run go vet and gofmt checks (-s also enforces gofmt simplifications)
+# Run go vet and gofmt checks (-s also enforces gofmt simplifications).
+# gofmt covers every tracked .go file so it stays in sync with `./...`
+# even when packages live outside cmd/ and internal/.
 vet:
 	go vet ./...
-	@test -z "$$(gofmt -s -l cmd internal)" || (echo "gofmt needed on:"; gofmt -s -l cmd internal; exit 1)
+	@test -z "$$(gofmt -s -l $$(git ls-files '*.go'))" || (echo "gofmt needed on:"; gofmt -s -l $$(git ls-files '*.go'); exit 1)
 
 # Run unit tests with race detector
 test:
