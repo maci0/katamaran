@@ -109,3 +109,16 @@ var ErrUnknownID = errors.New("unknown migration ID")
 // MigrationIDLabel is the Kubernetes label key used to tag Jobs belonging
 // to a specific migration, allowing the controller to find them.
 const MigrationIDLabel = "katamaran.io/migration-id"
+
+// DrainInBackground consumes ch until it closes. Callers that abandon a
+// Watch stream early (error return, panic recovery) must keep draining:
+// once the buffered updates fill, the orchestrator's poll goroutine blocks
+// forever on its next send, pinning its inflight entry and poll/tail
+// goroutines until process exit. On the normal path the channel is already
+// closed by the time this runs and the drainer exits immediately.
+func DrainInBackground(ch <-chan StatusUpdate) {
+	go func() {
+		for range ch {
+		}
+	}()
+}

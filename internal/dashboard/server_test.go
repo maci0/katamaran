@@ -446,6 +446,8 @@ func TestMux_MethodNotAllowed(t *testing.T) {
 			}
 			if allow := w.Header().Get("Allow"); allow == "" {
 				t.Fatal("expected Allow header to be set")
+			} else if want, ok := apiAllowedMethods[tt.path]; ok && allow != want {
+				t.Fatalf("Allow header = %q, want %q (must advertise exactly the registered methods)", allow, want)
 			}
 			if strings.HasPrefix(tt.path, "/api/") {
 				if ct := w.Header().Get("Content-Type"); ct != "application/json" {
@@ -590,6 +592,68 @@ func TestHandlePingStart_AlreadyRunning(t *testing.T) {
 	}
 }
 
+// TestHandlePingStop_WhileRunningThenRestart pins the full loadgen lifecycle:
+// stopping a RUNNING generator must report stopped=true, actually clear
+// loadgenRunning once the generator goroutine exits, and allow a subsequent
+// start. A regression that leaks loadgenRunning=true would permanently 409
+// every future start while this test fails.
+func TestHandlePingStop_WhileRunningThenRestart(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	t.Cleanup(app.stopLoadgen)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ping?target=192.0.2.1", nil)
+	w := httptest.NewRecorder()
+	app.handlePingStart(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start: expected 202, got %v", w.Code)
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/ping/stop", nil)
+	stopW := httptest.NewRecorder()
+	app.handleLoadgenStop(stopW, stopReq)
+	if stopW.Code != http.StatusOK {
+		t.Fatalf("stop: expected 200, got %v", stopW.Code)
+	}
+	var stopResp struct {
+		Message     string `json:"message"`
+		Stopped     bool   `json:"stopped"`
+		LoadgenType string `json:"loadgen_type"`
+	}
+	if err := json.Unmarshal(stopW.Body.Bytes(), &stopResp); err != nil {
+		t.Fatalf("unmarshal stop response: %v (body=%s)", err, stopW.Body.String())
+	}
+	if !stopResp.Stopped {
+		t.Fatal("stopped = false, want true (a generator was running)")
+	}
+	if stopResp.LoadgenType != "ping" {
+		t.Fatalf("loadgen_type = %q, want %q", stopResp.LoadgenType, "ping")
+	}
+
+	// The generator goroutine clears the flag on exit; give it a bounded
+	// window rather than assuming immediate teardown.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		app.loadgenMutex.Lock()
+		running := app.loadgenRunning
+		app.loadgenMutex.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("loadgenRunning still true after stop; generator goroutine never cleared it")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	restartReq := httptest.NewRequest(http.MethodPost, "/api/ping?target=192.0.2.1", nil)
+	restartW := httptest.NewRecorder()
+	app.handlePingStart(restartW, restartReq)
+	if restartW.Code != http.StatusAccepted {
+		t.Fatalf("restart after stop: expected 202, got %v", restartW.Code)
+	}
+}
+
 func TestHandleHTTPStart_AlreadyRunning(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -706,6 +770,46 @@ func TestHandleMigrate_AcceptsValidRequest(t *testing.T) {
 	}
 	if got.TapIface != "tap0_kata" || got.Image != "katamaran:dev" {
 		t.Fatalf("tap/image = (%q, %q), want (tap0_kata, katamaran:dev)", got.TapIface, got.Image)
+	}
+}
+
+// TestHandleMigrate_WatchLostMarksError pins the failure classification for
+// a watch stream that dies before any terminal phase: the UI must report an
+// error ("watch closed without terminal status"), not success, and the
+// watch-lost counter must advance. A regression here would show a dead
+// migration as still-running or successful.
+func TestHandleMigrate_WatchLostMarksError(t *testing.T) {
+	t.Parallel()
+	app := &App{orch: newFakeOrchestrator("watchlost")}
+	t.Cleanup(func() {
+		app.migrationMutex.Lock()
+		if app.migrationCancel != nil {
+			app.migrationCancel()
+		}
+		app.migrationMutex.Unlock()
+	})
+	beforeWatchLost := dashboardMigrationWatchLostTotal.Value()
+
+	form := validMigrateForm()
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	app.handleMigrate(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %v", w.Code)
+	}
+	waitMigrationDone(t, app, 5*time.Second)
+
+	app.migrationMutex.Lock()
+	defer app.migrationMutex.Unlock()
+	if app.lastMigrationResult != "error" {
+		t.Fatalf("lastMigrationResult = %q, want %q", app.lastMigrationResult, "error")
+	}
+	if app.lastMigrationError != "watch closed without terminal status" {
+		t.Fatalf("lastMigrationError = %q, want %q", app.lastMigrationError, "watch closed without terminal status")
+	}
+	if delta := dashboardMigrationWatchLostTotal.Value() - beforeWatchLost; delta < 1 {
+		t.Fatalf("dashboard_migration_watch_lost_total delta = %d, want >= 1", delta)
 	}
 }
 
@@ -1248,6 +1352,51 @@ func TestCSRFCheck_AllowsSameOriginReferer(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for same-origin Referer, got %v", w.Code)
+	}
+}
+
+func TestCSRFCheck_BlocksCrossSiteSecFetchSite(t *testing.T) {
+	t.Parallel()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := csrfCheck(inner)
+
+	// Sec-Fetch-Site is browser-set and unforgeable from script, so it wins
+	// even when Origin/Referer look same-origin (e.g. a spoofed header from
+	// a non-browser is not the threat; a compromised sibling origin is).
+	// "same-site" must also be rejected: it still permits sibling-subdomain
+	// attacks. Only "same-origin" and "none" prove our exact origin.
+	for _, sfs := range []string{"cross-site", "cross-origin", "same-site"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/migrate", nil)
+		req.Host = "dashboard.local:8080"
+		req.Header.Set("Origin", "http://dashboard.local:8080")
+		req.Header.Set("Sec-Fetch-Site", sfs)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("Sec-Fetch-Site %q with matching Origin: expected 403, got %v", sfs, w.Code)
+		}
+	}
+}
+
+func TestCSRFCheck_AllowsSameOriginAndNoneSecFetchSite(t *testing.T) {
+	t.Parallel()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := csrfCheck(inner)
+
+	for _, sfs := range []string{"same-origin", "none"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/migrate", nil)
+		req.Host = "dashboard.local:8080"
+		req.Header.Set("Origin", "http://dashboard.local:8080")
+		req.Header.Set("Sec-Fetch-Site", sfs)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("Sec-Fetch-Site %q with matching Origin: expected 200, got %v", sfs, w.Code)
+		}
 	}
 }
 

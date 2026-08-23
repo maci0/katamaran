@@ -403,19 +403,10 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		r.patchFailedStatus(ctx, key, string(id), "Watch failed", err.Error())
 		return
 	}
-	// If we abandon this stream early (the recovered-panic path below), the
-	// orchestrator's poll goroutine blocks forever on its next send once the
-	// buffered updates fill, pinning its inflight entry and poll/tail
-	// goroutines until process exit. Keep draining in the background so the
-	// producer can always finish and clean up; on the normal path the channel
-	// is already closed by the time this defer runs and the drainer exits
-	// immediately.
-	defer func() {
-		go func() {
-			for range updates {
-			}
-		}()
-	}()
+	// Keep draining the stream even if we abandon it early (recovered-panic
+	// path) so the orchestrator's producer can always finish; see
+	// orchestrator.DrainInBackground.
+	defer orchestrator.DrainInBackground(updates)
 	var lastPhase string
 	// Coalescing state: during bulk RAM transfer the orchestrator emits a
 	// PhaseTransferring update per progress marker (ram_transferred changes
@@ -800,27 +791,25 @@ func specToRequest(obj map[string]any) (orchestrator.Request, error) {
 	req.SharedStorage, _, _ = unstructured.NestedBool(obj, "spec", "sharedStorage")
 	req.ReplayCmdline, _, _ = unstructured.NestedBool(obj, "spec", "replayCmdline")
 	req.TunnelMode, _, _ = unstructured.NestedString(obj, "spec", "tunnelMode")
-	if dt, found, _ := unstructured.NestedInt64(obj, "spec", "downtimeMS"); found {
-		req.DowntimeMS = int(dt)
-	}
+	req.DowntimeMS = nestedSpecInt(obj, "downtimeMS")
 	req.AutoDowntime, _, _ = unstructured.NestedBool(obj, "spec", "autoDowntime")
-	if floor, found, _ := unstructured.NestedInt64(obj, "spec", "autoDowntimeFloorMS"); found {
-		req.AutoDowntimeFloorMS = int(floor)
-	}
-	if cni, found, _ := unstructured.NestedInt64(obj, "spec", "cniConvergenceDelaySeconds"); found {
-		req.CNIConvergenceDelaySeconds = int(cni)
-	}
-	if mc, found, _ := unstructured.NestedInt64(obj, "spec", "multifdChannels"); found {
-		req.MultifdChannels = int(mc)
-	}
-	if pwt, found, _ := unstructured.NestedInt64(obj, "spec", "podWaitTimeoutSeconds"); found {
-		req.PodWaitTimeoutSeconds = int(pwt)
-	}
+	req.AutoDowntimeFloorMS = nestedSpecInt(obj, "autoDowntimeFloorMS")
+	req.CNIConvergenceDelaySeconds = nestedSpecInt(obj, "cniConvergenceDelaySeconds")
+	req.MultifdChannels = nestedSpecInt(obj, "multifdChannels")
+	req.PodWaitTimeoutSeconds = nestedSpecInt(obj, "podWaitTimeoutSeconds")
 	req.SourceCleanup, _, _ = unstructured.NestedString(obj, "spec", "sourceCleanup")
 	req.AdoptVM, _, _ = unstructured.NestedBool(obj, "spec", "adoptVM")
 	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
 	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil
+}
+
+// nestedSpecInt reads an integer .spec field. Unstructured ints decode as
+// int64; Request fields are int. A missing or malformed field yields 0,
+// which is also the zero value the caller's fresh Request starts from.
+func nestedSpecInt(obj map[string]any, field string) int {
+	v, _, _ := unstructured.NestedInt64(obj, "spec", field)
+	return int(v)
 }
 
 // patchStatus issues a JSON merge patch against the Migration's status

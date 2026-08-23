@@ -113,6 +113,54 @@ func TestInjectReplayFromPod_NoKatamaranContainer(t *testing.T) {
 	}
 }
 
+// The ref is interpolated into a /bin/sh -c command string, so both halves
+// must pass DNS-1123 validation before any command text is touched.
+func TestInjectReplayFromPod_RejectsInvalidRef(t *testing.T) {
+	t.Parallel()
+	newJob := func() *batchv1.Job {
+		return &batchv1.Job{
+			Spec: batchv1.JobSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Name:    "katamaran",
+							Command: []string{"/bin/sh", "-c", "/usr/local/bin/katamaran --mode dest"},
+						}},
+					},
+				},
+			},
+		}
+	}
+	tests := []struct {
+		name    string
+		ns      string
+		pod     string
+		wantErr string
+	}{
+		{"NamespaceNotDNSLabel", "default/vm;id", "vm-a-pod", "invalid source pod namespace"},
+		{"NamespaceEmpty", "", "vm-a-pod", "invalid source pod namespace"},
+		{"PodNameWithMetachars", "default", "vm-a$(reboot)", "invalid source pod name"},
+		{"PodNameNotSubdomain", "default", "VM-A-POD", "invalid source pod name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			job := newJob()
+			got, err := injectReplayFromPod(job, tt.ns, tt.pod)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+			if got != nil {
+				t.Fatal("job must not be returned on validation failure")
+			}
+			cmd := job.Spec.Template.Spec.Containers[0].Command
+			if len(cmd) < 3 || strings.Contains(cmd[len(cmd)-1], "--replay-cmdline-from-pod") {
+				t.Fatalf("command must be untouched on validation failure: %q", cmd)
+			}
+		})
+	}
+}
+
 func TestNative_Apply_CreatesBothJobs(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset()
@@ -594,7 +642,10 @@ func TestNative_Stop_DeletesJobs(t *testing.T) {
 	if err := n.Stop(context.Background(), id); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	jobs, _ := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
 	if len(jobs.Items) != 0 {
 		t.Fatalf("expected jobs deleted, got %v", jobs.Items)
 	}
@@ -608,6 +659,30 @@ func TestExpandShellVars(t *testing.T) {
 	}
 	if expandShellVars("${unknown}", nil) != "" {
 		t.Fatal("expected unknown var to expand to empty")
+	}
+}
+
+// TestExpandShellVars_NoBareNameExpansion pins the documented boundary
+// (see native_jobs.go): only ${NAME} is expanded. A bare $NAME must pass
+// through literally, and an unclosed ${ must too — rendered commands are
+// shell-evaluated, so silent mangling of either would change every job.
+func TestExpandShellVars_NoBareNameExpansion(t *testing.T) {
+	t.Parallel()
+	vars := map[string]string{"NODE_NAME": "worker-a"}
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"$NODE_NAME", "$NODE_NAME"},
+		{"node=${NODE_NAME}", "node=worker-a"},
+		{"unclosed ${A", "unclosed ${A"},
+		{"${A", "${A"},
+		{"$", "$"},
+	}
+	for _, tt := range tests {
+		if got := expandShellVars(tt.in, vars); got != tt.want {
+			t.Errorf("expandShellVars(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
@@ -669,18 +744,18 @@ func TestSucceededUpdate_RecoversFromTailRace(t *testing.T) {
 	// the values onto the StatusUpdate.
 	n := newFromClient(cs)
 	run := &nativeRun{
-		srcJob:           "katamaran-source-id1",
-		destJob:          "katamaran-dest-id1",
-		updates:          make(chan StatusUpdate, 4),
-		finished:         make(chan struct{}),
-		resultCaptured:   true,
-		resultDowntime:   42,
-		resultRAMXfer:    111,
-		resultRAMTotal:   222,
-		downtimeCaptured: true,
-		appliedDowntime:  25,
-		rttMS:            3,
-		autoDowntime:     true,
+		srcJob:               "katamaran-source-id1",
+		destJob:              "katamaran-dest-id1",
+		updates:              make(chan StatusUpdate, 4),
+		finished:             make(chan struct{}),
+		resultCaptured:       true,
+		resultDowntime:       42,
+		resultRAMTransferred: 111,
+		resultRAMTotal:       222,
+		downtimeCaptured:     true,
+		appliedDowntime:      25,
+		rttMS:                3,
+		autoDowntime:         true,
 	}
 	u := n.succeededUpdate(context.Background(), MigrationID("id1"), run)
 	if u.Phase != PhaseSucceeded {
@@ -843,7 +918,10 @@ func TestNative_Resume_NoOpWhenNotReplay(t *testing.T) {
 	if created {
 		t.Fatal("Resume must report created=false in non-replay mode")
 	}
-	jobs, _ := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
 	if len(jobs.Items) != 0 {
 		t.Fatalf("Resume must not create jobs in non-replay mode; got %d", len(jobs.Items))
 	}
@@ -868,7 +946,10 @@ func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
 	if created {
 		t.Fatal("Resume must report created=false when dest already exists")
 	}
-	jobs, _ := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
 	if len(jobs.Items) != 1 {
 		t.Fatalf("expected exactly 1 job (the existing dest), got %d", len(jobs.Items))
 	}

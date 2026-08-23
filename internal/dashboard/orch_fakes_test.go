@@ -24,6 +24,8 @@ type fakeOrchestrator struct {
 	//   "fail"    — emit submitted + failed (with err), then close.
 	//   "slow"    — emit submitted, hold the channel open until Stop is
 	//               called or the test cleanup cancels the run.
+	//   "watchlost" — emit submitted, then close without any terminal
+	//               phase, simulating a watch stream dying mid-migration.
 	behaviour string
 
 	// per-run state
@@ -93,6 +95,10 @@ func (f *fakeOrchestrator) Apply(ctx context.Context, req orchestrator.Request) 
 			run.updates <- orchestrator.StatusUpdate{ID: id, Phase: orchestrator.PhaseSucceeded, When: time.Now()}
 		case "fail":
 			run.updates <- orchestrator.StatusUpdate{ID: id, Phase: orchestrator.PhaseFailed, When: time.Now(), Error: errors.New("synthetic failure")}
+		case "watchlost":
+			// Close the stream right after submission with no terminal
+			// phase: runOrchestrator must classify this as watch-lost.
+			return
 		case "slow":
 			// Block until Stop() or context cancel.
 			select {

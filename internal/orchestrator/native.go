@@ -75,11 +75,11 @@ type nativeRun struct {
 	// scrapes a KATAMARAN_RESULT marker; poll reads them when emitting
 	// PhaseSucceeded so the final StatusUpdate carries actual downtime
 	// and final RAM totals.
-	resultMu       sync.Mutex
-	resultCaptured bool
-	resultDowntime int64
-	resultRAMXfer  int64
-	resultRAMTotal int64
+	resultMu             sync.Mutex
+	resultCaptured       bool
+	resultDowntime       int64
+	resultRAMTransferred int64
+	resultRAMTotal       int64
 
 	// Downtime-limit marker captured from the source pod log before the
 	// cutover. Populated by tailProgress when it sees
@@ -409,9 +409,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 			if i := strings.Index(line, resultMarker); i >= 0 {
 				fields := parseProgressFields(line[i+len(resultMarker):])
 				run.resultMu.Lock()
-				run.resultDowntime = parseInt64(fields["downtime_ms"])
-				run.resultRAMXfer = parseInt64(fields["ram_transferred"])
-				run.resultRAMTotal = parseInt64(fields["ram_total"])
+				run.resultDowntime, run.resultRAMTransferred, run.resultRAMTotal = parseResultFields(fields)
 				run.resultCaptured = true
 				run.resultMu.Unlock()
 				done = true
@@ -537,7 +535,7 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 	captured := run.resultCaptured
 	if captured {
 		u.DowntimeMS = run.resultDowntime
-		u.RAMTransferred = run.resultRAMXfer
+		u.RAMTransferred = run.resultRAMTransferred
 		u.RAMTotal = run.resultRAMTotal
 	}
 	if run.downtimeCaptured {
@@ -553,15 +551,15 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 	// up the terminal status update.
 	scrapeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if down, xfer, total, ok := n.scrapeResultMarker(scrapeCtx, run.srcJob); ok {
+	if down, transferred, total, ok := n.scrapeResultMarker(scrapeCtx, run.srcJob); ok {
 		run.resultMu.Lock()
 		run.resultCaptured = true
 		run.resultDowntime = down
-		run.resultRAMXfer = xfer
+		run.resultRAMTransferred = transferred
 		run.resultRAMTotal = total
 		run.resultMu.Unlock()
 		u.DowntimeMS = down
-		u.RAMTransferred = xfer
+		u.RAMTransferred = transferred
 		u.RAMTotal = total
 	}
 	return u
@@ -571,7 +569,7 @@ func (n *native) succeededUpdate(ctx context.Context, id MigrationID, run *nativ
 // log tail and returns the latest KATAMARAN_RESULT marker's downtime /
 // transferred / total fields. Returns ok=false if no source pod exists, the
 // log stream fails, or no marker is present in the captured log window.
-func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtimeMS, ramXfer, ramTotal int64, ok bool) {
+func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtimeMS, ramTransferred, ramTotal int64, ok bool) {
 	pod, err := n.firstSourcePod(ctx, srcJob, 0)
 	if err != nil {
 		return 0, 0, 0, false
@@ -596,15 +594,12 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 		if i < 0 {
 			continue
 		}
-		fields := parseProgressFields(line[i+len(marker):])
-		downtimeMS = parseInt64(fields["downtime_ms"])
-		ramXfer = parseInt64(fields["ram_transferred"])
-		ramTotal = parseInt64(fields["ram_total"])
+		downtimeMS, ramTransferred, ramTotal = parseResultFields(parseProgressFields(line[i+len(marker):]))
 		ok = true
 		// Don't break — take the LAST marker, which is what tailProgress
 		// would have picked up too.
 	}
-	return downtimeMS, ramXfer, ramTotal, ok
+	return downtimeMS, ramTransferred, ramTotal, ok
 }
 
 // parseInt64 decodes an integer field from a scraped KATAMARAN_* marker.
@@ -619,6 +614,15 @@ func parseInt64(s string) int64 {
 		return 0
 	}
 	return v
+}
+
+// parseResultFields decodes the three KATAMARAN_RESULT marker counters.
+// Shared by tailProgress (live capture) and scrapeResultMarker (final
+// synchronous scrape) so the field names cannot drift between the two paths.
+func parseResultFields(fields map[string]string) (downtimeMS, ramTransferred, ramTotal int64) {
+	return parseInt64(fields["downtime_ms"]),
+		parseInt64(fields["ram_transferred"]),
+		parseInt64(fields["ram_total"])
 }
 
 // ConditionFailureDetails extracts a terminal Job condition's reason and

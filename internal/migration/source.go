@@ -54,6 +54,43 @@ func queryMigrateInfo(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo,
 	return info, nil
 }
 
+// resolveSourcePod resolves pod-mode configuration before any QMP work:
+// it fills cfg.VMIP and cfg.QMPSocket from the live sandbox state and
+// returns the resolved QEMU PID.
+func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (int, error) {
+	ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
+	if err != nil {
+		return 0, fmt.Errorf("lookup pod IP: %w", err)
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return 0, fmt.Errorf("parse resolved pod IP %q: %w", ip, err)
+	}
+	cfg.VMIP = addr
+	res, err := resolveSandbox(sandboxRoot, procImpl, ip)
+	if err != nil {
+		return 0, fmt.Errorf("resolve sandbox: %w", err)
+	}
+	// Override QMPSocket in pod mode unless the user supplied an explicit
+	// non-default override. The CLI default is DefaultQMPSocket (no
+	// sandbox UUID) — anything matching that gets replaced with the
+	// resolved sandbox-specific path.
+	if cfg.QMPSocket == "" || cfg.QMPSocket == DefaultQMPSocket {
+		cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
+	}
+	// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
+	// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
+	// TCP migration stream. Best-effort: a pod without the filter (e.g.
+	// host-network) is fine.
+	netnsPath := fmt.Sprintf("/proc/%d/ns/net", res.PID)
+	if err := runCmd(ctx, "nsenter", "--net="+netnsPath, "tc", "filter", "del", "dev", "eth0", "ingress"); err != nil {
+		slog.Warn("tc filter del eth0 ingress failed (probably already absent)", "error", err)
+	} else {
+		slog.Info("Removed kata tc mirred ingress filter on eth0", "netns", netnsPath)
+	}
+	return res.PID, nil
+}
+
 // RunSource initiates live migration from the source node to the destination.
 //
 // A deferred cleanup ensures the drive-mirror job is torn down on any early
@@ -81,37 +118,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	}
 	var resolvedQEMUPID int
 	if cfg.PodName != "" {
-		ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
+		pid, err := resolveSourcePod(ctx, &cfg)
 		if err != nil {
-			return fmt.Errorf("lookup pod IP: %w", err)
+			return err
 		}
-		addr, err := netip.ParseAddr(ip)
-		if err != nil {
-			return fmt.Errorf("parse resolved pod IP %q: %w", ip, err)
-		}
-		cfg.VMIP = addr
-		res, err := resolveSandbox(sandboxRoot, procImpl, ip)
-		if err != nil {
-			return fmt.Errorf("resolve sandbox: %w", err)
-		}
-		// Override QMPSocket in pod mode unless the user supplied an explicit
-		// non-default override. The CLI default is DefaultQMPSocket (no
-		// sandbox UUID) — anything matching that gets replaced with the
-		// resolved sandbox-specific path.
-		if cfg.QMPSocket == "" || cfg.QMPSocket == DefaultQMPSocket {
-			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
-		}
-		resolvedQEMUPID = res.PID
-		// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
-		// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
-		// TCP migration stream. Best-effort: a pod without the filter (e.g.
-		// host-network) is fine.
-		netnsPath := fmt.Sprintf("/proc/%d/ns/net", res.PID)
-		if err := runCmd(ctx, "nsenter", "--net="+netnsPath, "tc", "filter", "del", "dev", "eth0", "ingress"); err != nil {
-			slog.Warn("tc filter del eth0 ingress failed (probably already absent)", "error", err)
-		} else {
-			slog.Info("Removed kata tc mirred ingress filter on eth0", "netns", netnsPath)
-		}
+		resolvedQEMUPID = pid
 	}
 
 	// Capture the QEMU cmdline for the dest job to replay with -incoming defer.
@@ -341,7 +352,6 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	var lastLoggedStatus qmp.MigrateStatus
 	var lastLoggedRemaining int64
 	var queryErrors int
-stopLoop:
 	for {
 		err = client.WaitForEvent(ctx, "STOP", migrationPollInterval)
 		if err == nil {
@@ -375,7 +385,7 @@ stopLoop:
 					return fmt.Errorf("during STOP polling: %w", termErr)
 				}
 				slog.Warn("Migration completed without explicit STOP event", "status", info.Status)
-				break stopLoop
+				break
 			}
 			continue
 		}

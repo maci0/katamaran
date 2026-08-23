@@ -6,7 +6,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 func TestNativeDiscoverer_ListKataPods(t *testing.T) {
@@ -98,12 +100,23 @@ func TestNativeDiscoverer_OrphanAndDeletePod(t *testing.T) {
 			}},
 		},
 	})
+	var patchBody string
+	cs.PrependReactor("patch", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		pa := action.(clienttesting.PatchAction)
+		patchBody = string(pa.GetPatch())
+		return false, nil, nil // fall through to the default reactor
+	})
 	d := newDiscovererFromClient(cs)
 	if err := d.OrphanAndDeletePod(context.Background(), "default", "owned-pod"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cs.CoreV1().Pods("default").Get(context.Background(), "owned-pod", metav1.GetOptions{}); err == nil {
 		t.Fatal("pod should be deleted after orphan+delete")
+	}
+	// Deleting alone is not the contract: ownerReferences must be nulled via
+	// a merge patch first, or the parent controller reschedules the pod.
+	if patchBody != `{"metadata":{"ownerReferences":null}}` {
+		t.Fatalf("orphan merge patch = %q, want ownerReferences null", patchBody)
 	}
 }
 
