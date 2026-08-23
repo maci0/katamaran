@@ -59,6 +59,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] `setupTunnel` creates a tunnel with `mode ipip` for IPv4 addresses
 - [x] Host route uses `ip route replace <vmIP> dev <tunnel>`
 - [x] Both `--dest-ip` and `--vm-ip` are validated with `netip.ParseAddr`
+- [x] `--tunnel-mode gre` creates a GRE tunnel instead; `--tunnel-mode none` skips tunnel creation entirely
 
 ### US-5: Migrate VMs with IPv6 pod IPs
 
@@ -71,6 +72,7 @@ User stories for katamaran — zero-packet-drop live migration for Kata Containe
 - [x] Host route uses `ip -6 route replace <vmIP> dev <tunnel>`
 - [x] Mixed address families (IPv4 dest + IPv6 vm or vice versa) are rejected with a clear error
 - [x] IPv6 addresses are validated at the CLI level before migration begins
+- [x] `--tunnel-mode gre` creates an `ip6gre` tunnel instead
 
 ---
 

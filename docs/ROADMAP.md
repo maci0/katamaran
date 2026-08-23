@@ -125,6 +125,8 @@ Full controller-managed migration requires three components working together:
 
 1. **Pre-migration annotation + admission webhook** — Before migration starts, katamaran annotates the source pod's owner (Deployment/ReplicaSet) with `katamaran.io/migrating=true`. A validating admission webhook rejects replacement pod creation while the annotation is present, preventing the race between source pod death and cleanup. After migration, the annotation is removed.
 
+   **Status:** partially shipped in a simpler form — the validating webhook exists (`cmd/katamaran-mgr/webhook.go`, `internal/controller/admission.go`) but consults an in-memory adoption-pending registry marked by the reconciler when the migration succeeds, not owner annotations. See the Source Pod Lifecycle section under Short Term.
+
 2. **Kata sandbox adoption** — Make the migrated QEMU process appear as a regular Kata pod on the destination, visible to `kubectl`, manageable by Deployments, monitored by kubelet.
 
    **Research (May 2026):**
@@ -180,7 +182,7 @@ When a Deployment-managed pod migrates, katamaran must decide how the adoption p
 - Controller creates a *new* pod object (`adopted-<id8>`) on the destination node.
 - The adoption pod inherits the source's labels (so it matches the Deployment selector + RS pod-template-hash) and ownerReferences (so the ReplicaSet treats it as one of its own pods).
 - Source pod is then deleted via `spec.sourceCleanup: orphan|delete`.
-- A 5s race window remains between source-delete and adoption-create where the RS sees zero matching pods and may spawn a fresh replacement. A **validating admission webhook** intercepts that spurious create and denies it while a Migration CR for the source pod is in `succeeded` phase but the adoption pod has not yet appeared.
+- A 5s race window remains between source-delete and adoption-create where the RS sees zero matching pods and may spawn a fresh replacement. A **validating admission webhook** intercepts that spurious create and denies it while the source pod's controller is marked adoption-pending in the reconciler's in-memory registry (`internal/controller/admission.go`); entries expire after 5 minutes so a crashed reconciler cannot wedge a Deployment forever.
 - End state: Deployment view is unchanged (one pod matching the selector), the migrated VM lives inside the new adoption pod, the original pod object is gone.
 - **Trade-off:** the migrated VM lives in a *different k8s pod object* than it started in. Tools that key off pod UID across the migration (e.g. some monitoring stacks) will see a "new pod". Same pattern KubeVirt uses with VirtualMachineInstance, so this is industry standard for live VM migration on k8s.
 - **Why chosen:** smallest blast radius (one webhook rule, simple controller diff), bounded race window, end-state semantics match RS expectations exactly.
