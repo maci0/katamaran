@@ -21,11 +21,11 @@ katamaran is feature-complete for single-pod, multi-disk, single-NIC live migrat
 | Multifd parallel RAM channels | Done |
 | Migration CRD + controller (HA, leader election) | Done |
 | Web dashboard with live progress | Done |
-| CI: lint, test, fuzz seeds, build, Docker, E2E | Done |
+| CI: lint, test (amd64 + arm64), fuzz seeds, govulncheck, shellcheck, build + smoke, Docker | Done |
 | Multi-arch release workflow (amd64 + arm64) | Done |
-| E2E across CNIs (OVN, Cilium, Calico, Flannel) | Done |
-| E2E across providers (minikube, kind) | Done |
-| TCG (no-KVM) E2E on CI | Done |
+| E2E across CNIs (OVN, Cilium, Calico, Flannel), manual via `e2e.sh --cni` | Done (manual harness) |
+| E2E across providers (minikube, kind), manual via `e2e.sh --provider` | Done (manual harness) |
+| TCG (no-KVM) E2E via `e2e.sh --tcg`, manual only (removed from CI: too slow on shared runners) | Done (manual harness) |
 
 ---
 
