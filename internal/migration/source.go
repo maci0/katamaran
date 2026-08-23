@@ -17,6 +17,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 
+	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/qmp"
 )
 
@@ -560,15 +561,11 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 }
 
 // logTransientQueryError logs at Debug for the first few consecutive
-// query-migrate failures and escalates to Warn at >= 10 in a row, so a
-// flapping QMP socket surfaces in production logs without spamming on
+// query-migrate failures and escalates to Warn per logging.TransientLevel,
+// so a flapping QMP socket surfaces in production logs without spamming on
 // every transient timeout.
 func logTransientQueryError(ctx context.Context, msg string, err error, consecutive int) {
-	lvl := slog.LevelDebug
-	if consecutive == 10 || consecutive%30 == 0 {
-		lvl = slog.LevelWarn
-	}
-	slog.Log(ctx, lvl, msg, "error", err, "consecutive_errors", consecutive)
+	slog.Log(ctx, logging.TransientLevel(consecutive), msg, "error", err, "consecutive_errors", consecutive)
 }
 
 // migrationTerminalError checks if a migration status indicates a terminal

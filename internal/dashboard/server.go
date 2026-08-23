@@ -419,20 +419,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.migrationMutex.Lock()
-	logStart := a.migrationLogSeq - int64(len(a.migrationOutput))
-	logSrc := a.migrationOutput
-	logsReset := false
-	if logsDelta {
-		switch {
-		case logsAfter < logStart || logsAfter > a.migrationLogSeq:
-			logsReset = true
-		case logsAfter > logStart:
-			logSrc = logSrc[logsAfter-logStart:]
-		}
-	}
-	logs := make([]string, len(logSrc))
-	copy(logs, logSrc)
-	logsNext := a.migrationLogSeq
+	logView, logsNext, logsReset := cursorWindow(a.migrationOutput, a.migrationLogSeq, logsAfter, logsDelta)
+	logs := make([]string, len(logView))
+	copy(logs, logView)
 	status := a.isMigrating
 	migrationID := a.migrationID
 	migrationStart := a.migrationStart
@@ -456,20 +445,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.loadgenMutex.Lock()
-	pingStart := a.pingSeq - int64(len(a.pingLog))
-	pingSrc := a.pingLog
-	pingsReset := false
-	if pingsDelta {
-		switch {
-		case pingsAfter < pingStart || pingsAfter > a.pingSeq:
-			pingsReset = true
-		case pingsAfter > pingStart:
-			pingSrc = pingSrc[pingsAfter-pingStart:]
-		}
-	}
-	pings := make([]PingData, len(pingSrc))
-	copy(pings, pingSrc)
-	pingsNext := a.pingSeq
+	pingView, pingsNext, pingsReset := cursorWindow(a.pingLog, a.pingSeq, pingsAfter, pingsDelta)
+	pings := make([]PingData, len(pingView))
+	copy(pings, pingView)
 	loadgenRunning := a.loadgenRunning
 	loadgenType := a.loadgenType
 	a.loadgenMutex.Unlock()
@@ -507,4 +485,24 @@ func parseStatusCursor(raw string) (int64, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// cursorWindow returns the portion of buf visible to a client resuming from
+// sequence number after. seq is buf's head sequence number; delta reports
+// whether the client sent a cursor at all. When the cursor is missing or
+// outside [start..seq] the full buffer is returned and reset is true, telling
+// the client to discard its view. Shared by the logs and pings windows in
+// handleStatus so their index arithmetic cannot drift.
+func cursorWindow[T any](buf []T, seq, after int64, delta bool) (view []T, next int64, reset bool) {
+	start := seq - int64(len(buf))
+	view = buf
+	if delta {
+		switch {
+		case after < start || after > seq:
+			reset = true
+		case after > start:
+			view = buf[after-start:]
+		}
+	}
+	return view, seq, reset
 }

@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -299,9 +298,9 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.Na
 		return fmt.Errorf("discoverer unavailable")
 	}
 	lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer lookupCancel()
 	srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
 	if lerr != nil || srcNode == "" {
-		lookupCancel()
 		if lerr == nil {
 			lerr = fmt.Errorf("source pod node is empty")
 		}
@@ -315,7 +314,6 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.Na
 		// Auto-select mode: copy the source pod's scheduling
 		// constraints so the dest Job lands on a compatible node.
 		sched, lerr := r.Discoverer.LookupPodScheduling(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-		lookupCancel()
 		if lerr != nil {
 			slog.Error("Resolve source pod scheduling failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
 			r.patchFailedStatus(ctx, key, "", "resolve source pod scheduling", lerr.Error())
@@ -338,7 +336,6 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.Na
 		return nil
 	}
 	destIP, lerr := r.Discoverer.LookupNodeInternalIP(lookupCtx, req.DestNode)
-	lookupCancel()
 	if lerr != nil || destIP == "" {
 		if lerr == nil {
 			lerr = fmt.Errorf("destination node InternalIP is empty")
@@ -457,6 +454,7 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 	// the webhook will not deny anything for this migration.
 	if req.AdoptVM && r.Kube != nil && req.SourcePod != nil {
 		markCtx, markCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer markCancel()
 		src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(markCtx, req.SourcePod.Name, metav1.GetOptions{})
 		if err != nil {
 			// Without the pending mark the webhook cannot deny replacement
@@ -476,7 +474,6 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 				}
 			}
 		}
-		markCancel()
 	}
 	if req.SourceCleanup != "" && req.SourceCleanup != "none" {
 		if req.SourcePod != nil && r.Discoverer != nil {
@@ -681,17 +678,7 @@ func jobFailureDetails(job *batchv1.Job) (string, []any) {
 	if !ok {
 		return "", nil
 	}
-	details := make([]string, 0, 2)
-	attrs := make([]any, 0, 4)
-	if cond.Reason != "" {
-		details = append(details, "reason="+cond.Reason)
-		attrs = append(attrs, "reason", cond.Reason)
-	}
-	if cond.Message != "" {
-		details = append(details, "message="+cond.Message)
-		attrs = append(attrs, "message", cond.Message)
-	}
-	return strings.Join(details, " "), attrs
+	return orchestrator.ConditionFailureDetails(cond)
 }
 
 // handleDeletion runs when the user has issued `kubectl delete migration`.

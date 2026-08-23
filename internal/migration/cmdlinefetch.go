@@ -32,22 +32,36 @@ const maxPodLogScanBytes = 16 * 1024 * 1024
 // driving an unbounded allocation.
 const maxMarkerB64Size = 6 * 1024 * 1024
 
-// podRefDNSRe matches a single DNS-1123 label (used for the namespace in
+// dns1123LabelRe matches a single DNS-1123 label (used for the namespace in
 // <namespace>/<pod> references).
 // Defense-in-depth: the values are URL-escaped before going on the wire,
 // but rejecting non-conforming inputs early avoids spurious apiserver
 // round-trips on bogus references.
-var podRefDNSRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-// podNameDNSRe matches a DNS-1123 subdomain: Kubernetes pod names may
+// dns1123SubdomainRe matches a DNS-1123 subdomain: Kubernetes pod names may
 // contain dots (e.g. StatefulSet pods, or names like "kata.demo") even
 // though namespaces are always single labels. Still injection-safe:
 // only lowercase alphanumerics, hyphens, and dots.
-var podNameDNSRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+var dns1123SubdomainRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
 // namespace/object name limit).
 const maxDNS1123Len = 253
+
+// ValidateDNSLabel reports whether s is a valid DNS-1123 label (lowercase
+// alphanumerics and hyphens): the format of Kubernetes namespaces. Exported
+// so the orchestrator's replay-flag injection validates <namespace>/<pod>
+// halves with this same definition instead of keeping its own copy.
+func ValidateDNSLabel(s string) bool {
+	return len(s) > 0 && len(s) <= maxDNS1123Len && dns1123LabelRe.MatchString(s)
+}
+
+// ValidateDNSSubdomain reports whether s is a valid DNS-1123 subdomain
+// (dot-separated labels): the format of Kubernetes pod names.
+func ValidateDNSSubdomain(s string) bool {
+	return len(s) > 0 && len(s) <= maxDNS1123Len && dns1123SubdomainRe.MatchString(s)
+}
 
 const (
 	cmdlineMarker     = "KATAMARAN_CMDLINE_B64="
@@ -227,10 +241,10 @@ func parsePodRef(ref string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid pod ref %q (expected <namespace>/<name>)", ref)
 	}
 	ns, pod := parts[0], parts[1]
-	if len(ns) > maxDNS1123Len || !podRefDNSRe.MatchString(ns) {
+	if !ValidateDNSLabel(ns) {
 		return "", "", fmt.Errorf("invalid pod ref %q: namespace must be a DNS-1123 label", ref)
 	}
-	if len(pod) > maxDNS1123Len || !podNameDNSRe.MatchString(pod) {
+	if !ValidateDNSSubdomain(pod) {
 		return "", "", fmt.Errorf("invalid pod ref %q: pod name must be a DNS-1123 subdomain", ref)
 	}
 	return ns, pod, nil

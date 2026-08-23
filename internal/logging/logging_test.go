@@ -42,6 +42,32 @@ func Test_parseLevel(t *testing.T) {
 	}
 }
 
+func TestTransientLevel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		consecutive int
+		want        slog.Level
+	}{
+		{0, slog.LevelDebug},
+		{-3, slog.LevelDebug},
+		{1, slog.LevelDebug},
+		{9, slog.LevelDebug},
+		{10, slog.LevelWarn},
+		{11, slog.LevelDebug},
+		{29, slog.LevelDebug},
+		{30, slog.LevelWarn},
+		{31, slog.LevelDebug},
+		{60, slog.LevelWarn},
+		{90, slog.LevelWarn},
+		{91, slog.LevelDebug},
+	}
+	for _, tt := range tests {
+		if got := TransientLevel(tt.consecutive); got != tt.want {
+			t.Errorf("TransientLevel(%d) = %v, want %v", tt.consecutive, got, tt.want)
+		}
+	}
+}
+
 func TestSetupLogger(t *testing.T) {
 	// Successful SetupLogger calls mutate slog.Default. Save and restore so
 	// subsequent tests in this package see the original logger.

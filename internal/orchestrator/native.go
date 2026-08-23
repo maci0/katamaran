@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -20,6 +19,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/maci0/katamaran/internal/logging"
+	"github.com/maci0/katamaran/internal/migration"
 )
 
 // native is the client-go implementation of Orchestrator. It renders the
@@ -367,11 +369,8 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 				// Persistent failures (apiserver flapping, RBAC drop) leave the
 				// caller without progress markers indefinitely; escalate so the
 				// blind window is visible without raising the global log level.
-				if consecStreamErrors == 10 || consecStreamErrors%30 == 0 {
-					slog.Warn("tailProgress: opening source pod log stream failing repeatedly", attrs...)
-				} else {
-					slog.Debug("tailProgress: opening source pod log stream failed", attrs...)
-				}
+				slog.Log(ctx, logging.TransientLevel(consecStreamErrors),
+					"tailProgress: opening source pod log stream failing repeatedly", attrs...)
 			}
 			continue
 		}
@@ -608,38 +607,41 @@ func parseInt64(s string) int64 {
 	return v
 }
 
-func jobConditionAttrs(cond batchv1.JobCondition) []any {
-	attrs := make([]any, 0, 4)
+// ConditionFailureDetails extracts a terminal Job condition's reason and
+// message into both a compact "reason=… message=…" summary string and slog
+// attrs. Exported so the Migration CRD controller's recovery path formats
+// job failures identically to the orchestrator's outcome matrix instead of
+// keeping its own copy of the extraction.
+func ConditionFailureDetails(cond batchv1.JobCondition) (detail string, attrs []any) {
+	details := make([]string, 0, 2)
+	attrs = make([]any, 0, 4)
 	if cond.Reason != "" {
+		details = append(details, "reason="+cond.Reason)
 		attrs = append(attrs, "reason", cond.Reason)
 	}
 	if cond.Message != "" {
+		details = append(details, "message="+cond.Message)
 		attrs = append(attrs, "message", cond.Message)
 	}
+	return strings.Join(details, " "), attrs
+}
+
+func jobConditionAttrs(cond batchv1.JobCondition) []any {
+	_, attrs := ConditionFailureDetails(cond)
 	return attrs
 }
 
 func jobFailedError(base string, cond batchv1.JobCondition) error {
-	details := make([]string, 0, 2)
-	if cond.Reason != "" {
-		details = append(details, "reason="+cond.Reason)
-	}
-	if cond.Message != "" {
-		details = append(details, "message="+cond.Message)
-	}
-	if len(details) == 0 {
+	detail, _ := ConditionFailureDetails(cond)
+	if detail == "" {
 		return errors.New(base)
 	}
-	return fmt.Errorf("%s: %s", base, strings.Join(details, " "))
+	return fmt.Errorf("%s: %s", base, detail)
 }
 
 func logTransientJobStatusError(message string, id MigrationID, jobName, namespace string, err error, consecutive int) {
 	attrs := []any{"migration_id", id, "job", jobName, "namespace", namespace, "error", err, "consecutive_errors", consecutive}
-	if consecutive == 10 || consecutive%30 == 0 {
-		slog.Warn(message, attrs...)
-		return
-	}
-	slog.Debug(message, attrs...)
+	slog.Log(context.Background(), logging.TransientLevel(consecutive), message, attrs...)
 }
 
 // stageThenStartDest resolves the source pod's name (so the dest binary
@@ -678,21 +680,6 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 	slog.Info("Replay-from-pod wired; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 }
 
-// dns1123LabelRe matches a single DNS-1123 label (lowercase alphanumerics
-// and hyphens, max 63 chars). Kubernetes namespace names follow DNS-1123
-// label conventions; this regex is used as a defense-in-depth check
-// before the value is interpolated into a /bin/sh -c command string.
-var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
-// dns1123SubdomainRe matches a DNS-1123 subdomain: Kubernetes pod names
-// may contain dots even though namespaces cannot. Still injection-safe:
-// only lowercase alphanumerics, hyphens, and dots.
-var dns1123SubdomainRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
-
-// maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
-// namespace/object name limit).
-const maxDNS1123Len = 253
-
 // injectReplayFromPod returns a copy of destJob with
 // `--replay-cmdline-from-pod <ns>/<pod>` appended to the dest container's
 // command. The render path doesn't know the source pod name (it's only
@@ -702,10 +689,13 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	if destJob == nil || len(destJob.Spec.Template.Spec.Containers) == 0 {
 		return nil, fmt.Errorf("dest job has no containers")
 	}
-	if len(ns) == 0 || len(ns) > maxDNS1123Len || !dns1123LabelRe.MatchString(ns) {
+	// Defense-in-depth: the ref is interpolated into a /bin/sh -c command
+	// string, so both halves must pass the same DNS-1123 validation the
+	// dest side applies when it later parses and URL-escapes the value.
+	if !migration.ValidateDNSLabel(ns) {
 		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", ns)
 	}
-	if len(srcPod) == 0 || len(srcPod) > maxDNS1123Len || !dns1123SubdomainRe.MatchString(srcPod) {
+	if !migration.ValidateDNSSubdomain(srcPod) {
 		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 subdomain", srcPod)
 	}
 	out := destJob.DeepCopy()

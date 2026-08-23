@@ -24,6 +24,21 @@ func parseLevel(s string) (slog.Level, bool) {
 	}
 }
 
+// TransientLevel returns the slog level for a recurring transient error that
+// has now failed `consecutive` times in a row: Debug until the 10th
+// consecutive occurrence, then Warn on the 10th and every 30th after that.
+// Persistent failures (a flapping socket, RBAC loss) surface in production
+// logs without spamming every individual retry.
+func TransientLevel(consecutive int) slog.Level {
+	if consecutive < 1 {
+		return slog.LevelDebug
+	}
+	if consecutive == 10 || consecutive%30 == 0 {
+		return slog.LevelWarn
+	}
+	return slog.LevelDebug
+}
+
 // SetupLogger configures the default slog logger with the given format, level,
 // and component name. The component is included as a default attribute on every
 // log entry to distinguish services in aggregated log systems. Logs are written
