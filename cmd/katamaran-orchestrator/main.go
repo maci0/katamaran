@@ -219,16 +219,27 @@ func main() {
 		}
 	}()
 	exit := 0
+	var lastPhase orchestrator.StatusPhase
 	for u := range updates {
 		if err := enc.Encode(newStatusOutput(u)); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: write status update: %v\n", err)
 			os.Exit(1)
 		}
+		lastPhase = u.Phase
 		if u.Phase == orchestrator.PhaseFailed {
 			exit = 1
 		}
 	}
 	close(drained)
+	// A stream that closes without a terminal phase means the migration's
+	// outcome is unknown (e.g. the orchestrator's poll loop died). The
+	// controller treats that exact condition as failed
+	// (katamaran_migrations_watch_lost_total); a script or CI job consuming
+	// this CLI must not see exit 0 for it.
+	if lastPhase != orchestrator.PhaseSucceeded && lastPhase != orchestrator.PhaseFailed {
+		fmt.Fprintf(os.Stderr, "Error: status stream closed before reaching a terminal phase (last phase %q); migration outcome unknown\n", lastPhase)
+		exit = 1
+	}
 	// Signal-induced shutdown surfaces 130 even when the orchestrator
 	// emitted a final PhaseFailed update during teardown — otherwise a
 	// Ctrl-C looks indistinguishable from a real migration failure.

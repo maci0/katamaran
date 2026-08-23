@@ -1104,6 +1104,121 @@ func TestReconciler_AdoptVM_MissingSourcePodSkipsPendingMark(t *testing.T) {
 	}
 }
 
+// sourceCleanup=delete deletes the source pod before createAdoptionPod
+// runs, so the adoption pod's label/owner inheritance must come from the
+// pre-cleanup lookup in handleMigrationOutcome. Regression: inheritance
+// used to re-fetch the pod after deletion, always hit NotFound on this
+// path, and silently produced adoption pods the ReplicaSet did not own
+// (defeating Strategy A part 1 for every delete/orphan migration).
+func TestReconciler_AdoptVM_DeleteCleanupInheritsLabels(t *testing.T) {
+	const rsUID types.UID = "rs-uid-inherit"
+	const migID = "id-inherit"
+	updates := make(chan orchestrator.StatusUpdate, 1)
+	updates <- orchestrator.StatusUpdate{ID: migID, Phase: orchestrator.PhaseSucceeded}
+	close(updates)
+	orch := &fakeOrch{applyID: migID, updates: updates}
+
+	pod := sourcePodOwnedBy("ReplicaSet", rsUID)
+	pod.Labels = map[string]string{"app": "kata-demo", "pod-template-hash": "abc123"}
+	disc := &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+	cr := adoptCR("m-inherit", "delete")
+	// Pin an explicit dest node so the adoption path skips auto-select
+	// resolution (this test exercises inheritance, not node discovery).
+	_ = unstructured.SetNestedField(cr.Object, "worker-b", "spec", "destNode")
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "Migration"}, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList"}, &unstructured.UnstructuredList{})
+	dyn := fakedyn.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		MigrationGVR: "MigrationList",
+		{Group: "", Version: "v1", Resource: "pods"}: "PodList",
+	}, cr)
+	kube := fakekube.NewSimpleClientset(pod)
+	rec := NewReconciler(dyn, kube, orch, disc)
+	rec.PollInterval = 10 * time.Millisecond
+	rec.StatusTimeout = 1 * time.Second
+
+	savedDelay := adoptionVMConfigDelay
+	adoptionVMConfigDelay = time.Millisecond
+	t.Cleanup(func() { adoptionVMConfigDelay = savedDelay })
+
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-inherit"}, cr)
+
+	if deleted := disc.deletedPodsSnapshot(); len(deleted) != 1 || deleted[0] != "default/kata-demo" {
+		t.Fatalf("deleted pods = %v, want [default/kata-demo]; cleanup must run before adoption for this regression", deleted)
+	}
+	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	list, err := rec.Dynamic.Resource(podGVR).Namespace("default").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list adoption pods: %v", err)
+	}
+	var adopted *unstructured.Unstructured
+	for i := range list.Items {
+		if strings.HasPrefix(list.Items[i].GetName(), "adopted-") {
+			adopted = &list.Items[i]
+			break
+		}
+	}
+	if adopted == nil {
+		t.Fatalf("no adoption pod created; pods=%d", len(list.Items))
+	}
+	for _, want := range []string{"app", "pod-template-hash"} {
+		if got, _, _ := unstructured.NestedString(adopted.Object, "metadata", "labels", want); got == "" {
+			t.Fatalf("adoption pod missing inherited label %q; metadata=%v", want, adopted.Object["metadata"])
+		}
+	}
+	refs, found, _ := unstructured.NestedSlice(adopted.Object, "metadata", "ownerReferences")
+	if !found || len(refs) == 0 {
+		t.Fatalf("adoption pod has no ownerReferences; metadata=%v", adopted.Object["metadata"])
+	}
+}
+
+// patchStatusRetry is the crash-recovery anchor for phase=Submitted: a lost
+// write there re-dispatches duplicate Jobs against the same VM after a
+// controller restart. It must retry transient failures to success, and give
+// up with an error (not panic, not loop forever) once the budget runs out.
+func TestPatchStatusRetry_RetriesTransientFailures(t *testing.T) {
+	key := types.NamespacedName{Namespace: "default", Name: "m-retry"}
+	cr := newMigrationCR("m-retry", nil, false, nil)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+
+	attempts := 0
+	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		attempts++
+		if attempts < 3 {
+			return true, nil, errors.New("synthetic patch failure")
+		}
+		return false, nil, nil // let the real client handle it
+	})
+	if err := rec.patchStatusRetry(context.Background(), key, "id-x", string(orchestrator.PhaseSubmitted), "msg", ""); err != nil {
+		t.Fatalf("patchStatusRetry = %v, want success on attempt 3", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestPatchStatusRetry_ExhaustsBudget(t *testing.T) {
+	key := types.NamespacedName{Namespace: "default", Name: "m-retry2"}
+	cr := newMigrationCR("m-retry2", nil, false, nil)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+
+	savedBackoff := submittedPatchBackoff
+	submittedPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { submittedPatchBackoff = savedBackoff })
+
+	attempts := 0
+	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		attempts++
+		return true, nil, errors.New("synthetic patch failure")
+	})
+	if err := rec.patchStatusRetry(context.Background(), key, "id-y", string(orchestrator.PhaseSubmitted), "msg", ""); err == nil {
+		t.Fatal("patchStatusRetry = nil, want error after exhausting the retry budget")
+	}
+	if attempts != submittedPatchAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, submittedPatchAttempts)
+	}
+}
+
 // Recovery after a controller restart must run the documented post-success
 // side effects too: sourceCleanup=delete must delete the source pod even
 // though the success was observed via Job inspection rather than the watch.

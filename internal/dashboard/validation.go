@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -136,6 +137,11 @@ func safeTargetIPs(target string) ([]net.IP, bool) {
 	defer cancel()
 	ips, err := lookupSafeTargetIPs(ctx, host)
 	if err != nil {
+		// Distinguish "DNS is broken" from "target blocked" in the logs:
+		// both fail closed identically, but an operator chasing a
+		// legitimate target that stopped resolving needs the underlying
+		// resolver/policy error to tell the cases apart.
+		slog.Info("Target rejected by safe-IP screen", "target", target, "reason", err)
 		return nil, false
 	}
 	return ips, true

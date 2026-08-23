@@ -395,7 +395,15 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	mDispatched.Add(1)
 	defer migrationProgress.Delete(string(id))
 	slog.Info("Migration submitted", "migration", key, "migration_id", id, "source_node", req.SourceNode, "dest_node", req.DestNode)
-	_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
+	// This patch is the crash-recovery anchor: it persists status.migrationID
+	// + phase=Submitted, which routes a post-restart reconcile into recover()
+	// instead of re-dispatching a second set of Jobs against the same VM.
+	// A single failed patch followed by a controller crash would silently
+	// duplicate the migration, so retry hard before giving up (each failure
+	// is logged by patchStatusUpdate). The migration is already running;
+	// even after all retries fail we keep watching so later patches can
+	// still persist state.
+	r.patchStatusRetry(ctx, key, string(id), string(orchestrator.PhaseSubmitted), "submitted to orchestrator", "")
 
 	updates, err := r.Orchestrator.Watch(jobCtx, id)
 	if err != nil {
@@ -457,6 +465,13 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 		return
 	}
 	var rsUID types.UID
+	// Labels + ownerReferences captured from the source pod BEFORE any
+	// cleanup deletes it. createAdoptionPod runs after sourceCleanup, so a
+	// re-fetch there hits NotFound on every delete/orphan migration and
+	// inheritance would silently never happen; capturing here keeps
+	// Strategy A part 1 working for those migrations.
+	var srcLabels map[string]string
+	var srcOwnerRefs []metav1.OwnerReference
 	// Mark the source-pod controller as adoption-pending so the
 	// validating webhook denies replacement pods that the controller
 	// (RS/STS/DaemonSet/Job) would otherwise spawn the moment the
@@ -480,6 +495,13 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 				"migration", key, "migration_id", id,
 				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
 		} else {
+			for k, v := range src.Labels {
+				if srcLabels == nil {
+					srcLabels = make(map[string]string, len(src.Labels))
+				}
+				srcLabels[k] = v
+			}
+			srcOwnerRefs = src.OwnerReferences
 			for _, o := range src.OwnerReferences {
 				if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {
 					rsUID = o.UID
@@ -538,8 +560,14 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 		// state or a sandbox persist.json before creating the pod.
 		slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", adoptionVMConfigDelay.String())
 		time.Sleep(adoptionVMConfigDelay)
-		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
-			slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
+		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode, srcLabels, srcOwnerRefs); err != nil {
+			// The source pod may already be deleted at this point, so a
+			// failed adoption-pod create leaves the migrated VM with no
+			// owning workload: it survives only inside the dest job's
+			// sandbox and dies when that pod is garbage-collected. Escalate
+			// so operators can re-create the adoption pod manually.
+			slog.Error("Failed to create adoption pod; migrated VM has no adoption pod and will die when the dest job pod is garbage-collected",
+				"migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
 			return
 		}
 		// Deliberately leave the pending mark in place after the
@@ -822,8 +850,10 @@ func nestedSpecInt(obj map[string]any, field string) int {
 }
 
 // patchStatus issues a JSON merge patch against the Migration's status
-// subresource. Errors are logged and swallowed because the next reconcile
-// tick will retry.
+// subresource. Errors are logged (by patchStatusUpdate) and returned to the
+// caller: while a migration is tracked, reconcile ticks skip it, so a lost
+// status write is not retried by the loop. Callers for which the persisted
+// state matters (dispatch's Submitted anchor) use patchStatusRetry.
 func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
 	u := orchestrator.StatusUpdate{
 		Phase:   orchestrator.StatusPhase(phase),
@@ -833,6 +863,43 @@ func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, 
 		u.ID = orchestrator.MigrationID(migrationID)
 	}
 	return r.patchStatusUpdate(ctx, key, u, errStr)
+}
+
+// submittedPatchAttempts bounds the retry budget for the Submitted status
+// anchor. Backoff doubles from 500ms; the total wait is ~31s, long enough to
+// ride out an apiserver blip but short against the 4h dispatch budget.
+const submittedPatchAttempts = 6
+
+// submittedPatchBackoff is a var so tests can shrink the waits.
+var submittedPatchBackoff = func(attempt int) time.Duration {
+	d := 500 * time.Millisecond << uint(attempt)
+	if d > 16*time.Second {
+		d = 16 * time.Second
+	}
+	return d
+}
+
+// patchStatusRetry patches the status with exponential backoff until it
+// succeeds, ctx ends, or the attempt budget runs out. Used where the
+// persisted status is the only record of a side effect (Job creation) that
+// must survive a controller restart. Returns the last error, nil on success.
+func (r *Reconciler) patchStatusRetry(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
+	var err error
+	for attempt := 0; attempt < submittedPatchAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(submittedPatchBackoff(attempt - 1))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("patch status %s for %s interrupted: %w", phase, key, ctx.Err())
+			case <-timer.C:
+			}
+		}
+		if err = r.patchStatus(ctx, key, migrationID, phase, message, errStr); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("patch status %s for %s failed after %d attempts: %w", phase, key, submittedPatchAttempts, err)
 }
 
 func (r *Reconciler) patchFailedStatus(ctx context.Context, key types.NamespacedName, migrationID, message, errStr string) {
@@ -944,6 +1011,11 @@ func (r *Reconciler) lookupDestPodNode(ctx context.Context, id orchestrator.Migr
 // just a placeholder: the real workload is already running inside the
 // migrated VM.
 //
+// srcLabels/srcOwnerRefs carry the source pod's identity captured before
+// sourceCleanup deleted it (see handleMigrationOutcome). When both are
+// empty and r.Kube is wired, they are re-fetched live; that fallback only
+// succeeds when the source pod still exists.
+//
 // Strategy A part 1 (label/owner inheritance): when the source pod was
 // owned by a ReplicaSet (i.e. part of a Deployment), copy its
 // labels (including the Deployment selector label and the
@@ -964,16 +1036,25 @@ func (r *Reconciler) lookupDestPodNode(ctx context.Context, id orchestrator.Migr
 // + the adopted pod and the RS will pick one to delete (RS does not
 // know which carries the migrated VM, so this is best-effort
 // pre-webhook).
-func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Request, name, destNode string) error {
+func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Request, name, destNode string, srcLabels map[string]string, srcOwnerRefs []metav1.OwnerReference) error {
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "katamaran",
 		"app.kubernetes.io/component": "adopted-vm",
 		"katamaran.io/source-pod":     req.SourcePod.Name,
 	}
 	var ownerRefs []metav1.OwnerReference
-	if r.Kube != nil {
+	if len(srcLabels) > 0 || len(srcOwnerRefs) > 0 {
+		for k, v := range srcLabels {
+			if _, taken := labels[k]; taken {
+				continue
+			}
+			labels[k] = v
+		}
+		ownerRefs = srcOwnerRefs
+	} else if r.Kube != nil {
 		src, err := r.Kube.CoreV1().Pods(req.SourcePod.Namespace).Get(ctx, req.SourcePod.Name, metav1.GetOptions{})
-		if err == nil {
+		switch {
+		case err == nil:
 			for k, v := range src.Labels {
 				if _, taken := labels[k]; taken {
 					continue
@@ -981,7 +1062,10 @@ func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Req
 				labels[k] = v
 			}
 			ownerRefs = src.OwnerReferences
-		} else if !apierrors.IsNotFound(err) {
+		case apierrors.IsNotFound(err):
+			slog.Debug("createAdoptionPod: source pod already gone; creating without label/owner inheritance",
+				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name)
+		default:
 			slog.Warn("createAdoptionPod: source-pod lookup failed; proceeding without label/owner inheritance",
 				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
 		}

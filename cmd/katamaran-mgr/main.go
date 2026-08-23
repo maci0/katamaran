@@ -259,9 +259,13 @@ func main() {
 		return
 	}
 
-	identity, _ := os.Hostname()
-	if identity == "" {
-		identity = "katamaran-mgr"
+	identity, err := os.Hostname()
+	if err != nil || identity == "" {
+		// The lease identity must be unique per replica. A shared fallback
+		// would make two replicas each believe they still hold the lease
+		// (client-go compares holderIdentity to its own), so both would
+		// reconcile concurrently. Fail fast instead.
+		fail(fmt.Errorf("determine leader-election identity via os.Hostname: %v", err))
 	}
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{

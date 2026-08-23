@@ -183,6 +183,8 @@ func runStart(logFn func(format string, args ...any)) error {
 	// because we set the env var below.
 	exe, err := os.Executable()
 	if err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socketPath) // no child exists yet; nobody owns the file
 		return fmt.Errorf("executable: %w", err)
 	}
 	childArgs := os.Args[1:] // start was already removed from os.Args
@@ -203,6 +205,15 @@ func runStart(logFn func(format string, args ...any)) error {
 	// Containerd expects the shim's ttrpc address on stdout for the
 	// start command. Single line, "unix://<path>".
 	if _, err := fmt.Fprintf(os.Stdout, "unix://%s", socketPath); err != nil {
+		// Containerd closed our pipe: it will never learn the address, so
+		// the detached child would serve ttrpc forever on an address nobody
+		// recorded (and each start retry would orphan another shim). Tear
+		// the child down and remove the socket file.
+		if killErr := child.Process.Kill(); killErr != nil {
+			logFn("start: failed to kill orphaned child pid=%d: %v", child.Process.Pid, killErr)
+		}
+		_, _ = child.Process.Wait()
+		_ = os.Remove(socketPath)
 		return fmt.Errorf("write address to stdout: %w", err)
 	}
 	// Release the parent's reference to the listener so only the
@@ -278,7 +289,11 @@ func runServer(logFn func(format string, args ...any)) error {
 	logFn("shutdown received; closing ttrpc server")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// A hung ttrpc client during teardown surfaces here; log it so a
+		// dirty shutdown is distinguishable from a clean drain in shim.log.
+		logFn("server: shutdown did not drain cleanly within %s: %v", 5*time.Second, err)
+	}
 	return nil
 }
 
@@ -426,7 +441,12 @@ func (s *adoptedTaskService) Wait(ctx context.Context, _ *taskAPI.WaitRequest) (
 }
 
 // Kill sends a signal to the adopted QEMU. SIGTERM/SIGKILL are
-// honoured; everything else is best-effort.
+// honoured; everything else is best-effort but delivery failures are
+// still reported so containerd does not mistake a failed kill for a
+// delivered signal (e.g. EPERM on SIGKILL would otherwise leave the VM
+// running while pod deletion waits forever for an exit).
+// ESRCH is success: the process is already gone, which is the state the
+// caller asked for.
 func (s *adoptedTaskService) Kill(_ context.Context, req *taskAPI.KillRequest) (*emptypb.Empty, error) {
 	s.mu.Lock()
 	pid := s.qemuPid
@@ -435,10 +455,14 @@ func (s *adoptedTaskService) Kill(_ context.Context, req *taskAPI.KillRequest) (
 		return &emptypb.Empty{}, nil
 	}
 	if err := syscall.Kill(pid, syscall.Signal(req.Signal)); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			s.logFn("Kill pid=%d signal=%d: process already gone", pid, req.Signal)
+			return &emptypb.Empty{}, nil
+		}
 		s.logFn("Kill pid=%d signal=%d failed: %v", pid, req.Signal, err)
-	} else {
-		s.logFn("Kill pid=%d signal=%d", pid, req.Signal)
+		return nil, fmt.Errorf("kill pid=%d signal=%d: %w", pid, req.Signal, err)
 	}
+	s.logFn("Kill pid=%d signal=%d", pid, req.Signal)
 	return &emptypb.Empty{}, nil
 }
 
