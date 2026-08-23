@@ -352,7 +352,13 @@ func TestRunDestination_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 	}
 }
 
-func TestRunDestination_GARPFailure(t *testing.T) {
+// TestRunDestination_GARPFailureIsNonFatal pins that a failed GARP
+// announce-self does NOT fail the dest job: by that point RESUME has
+// fired and the migration itself is complete, so an error would mark
+// the migration Failed and skip writeMigrationMeta/surviveContainerExit,
+// killing the migrated VM at container exit. The run must succeed and
+// the post-GARP metadata write must still happen.
+func TestRunDestination_GARPFailureIsNonFatal(t *testing.T) {
 	t.Parallel()
 
 	sock := qmptest.StartScriptedQMP(t, map[string][]string{
@@ -361,11 +367,52 @@ func TestRunDestination_GARPFailure(t *testing.T) {
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
-	if err == nil {
-		t.Fatal("expected error for GARP failure")
+	if err != nil {
+		t.Fatalf("GARP failure must not abort the completed migration, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "GARP") {
-		t.Fatalf("expected 'GARP' in error, got: %v", err)
+	metaPath := filepath.Join(filepath.Dir(sock), MigrationMetaFile)
+	if _, statErr := os.Stat(metaPath); statErr != nil {
+		t.Fatalf("migration meta not written after GARP failure (%s): %v", metaPath, statErr)
+	}
+}
+
+// TestRunDestination_NBDStopFailureStillRetried pins that a failed
+// explicit nbd-server-stop does not leave the writable NBD export
+// listening for the VM's lifetime: the deferred cleanup must re-attempt
+// the stop because its guard only disarms once an explicit stop
+// succeeds. Three stop attempts are expected in total: the pre-clear
+// (expected failure), the explicit post-RESUME stop (fails here), and
+// the deferred-cleanup retry.
+func TestRunDestination_NBDStopFailureStillRetried(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "nbd-server-add":
+			return `{"return":{}}` + "\n" + `{"event":"RESUME"}`
+		case "nbd-server-stop":
+			return `{"error":{"class":"GenericError","desc":"stop failed"}}`
+		default:
+			return `{"return":{}}`
+		}
+	})
+
+	err := RunDestination(context.Background(), DestConfig{
+		QMPSocket: sock,
+		DriveIDs:  []string{"drive-virtio-disk0"},
+	})
+	if err != nil {
+		t.Fatalf("failed nbd-server-stop must be warn-only, got: %v", err)
+	}
+
+	stops := 0
+	for _, cmd := range rec.Commands() {
+		if cmd.Execute == "nbd-server-stop" {
+			stops++
+		}
+	}
+	if stops != 3 {
+		t.Fatalf("nbd-server-stop attempts = %d, want 3 (pre-clear + explicit + deferred retry)", stops)
 	}
 }
 

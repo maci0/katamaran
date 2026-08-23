@@ -137,17 +137,22 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 	defer cancel()
 
 	slog.Info("Fetching source QEMU cmdline from pod log", "endpoint", pc.endpoint, "marker", cmdlineMarker)
-	timeoutErr := func() error {
+	timeoutErr := func(lastErr error) error {
+		if lastErr != nil {
+			return fmt.Errorf("source pod %s/%s did not emit %s within timeout: %w", pc.ns, pc.pod, cmdlineMarker, lastErr)
+		}
 		return fmt.Errorf("source pod %s/%s did not emit %s within timeout", pc.ns, pc.pod, cmdlineMarker)
 	}
+	var lastFetchErr error
 	for attempt := 1; ; attempt++ {
 		select {
 		case <-deadline.Done():
-			return "", timeoutErr()
+			return "", timeoutErr(lastFetchErr)
 		default:
 		}
 		markers, bytesScanned, err := scanPodLogMarkers(deadline, pc.client, pc.endpoint, pc.token, cmdlineMarker)
 		if err != nil {
+			lastFetchErr = err
 			logPodLogFetchRetry("pod-log fetch attempt failed", attempt, "error", err)
 		} else if b64 := markers[cmdlineMarker]; b64 != "" {
 			if len(b64) > maxMarkerB64Size {
@@ -167,7 +172,7 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 		// log so far), or a transient apiserver error.
 		select {
 		case <-deadline.Done():
-			return "", timeoutErr()
+			return "", timeoutErr(lastFetchErr)
 		case <-time.After(2 * time.Second):
 		}
 	}

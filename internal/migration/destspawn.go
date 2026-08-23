@@ -423,12 +423,28 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 
 	srcNvdimm := extractNvdimmPath(args)
 	dstNvdimm := ""
+	// Set once dest QEMU has been spawned successfully; until then any
+	// error path must delete dstNvdimm (see the defer below).
+	qemuSpawned := false
 	if srcNvdimm != "" {
 		dstNvdimm, err = copyNvdimmImage(srcNvdimm)
 		if err != nil {
 			return fmt.Errorf("copy nvdimm image: %w", err)
 		}
 		slog.Info("Copied nvdimm image to writable dest path", "src", srcNvdimm, "dst", dstNvdimm)
+		// The writable copy is a multi-hundred-MB temp artifact only
+		// needed once dest QEMU maps it via mem-path=. If any step below
+		// fails before the spawn, remove it so crash-looping in-pod
+		// retries don't accumulate orphaned images under /tmp. Disarmed
+		// once QEMU is running: from then on the file is live VM state.
+		defer func() {
+			if qemuSpawned {
+				return
+			}
+			if rmErr := os.Remove(dstNvdimm); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Warn("Failed to remove temporary nvdimm image after failed spawn", "path", dstNvdimm, "error", rmErr)
+			}
+		}()
 	}
 
 	// Ensure dest sandbox dir + virtiofs shared dir exist before QEMU starts.
@@ -487,6 +503,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	if err := spawnDetachedProcess(ctx, binary, qemuArgs); err != nil {
 		return fmt.Errorf("spawn dest QEMU: %w", err)
 	}
+	qemuSpawned = true
 
 	if err := waitForSocket(ctx, dstSocket, destReplaySocketWaitTotal); err != nil {
 		return fmt.Errorf("dest QEMU QMP socket %s did not appear: %w", dstSocket, err)

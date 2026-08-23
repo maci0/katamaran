@@ -62,6 +62,30 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		}
 	}
 
+	// Validate all cheap config invariants before any side effects. In
+	// replay mode the spawn below fetches the cmdline from the apiserver,
+	// copies a multi-hundred-MB nvdimm image, creates the tap device,
+	// starts virtiofsd and launches QEMU; none of that should happen only
+	// to fail on a regex-level config error afterwards.
+	if cfg.MultifdChannels < 0 {
+		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
+	}
+	if cfg.TapIface != "" {
+		if err := validateTapIface(cfg.TapIface); err != nil {
+			return fmt.Errorf("validating tap interface: %w", err)
+		}
+	}
+	if cfg.TapNetns != "" {
+		if err := validateTapNetns(cfg.TapNetns); err != nil {
+			return fmt.Errorf("validating tap netns: %w", err)
+		}
+	}
+	if !cfg.SharedStorage {
+		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
+			return fmt.Errorf("validating drive IDs: %w", err)
+		}
+	}
+
 	// If a captured source cmdline is supplied, spawn the destination QEMU
 	// ourselves with -incoming defer before connecting to QMP. This bypasses
 	// Kata's sandbox lifecycle (which kills VMs that don't connect via vsock
@@ -99,25 +123,6 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	if cfg.ReplayCmdlineFile != "" {
 		if err := spawnReplayedQEMU(ctx, &cfg); err != nil {
 			return fmt.Errorf("replay source QEMU cmdline: %w", err)
-		}
-	}
-
-	if cfg.MultifdChannels < 0 {
-		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
-	}
-	if cfg.TapIface != "" {
-		if err := validateTapIface(cfg.TapIface); err != nil {
-			return fmt.Errorf("validating tap interface: %w", err)
-		}
-	}
-	if cfg.TapNetns != "" {
-		if err := validateTapNetns(cfg.TapNetns); err != nil {
-			return fmt.Errorf("validating tap netns: %w", err)
-		}
-	}
-	if !cfg.SharedStorage {
-		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
-			return fmt.Errorf("validating drive IDs: %w", err)
 		}
 	}
 
@@ -315,14 +320,17 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 
 	if !cfg.SharedStorage {
 		// Step 7: Stop the NBD server (storage migration is complete).
-		// Disarm the deferred cleanup since we're handling it explicitly.
-		nbdStarted = false
+		// Disarm the deferred cleanup only if the explicit stop succeeds;
+		// on failure the deferred nbd-server-stop below retries against
+		// the still-armed guard so a writable NBD export is not left
+		// listening for the rest of the VM's lifetime.
 		cctx, ccancel := cleanupCtx(ctx)
 		defer ccancel()
 		if _, err := client.Execute(cctx, "nbd-server-stop", nil); err != nil {
-			slog.Warn("Failed to stop NBD server", "error", err)
+			slog.Warn("Failed to stop NBD server; deferred cleanup will retry", "error", err)
 		} else {
 			slog.Info("NBD server stopped")
+			nbdStarted = false
 		}
 	}
 
@@ -332,6 +340,13 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// ensuring switches learn the correct port-to-MAC binding.
 	// With OVN-based CNIs (OVN-Kubernetes, Kube-OVN), OVN handles port-chassis rebinding automatically.
 	// For other CNIs (Cilium, Calico, Flannel), GARP accelerates convergence.
+	//
+	// Best-effort: by this point RESUME has fired, the packet queue is
+	// flushed and NBD is stopped; the migration itself is done and the VM
+	// is live here. Failing the whole dest job on a cosmetic convergence
+	// accelerator would mark a completed migration Failed AND skip
+	// writeMigrationMeta/surviveContainerExit below, killing the migrated
+	// VM when this container exits.
 	slog.Info("Broadcasting Gratuitous ARP via QEMU announce-self")
 	garpCtx, garpCancel := cleanupCtx(ctx)
 	defer garpCancel()
@@ -341,9 +356,10 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		Rounds:  garpRounds,
 		Step:    garpStepMS,
 	}); err != nil {
-		return fmt.Errorf("GARP announce-self failed: %w", err)
+		slog.Warn("GARP announce-self failed; continuing (L2 switch convergence may be slower)", "error", err)
+	} else {
+		slog.Info("GARP announce-self scheduled", "rounds", garpRounds)
 	}
-	slog.Info("GARP announce-self scheduled", "rounds", garpRounds)
 
 	slog.Info("Destination setup complete", "elapsed", time.Since(destStart).Round(time.Millisecond))
 
@@ -445,10 +461,13 @@ func surviveContainerExit(qmpSocket string) {
 // successfully moved threads. Best-effort; per-thread failures are
 // silently ignored (kernel-thread cgroup writes can fail under
 // security policies and a stuck thread is recoverable when the
-// container's cgroup is force-collected).
+// container's cgroup is force-collected). A total /proc scan failure
+// is logged so a stuck-in-Running pod has a visible cause.
 func moveKVMHelperThreads(qemuPID, procsPath string) int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
+		slog.Warn("Cannot scan /proc for KVM helper threads; dest pod may stay Running until Job deadline",
+			"qemu_pid", qemuPID, "error", err)
 		return 0
 	}
 	suffix := "-" + qemuPID

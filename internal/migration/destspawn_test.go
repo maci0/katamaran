@@ -571,3 +571,76 @@ func createFakeSocket(path string) error {
 	l.SetUnlinkOnClose(false)
 	return l.Close()
 }
+
+// TestSpawnReplayedQEMU_CleansUpNvdimmOnPreSpawnFailure pins that the
+// writable nvdimm copy is deleted when any step between the copy and
+// the QEMU spawn fails. The copy is a multi-hundred-MB file under /tmp;
+// leaking one per attempt accumulates fast on crash-looping dest pods,
+// which retry spawnReplayedQEMU against the same node-wide dirs.
+func TestSpawnReplayedQEMU_CleansUpNvdimmOnPreSpawnFailure(t *testing.T) {
+	// Not parallel: mutates package-level stubs and sandboxRoot.
+	tmpDir := t.TempDir()
+
+	srcSandboxRoot := filepath.Join(tmpDir, "vm")
+	srcSandboxDir := filepath.Join(srcSandboxRoot, "src-uuid")
+	if err := os.MkdirAll(srcSandboxDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	srcNvdimm := filepath.Join(tmpDir, "src-nvdimm.img")
+	if err := os.WriteFile(srcNvdimm, []byte("nvdimm-bytes"), 0o644); err != nil {
+		t.Fatalf("write src nvdimm: %v", err)
+	}
+
+	cmdlinePath := filepath.Join(tmpDir, "cmdline")
+	body := strings.Join([]string{
+		"/opt/kata/bin/qemu-system-x86_64",
+		"-name", "sandbox-src-uuid",
+		"-qmp", "unix:" + srcSandboxDir + "/qmp.sock,server=on,wait=off",
+		"-object", "memory-backend-file,id=nvdimm,mem-path=" + srcNvdimm + ",size=512M,readonly=on",
+		"-incoming", "tcp:[::]:4444",
+	}, "\n") + "\n"
+	if err := os.WriteFile(cmdlinePath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write cmdline: %v", err)
+	}
+
+	prevRoot := sandboxRoot
+	sandboxRoot = srcSandboxRoot
+	t.Cleanup(func() { sandboxRoot = prevRoot })
+
+	prevShared := kataSharedSandboxRoot
+	kataSharedSandboxRoot = filepath.Join(tmpDir, "kata-shared")
+	t.Cleanup(func() { kataSharedSandboxRoot = prevShared })
+
+	// extractNvdimmPath rejects mem-paths outside known Kata roots; widen
+	// the allowlist so the synthetic source nvdimm passes.
+	prevPrefixes := nvdimmPathAllowedPrefixes
+	nvdimmPathAllowedPrefixes = append(append([]string(nil), prevPrefixes...), tmpDir+"/")
+	t.Cleanup(func() { nvdimmPathAllowedPrefixes = prevPrefixes })
+
+	// Fail tap setup: it runs after the nvdimm copy but before virtiofsd
+	// and QEMU ever spawn, so the defer must remove the copied image.
+	prevTap := setupTapIface
+	setupTapIface = func(_ context.Context, _ string) error { return errors.New("forced tap failure") }
+	t.Cleanup(func() { setupTapIface = prevTap })
+
+	before := listDestNvdimmTemps()
+	cfg := DestConfig{
+		ReplayCmdlineFile: cmdlinePath,
+		SandboxID:         "katamaran-dest-test",
+	}
+	err := spawnReplayedQEMU(context.Background(), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "forced tap failure") {
+		t.Fatalf("expected forced tap-setup failure, got %v", err)
+	}
+	after := listDestNvdimmTemps()
+	if len(after) != len(before) {
+		t.Fatalf("orphaned nvdimm temp images after pre-spawn failure: %v", after)
+	}
+}
+
+// listDestNvdimmTemps returns the current /tmp/kata-dst-nvdimm-*.img set
+// so tests can detect orphaned copies via set-size comparison.
+func listDestNvdimmTemps() []string {
+	matches, _ := filepath.Glob("/tmp/kata-dst-nvdimm-*.img")
+	return matches
+}
