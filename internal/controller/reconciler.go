@@ -603,7 +603,16 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			return
 		}
-		jobs, err := r.Kube.BatchV1().Jobs(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		// Watch-cache read: this loop re-lists every PollInterval for the
+		// full recovery budget (up to 4h). Terminal Job conditions land in
+		// the watch cache within moments of etcd; on a 5s polling loop the
+		// staleness is invisible, while quorum reads would sustain one etcd
+		// round-trip per tick per recovering migration (same rationale as
+		// native.poll's cacheRead).
+		jobs, err := r.Kube.BatchV1().Jobs(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector:   selector,
+			ResourceVersion: "0",
+		})
 		if err != nil {
 			slog.Error("recover: list jobs failed", "migration", key, "migration_id", id, "error", err)
 			continue

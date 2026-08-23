@@ -38,7 +38,11 @@ func newDiscovererFromClient(c kubernetes.Interface) Discoverer {
 }
 
 func (d *nativeDiscoverer) ListKataPods(ctx context.Context) ([]PodInfo, error) {
-	list, err := d.client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	// Serve from the apiserver watch cache: a quorum read would hit etcd for
+	// every pod in the cluster each time the dashboard's pod picker opens.
+	// The list feeds a user-facing dropdown, so watch-cache staleness of a
+	// moment is irrelevant. Same rationale as native.poll's cacheRead.
+	list, err := d.client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
@@ -58,8 +62,11 @@ func (d *nativeDiscoverer) ListKataPods(ctx context.Context) ([]PodInfo, error) 
 }
 
 func (d *nativeDiscoverer) ListKataNodes(ctx context.Context) ([]NodeInfo, error) {
+	// Watch-cache read, same rationale as ListKataPods: node membership
+	// changes on operator timescales, so a moment of staleness is free.
 	list, err := d.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-		LabelSelector: KataNodeLabel,
+		LabelSelector:   KataNodeLabel,
+		ResourceVersion: "0",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)

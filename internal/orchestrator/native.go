@@ -774,8 +774,13 @@ func (n *native) waitForJobPod(ctx context.Context, jobName, desc string, reqTim
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
+		// Watch-cache read: this loop re-lists every 2s while waiting for a
+		// pod to appear/schedule. A watch-cache lag of one tick is absorbed
+		// by the retry, so quorum reads would only sustain pointless etcd
+		// load (same rationale as poll's cacheRead).
 		pods, err := n.client.CoreV1().Pods(n.namespace).List(deadline, metav1.ListOptions{
-			LabelSelector: "batch.kubernetes.io/job-name=" + jobName,
+			LabelSelector:   "batch.kubernetes.io/job-name=" + jobName,
+			ResourceVersion: "0",
 		})
 		if err == nil {
 			for _, p := range pods.Items {
