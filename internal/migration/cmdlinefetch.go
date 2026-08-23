@@ -32,12 +32,18 @@ const maxPodLogScanBytes = 16 * 1024 * 1024
 // driving an unbounded allocation.
 const maxMarkerB64Size = 6 * 1024 * 1024
 
-// podRefDNSRe matches a single DNS-1123 label (used for both the
-// namespace and the pod name in <namespace>/<pod> references).
+// podRefDNSRe matches a single DNS-1123 label (used for the namespace in
+// <namespace>/<pod> references).
 // Defense-in-depth: the values are URL-escaped before going on the wire,
 // but rejecting non-conforming inputs early avoids spurious apiserver
 // round-trips on bogus references.
 var podRefDNSRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// podNameDNSRe matches a DNS-1123 subdomain: Kubernetes pod names may
+// contain dots (e.g. StatefulSet pods, or names like "kata.demo") even
+// though namespaces are always single labels. Still injection-safe:
+// only lowercase alphanumerics, hyphens, and dots.
+var podNameDNSRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
 // namespace/object name limit).
@@ -209,7 +215,8 @@ func fetchVMConfigFromPodLog(ctx context.Context, ref string) (vmConfig, agentCo
 }
 
 // parsePodRef splits "<ns>/<name>" into its components and rejects
-// values whose namespace or name does not look like a DNS-1123 label.
+// values whose namespace is not a DNS-1123 label or whose pod name is
+// not a DNS-1123 subdomain (dots allowed, matching Kubernetes naming).
 // The DNS check is defense-in-depth: callers ultimately pass the pieces
 // to url.PathEscape before the request hits the apiserver, but a strict
 // up-front check keeps clearly bogus references (whitespace, control
@@ -223,8 +230,8 @@ func parsePodRef(ref string) (string, string, error) {
 	if len(ns) > maxDNS1123Len || !podRefDNSRe.MatchString(ns) {
 		return "", "", fmt.Errorf("invalid pod ref %q: namespace must be a DNS-1123 label", ref)
 	}
-	if len(pod) > maxDNS1123Len || !podRefDNSRe.MatchString(pod) {
-		return "", "", fmt.Errorf("invalid pod ref %q: pod name must be a DNS-1123 label", ref)
+	if len(pod) > maxDNS1123Len || !podNameDNSRe.MatchString(pod) {
+		return "", "", fmt.Errorf("invalid pod ref %q: pod name must be a DNS-1123 subdomain", ref)
 	}
 	return ns, pod, nil
 }

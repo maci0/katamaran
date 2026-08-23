@@ -624,10 +624,15 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 }
 
 // dns1123LabelRe matches a single DNS-1123 label (lowercase alphanumerics
-// and hyphens, max 63 chars). Kubernetes pod and namespace names follow
-// DNS-1123 conventions; this regex is used as a defense-in-depth check
-// before either value is interpolated into a /bin/sh -c command string.
+// and hyphens, max 63 chars). Kubernetes namespace names follow DNS-1123
+// label conventions; this regex is used as a defense-in-depth check
+// before the value is interpolated into a /bin/sh -c command string.
 var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// dns1123SubdomainRe matches a DNS-1123 subdomain: Kubernetes pod names
+// may contain dots even though namespaces cannot. Still injection-safe:
+// only lowercase alphanumerics, hyphens, and dots.
+var dns1123SubdomainRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // maxDNS1123Len is the maximum length of a DNS-1123 subdomain (Kubernetes
 // namespace/object name limit).
@@ -645,8 +650,8 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	if len(ns) == 0 || len(ns) > maxDNS1123Len || !dns1123LabelRe.MatchString(ns) {
 		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", ns)
 	}
-	if len(srcPod) == 0 || len(srcPod) > maxDNS1123Len || !dns1123LabelRe.MatchString(srcPod) {
-		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 label", srcPod)
+	if len(srcPod) == 0 || len(srcPod) > maxDNS1123Len || !dns1123SubdomainRe.MatchString(srcPod) {
+		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 subdomain", srcPod)
 	}
 	out := destJob.DeepCopy()
 	cs := out.Spec.Template.Spec.Containers

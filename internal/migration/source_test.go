@@ -404,41 +404,10 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	handlers := map[string]string{
-		"migrate-set-capabilities": `{"return":{}}`,
-		"migrate-set-parameters":   `{"return":{}}`,
-		"query-migrate":            `{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50}}`,
-	}
-
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			// After "migrate" command, send response then inject STOP event.
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
-				continue
-			}
-
-			responded := false
-			for cmd, resp := range handlers {
-				if strings.Contains(line, `"`+cmd+`"`) {
-					conn.Write([]byte(resp + "\n"))
-					responded = true
-					break
-				}
-			}
-			if !responded {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-			}
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		// After "migrate" command, send response then inject STOP event.
+		`"migrate"`:       {`{"return":{}}`, `{"event":"STOP"}`},
+		`"query-migrate"`: {`{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -453,27 +422,9 @@ func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
 func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"failed","error-desc":"test failure"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		`"migrate"`:       {`{"return":{}}`, `{"event":"STOP"}`},
+		`"query-migrate"`: {`{"return":{"status":"failed","error-desc":"test failure"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -616,27 +567,9 @@ func TestRunSource_NonShared_CommandArguments(t *testing.T) {
 func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				continue
-			}
-			// While waiting for STOP event, query-migrate returns failed status.
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"failed","error-desc":"RAM migration failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		// While waiting for STOP event, query-migrate returns failed status.
+		`"query-migrate"`: {`{"return":{"status":"failed","error-desc":"RAM migration failed"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -657,26 +590,8 @@ func TestRunSource_MigrationFailedDuringPolling(t *testing.T) {
 func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"cancelled"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		`"query-migrate"`: {`{"return":{"status":"cancelled"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -694,27 +609,9 @@ func TestRunSource_MigrationCancelledDuringPolling(t *testing.T) {
 func TestRunSource_CompletedDuringPolling(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				continue
-			}
-			// Report completed without STOP event (triggered via polling).
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"completed","downtime":5,"total-time":500,"setup-time":20}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		// Report completed without STOP event (triggered via polling).
+		`"query-migrate"`: {`{"return":{"status":"completed","downtime":5,"total-time":500,"setup-time":20}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -729,28 +626,9 @@ func TestRunSource_CompletedDuringPolling(t *testing.T) {
 func TestRunSource_SharedStorage_Multifd(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"STOP"}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "query-migrate") {
-				conn.Write([]byte(`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}` + "\n"))
-				continue
-			}
-			// migrate-set-capabilities, migrate-set-parameters, etc.
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		`"migrate"`:       {`{"return":{}}`, `{"event":"STOP"}`},
+		`"query-migrate"`: {`{"return":{"status":"completed","downtime":10,"total-time":500,"setup-time":20}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -828,22 +706,8 @@ func TestMeasureRTT(t *testing.T) {
 func TestRunSource_DriveMirrorFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "drive-mirror") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"device not found"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"drive-mirror": {`{"error":{"class":"GenericError","desc":"device not found"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -861,22 +725,8 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-set-capabilities") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"caps error"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-set-capabilities": {`{"error":{"class":"GenericError","desc":"caps error"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -894,22 +744,8 @@ func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 func TestRunSource_SetParametersFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-set-parameters") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"params error"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-set-parameters": {`{"error":{"class":"GenericError","desc":"params error"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{
@@ -927,22 +763,8 @@ func TestRunSource_SetParametersFailure(t *testing.T) {
 func TestRunSource_MigrateCommandFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if qmptest.IsMigrateCommand(line) {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"migrate failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		`"migrate"`: {`{"error":{"class":"GenericError","desc":"migrate failed"}}`},
 	})
 
 	err := RunSource(context.Background(), SourceConfig{

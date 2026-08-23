@@ -14,9 +14,10 @@ spec:
   backoffLimit: 0
   # Mirrors the source Job deadline (see job-source.yaml): the dest waits
   # for RESUME while storage sync (up to 2h) and RAM migration (up to 1h)
-  # complete, plus the source's dest-startup wait (~1m). The previous 900s
+  # complete, plus the source's dest-startup wait (~1m) and the CNI
+  # convergence delay (up to 10m), rounded up to 4h. The previous 900s
   # killed the dest mid-wait on any migration whose storage phase ran long.
-  activeDeadlineSeconds: 7500
+  activeDeadlineSeconds: 14400
   ttlSecondsAfterFinished: 300
   template:
     spec:

@@ -57,3 +57,35 @@ func IsMigrateCommand(line string) bool {
 		!strings.Contains(line, "query-migrate") &&
 		!strings.Contains(line, "migrate-cancel")
 }
+
+// StartScriptedQMP starts a fake QMP server that completes the handshake and
+// then answers every command with {"return":{}} except when the raw command
+// line contains a script key, in which case the mapped responses are written
+// verbatim instead (each newline-terminated).
+//
+// Keys are matched with strings.Contains against the raw line; include quotes
+// to disambiguate (the key `"migrate"` matches only the bare migrate command).
+func StartScriptedQMP(t *testing.T, script map[string][]string) string {
+	t.Helper()
+	return StartFakeQMP(t, func(conn net.Conn) {
+		QMPHandshake(conn)
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(buf[:n])
+			responses := []string{`{"return":{}}`}
+			for key, resp := range script {
+				if strings.Contains(line, key) {
+					responses = resp
+					break
+				}
+			}
+			for _, resp := range responses {
+				conn.Write([]byte(resp + "\n"))
+			}
+		}
+	})
+}

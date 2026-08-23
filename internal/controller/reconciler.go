@@ -493,18 +493,30 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 	if req.AdoptVM && req.SourcePod != nil {
 		adoptCtx, adoptCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer adoptCancel()
-		adoptName := "adopted-" + string(id)[:8]
 		destNode := req.DestNode
-		// If auto-scheduled, resolve dest node from the dest job
+		// If auto-scheduled, resolve the dest node from the dest Job's
+		// pod. native.Apply only learns the scheduled node after Apply is
+		// called (it fills its local Request copy), so the caller's req
+		// still has DestNode == "" here.
 		if destNode == "" {
-			// Try to find the dest job's node
-			slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption", "migration", key, "migration_id", id)
-			return
+			resolved, rerr := r.lookupDestPodNode(adoptCtx, id)
+			if rerr != nil || resolved == "" {
+				slog.Warn("AdoptVM with auto-scheduled dest: dest node unknown, skipping adoption", "migration", key, "migration_id", id, "error", rerr)
+				return
+			}
+			destNode = resolved
 		}
+		// Production migration IDs are 16 hex chars; guard the slice for
+		// shorter IDs so a malformed ID can never panic the worker.
+		idPrefix := string(id)
+		if len(idPrefix) > 8 {
+			idPrefix = idPrefix[:8]
+		}
+		adoptName := "adopted-" + idPrefix
 		// Wait for the factory to load VMConfig from the migration
 		// state or a sandbox persist.json before creating the pod.
-		slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", "5s")
-		time.Sleep(5 * time.Second)
+		slog.Info("Waiting for factory VMConfig before adoption", "migration", key, "migration_id", id, "delay", adoptionVMConfigDelay.String())
+		time.Sleep(adoptionVMConfigDelay)
 		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode); err != nil {
 			slog.Warn("Failed to create adoption pod", "migration", key, "migration_id", id, "name", adoptName, "node", destNode, "error", err)
 			return
@@ -589,6 +601,16 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			if cond := orchestrator.TerminalJobCondition(dest); cond == batchv1.JobComplete {
 				slog.Info("Recovery completed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
 				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
+				// Run the documented post-success side effects
+				// (sourceCleanup, adoptVM) exactly like the dispatch
+				// path — a controller restart mid-migration must not
+				// silently drop them.
+				req, sErr := specToRequest(obj.Object)
+				if sErr != nil {
+					slog.Warn("recover: specToRequest failed; skipping post-success cleanup/adoption", "migration", key, "migration_id", id, "error", sErr)
+					return
+				}
+				r.handleMigrationOutcome(ctx, key, req, orchestrator.MigrationID(id), string(orchestrator.PhaseSucceeded))
 				return
 			} else if cond == batchv1.JobFailed {
 				detail, attrs := jobFailureDetails(dest)
@@ -639,6 +661,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		}
 	}
 }
+
+// adoptionVMConfigDelay is how long handleMigrationOutcome waits before
+// creating the adoption pod, giving the factory time to load VMConfig
+// from the migration state or a sandbox persist.json. var (not const) so
+// tests can shrink it.
+var adoptionVMConfigDelay = 5 * time.Second
 
 func jobFailureDetails(job *batchv1.Job) (string, []any) {
 	cond, ok := orchestrator.LatestTerminalJobCondition(job)
@@ -843,6 +871,28 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 		slog.Error("patch status failed", "migration", key, "error", err)
 	}
 	return err
+}
+
+// lookupDestPodNode returns spec.nodeName of the first scheduled pod
+// belonging to the migration's destination Job. Pods carry the Job's
+// batch.kubernetes.io/job-name label (injected by the Job controller);
+// the migration-id label lives only on the Job object itself.
+func (r *Reconciler) lookupDestPodNode(ctx context.Context, id orchestrator.MigrationID) (string, error) {
+	if r.Kube == nil {
+		return "", fmt.Errorf("no Kube clientset wired")
+	}
+	pods, err := r.Kube.CoreV1().Pods(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "batch.kubernetes.io/job-name=" + orchestrator.DestJobName(id),
+	})
+	if err != nil {
+		return "", err
+	}
+	for i := range pods.Items {
+		if n := pods.Items[i].Spec.NodeName; n != "" {
+			return n, nil
+		}
+	}
+	return "", nil
 }
 
 // createAdoptionPod creates a minimal Kata pod on the destination node.

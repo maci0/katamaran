@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	fakedyn "k8s.io/client-go/dynamic/fake"
 	fakekube "k8s.io/client-go/kubernetes/fake"
 
@@ -307,6 +308,25 @@ func newMigrationCR(name string, finalizers []string, withDeletion bool, status 
 	return u
 }
 
+// completedDestJob returns the dest Job for a migration id in the Completed state.
+func completedDestJob(id string) batchv1.Job {
+	return batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "katamaran-dest-" + id,
+			Namespace: orchestrator.DefaultJobNamespace,
+			Labels: map[string]string{
+				orchestrator.MigrationIDLabel: id,
+				"app.kubernetes.io/component": "dest",
+			},
+		},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{
+				{Type: batchv1.JobComplete, Status: "True"},
+			},
+		},
+	}
+}
+
 func newReconcilerWithCR(t *testing.T, orch orchestrator.Orchestrator, cr *unstructured.Unstructured, jobs ...batchv1.Job) (*Reconciler, *fakedyn.FakeDynamicClient, *fakekube.Clientset) {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -460,22 +480,7 @@ func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 		"phase":       "transferring",
 		"migrationID": "id-m3",
 	})
-	destJob := batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "katamaran-dest-id-m3",
-			Namespace: orchestrator.DefaultJobNamespace,
-			Labels: map[string]string{
-				orchestrator.MigrationIDLabel: "id-m3",
-				"app.kubernetes.io/component": "dest",
-			},
-		},
-		Status: batchv1.JobStatus{
-			Conditions: []batchv1.JobCondition{
-				{Type: batchv1.JobComplete, Status: "True"},
-			},
-		},
-	}
-	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, destJob)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, completedDestJob("id-m3"))
 	if err := rec.reconcileAll(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -501,22 +506,7 @@ func TestReconciler_RecoverFromAnyNonTerminalPhase(t *testing.T) {
 		"phase":       "cutover",
 		"migrationID": "id-cutover",
 	})
-	destJob := batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "katamaran-dest-id-cutover",
-			Namespace: orchestrator.DefaultJobNamespace,
-			Labels: map[string]string{
-				orchestrator.MigrationIDLabel: "id-cutover",
-				"app.kubernetes.io/component": "dest",
-			},
-		},
-		Status: batchv1.JobStatus{
-			Conditions: []batchv1.JobCondition{
-				{Type: batchv1.JobComplete, Status: "True"},
-			},
-		},
-	}
-	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, destJob)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, completedDestJob("id-cutover"))
 	if err := rec.reconcileAll(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -811,6 +801,9 @@ func newAdoptReconciler(t *testing.T, orch orchestrator.Orchestrator, cr *unstru
 	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList"}, &unstructured.UnstructuredList{})
 	dyn := fakedyn.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
 		MigrationGVR: "MigrationList",
+		// createAdoptionPod writes Pods through the dynamic client; the
+		// pod list kind must be registered so tests can List them back.
+		{Group: "", Version: "v1", Resource: "pods"}: "PodList",
 	}, cr)
 	kube := fakekube.NewSimpleClientset(pod)
 	rec := NewReconciler(dyn, kube, orch, nil)
@@ -861,4 +854,105 @@ func TestReconciler_DoesNotMarkUnmanagedOwner(t *testing.T) {
 	if got := rec.pending.MigrationFor(uid); got != "" {
 		t.Fatalf("unmanaged owner %s was marked %q, want unmarked", uid, got)
 	}
+}
+
+// With adoptVM and no spec.destNode (auto-select), the adoption pod must
+// still be created: the dest node is resolved from the dest Job's
+// scheduled pod. Regression: the node resolution inside native.Apply only
+// mutates its local Request copy, so the reconciler used to see an empty
+// DestNode and silently skip adoption while keeping the webhook's
+// pending mark active — shrinking the workload by one replica.
+func TestReconciler_AdoptVM_AutoSelectResolvesDestNode(t *testing.T) {
+	const rsUID types.UID = "rs-uid-autoselect"
+	const migID = "id-adopt1"
+	updates := make(chan orchestrator.StatusUpdate, 1)
+	updates <- orchestrator.StatusUpdate{ID: migID, Phase: orchestrator.PhaseSucceeded}
+	close(updates)
+	orch := &fakeOrch{applyID: migID, updates: updates}
+	rec := newAdoptReconciler(t, orch, adoptCR("m-auto", ""), sourcePodOwnedBy("ReplicaSet", rsUID))
+
+	destPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: orchestrator.DefaultJobNamespace,
+			Name:      "katamaran-dest-" + migID + "-abcde",
+			Labels:    map[string]string{"batch.kubernetes.io/job-name": orchestrator.DestJobName(migID)},
+		},
+		Spec: corev1.PodSpec{NodeName: "worker-b"},
+	}
+	if _, err := rec.Kube.CoreV1().Pods(orchestrator.DefaultJobNamespace).Create(context.Background(), destPod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed dest job pod: %v", err)
+	}
+
+	savedDelay := adoptionVMConfigDelay
+	adoptionVMConfigDelay = time.Millisecond
+	t.Cleanup(func() { adoptionVMConfigDelay = savedDelay })
+
+	cr := adoptCR("m-auto", "")
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-auto"}, cr)
+
+	if got := rec.pending.MigrationFor(rsUID); got != migID {
+		t.Fatalf("pending mark for %s = %q, want %q", rsUID, got, migID)
+	}
+	// createAdoptionPod goes through the dynamic client, so list its
+	// objects from there (the fake kube clientset is a separate store).
+	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	list, err := rec.Dynamic.Resource(podGVR).Namespace("default").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list adoption pods: %v", err)
+	}
+	var adopted *unstructured.Unstructured
+	for i := range list.Items {
+		if strings.HasPrefix(list.Items[i].GetName(), "adopted-") {
+			adopted = &list.Items[i]
+			break
+		}
+	}
+	if adopted == nil {
+		t.Fatalf("no adoption pod created; pods=%d", len(list.Items))
+	}
+	node, _, _ := unstructured.NestedString(adopted.Object, "spec", "nodeName")
+	if node != "worker-b" {
+		t.Fatalf("adoption pod scheduled on %q, want worker-b", node)
+	}
+}
+
+// Recovery after a controller restart must run the documented post-success
+// side effects too: sourceCleanup=delete must delete the source pod even
+// though the success was observed via Job inspection rather than the watch.
+func TestReconciler_RecoverFromDestComplete_RunsSourceCleanup(t *testing.T) {
+	cr := newMigrationCR("m3-cleanup", []string{finalizerName}, false, map[string]any{
+		"phase":       "transferring",
+		"migrationID": "id-m3c",
+	})
+	// Patch in sourceCleanup=delete on top of the base CR spec.
+	_ = unstructured.SetNestedField(cr.Object, "delete", "spec", "sourceCleanup")
+
+	disc := &fakeDiscoverer{}
+	rec, _, _ := func() (*Reconciler, dynamic.Interface, *fakekube.Clientset) {
+		scheme := runtime.NewScheme()
+		scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "Migration"}, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList"}, &unstructured.UnstructuredList{})
+		dyn := fakedyn.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+			MigrationGVR: "MigrationList",
+		}, cr)
+		destJob := completedDestJob("id-m3c")
+		kube := fakekube.NewSimpleClientset(&destJob)
+		rec := NewReconciler(dyn, kube, &fakeOrch{}, disc)
+		rec.PollInterval = 10 * time.Millisecond
+		rec.StatusTimeout = 1 * time.Second
+		return rec, dyn, kube
+	}()
+
+	if err := rec.reconcileAll(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	// Recovery runs in a goroutine; allow it a few ticks to converge.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := len(disc.deletedPods); got == 1 && disc.deletedPods[0] == "default/kata-demo" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("recovery deleted pods %v, want [default/kata-demo]", disc.deletedPods)
 }

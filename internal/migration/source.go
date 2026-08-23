@@ -282,6 +282,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	}
 
 	var rttMS int64
+	downtimeFromRTT := false
 	if cfg.AutoDowntime {
 		floorMS := cfg.AutoDowntimeFloorMS
 		if floorMS <= 0 {
@@ -295,14 +296,18 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			calculatedDowntime := int(rttMS*rttMultiplier) + floorMS
 			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS, "floor_ms", floorMS)
 			downtimeLimitMS = calculatedDowntime
+			downtimeFromRTT = true
 		}
 	}
 	// Stable, parser-friendly marker: surfaces the downtime limit the
 	// source actually programmed into QEMU (post auto-calc, post fallback)
 	// so the orchestrator can stamp it on the StatusUpdate / Migration CR
-	// before the cutover even starts.
+	// before the cutover even starts. auto=true means the applied value
+	// came from the RTT calculation; on RTT failure the --downtime
+	// fallback is programmed and auto stays false so consumers don't
+	// mistake spec.downtimeMS for an auto-derived limit.
 	fmt.Printf("KATAMARAN_DOWNTIME_LIMIT applied_ms=%d rtt_ms=%d auto=%t\n",
-		downtimeLimitMS, rttMS, cfg.AutoDowntime)
+		downtimeLimitMS, rttMS, downtimeFromRTT)
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),

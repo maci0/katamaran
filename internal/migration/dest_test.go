@@ -69,24 +69,8 @@ func TestRunDestination_NegativeMultifd(t *testing.T) {
 func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-incoming") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
-				continue
-			}
-			// Respond to all other commands with success.
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-incoming": {`{"return":{}}`, `{"event":"RESUME"}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
@@ -98,37 +82,8 @@ func TestRunDestination_SharedStorage_HappyPath(t *testing.T) {
 func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-incoming") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				// After migrate-incoming, the NBD setup commands come next,
-				// then RESUME should fire.
-				continue
-			}
-			if strings.Contains(line, "nbd-server-stop") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "nbd-server-start") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "nbd-server-add") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"nbd-server-add": {`{"return":{}}`, `{"event":"RESUME"}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
@@ -140,24 +95,8 @@ func TestRunDestination_NonShared_HappyPath(t *testing.T) {
 func TestRunDestination_SharedStorage_Multifd(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-incoming") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
-				continue
-			}
-			// migrate-set-capabilities, migrate-set-parameters, etc.
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-incoming": {`{"return":{}}`, `{"event":"RESUME"}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
@@ -169,22 +108,8 @@ func TestRunDestination_SharedStorage_Multifd(t *testing.T) {
 func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-incoming") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"incoming failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-incoming": {`{"error":{"class":"GenericError","desc":"incoming failed"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})
@@ -199,22 +124,8 @@ func TestRunDestination_MigrateIncomingFailure(t *testing.T) {
 func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "nbd-server-start") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"bind failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"nbd-server-start": {`{"error":{"class":"GenericError","desc":"bind failed"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
@@ -229,22 +140,8 @@ func TestRunDestination_NBDServerStartFailure(t *testing.T) {
 func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "nbd-server-add") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"export failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"nbd-server-add": {`{"error":{"class":"GenericError","desc":"export failed"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}})
@@ -259,22 +156,8 @@ func TestRunDestination_NBDServerAddFailure(t *testing.T) {
 func TestRunDestination_SetCapabilitiesFailure_Multifd(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-set-capabilities") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"caps error"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-set-capabilities": {`{"error":{"class":"GenericError","desc":"caps error"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
@@ -289,22 +172,8 @@ func TestRunDestination_SetCapabilitiesFailure_Multifd(t *testing.T) {
 func TestRunDestination_SetParametersFailure_Multifd(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-set-parameters") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"params error"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-set-parameters": {`{"error":{"class":"GenericError","desc":"params error"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true, MultifdChannels: 4})
@@ -369,27 +238,9 @@ func TestRunDestination_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 func TestRunDestination_GARPFailure(t *testing.T) {
 	t.Parallel()
 
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		buf := make([]byte, 8192)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(buf[:n])
-
-			if strings.Contains(line, "migrate-incoming") {
-				conn.Write([]byte(`{"return":{}}` + "\n"))
-				conn.Write([]byte(`{"event":"RESUME"}` + "\n"))
-				continue
-			}
-			if strings.Contains(line, "announce-self") {
-				conn.Write([]byte(`{"error":{"class":"GenericError","desc":"announce failed"}}` + "\n"))
-				continue
-			}
-			conn.Write([]byte(`{"return":{}}` + "\n"))
-		}
+	sock := qmptest.StartScriptedQMP(t, map[string][]string{
+		"migrate-incoming": {`{"return":{}}`, `{"event":"RESUME"}`},
+		"announce-self":    {`{"error":{"class":"GenericError","desc":"announce failed"}}`},
 	})
 
 	err := RunDestination(context.Background(), DestConfig{QMPSocket: sock, DriveIDs: []string{"drive-virtio-disk0"}, SharedStorage: true})

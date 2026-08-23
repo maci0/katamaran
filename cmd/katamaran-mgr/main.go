@@ -58,7 +58,8 @@ Flags:
   --leader-name string            Lease object name for leader election (default "katamaran-mgr")
   --disable-leader-election       Run reconciler without leader election (single-replica development only)
   --pod-wait-timeout duration     How long to wait for migration Job pods to appear (default 60s;
-                                  overridden by KATAMARAN_POD_WAIT_TIMEOUT env or per-CR spec.podWaitTimeoutSeconds)
+                                  KATAMARAN_POD_WAIT_TIMEOUT env overrides the default but loses to an
+                                  explicitly set flag; per-CR spec.podWaitTimeoutSeconds wins over all)
   --webhook-addr string           HTTPS listen address for the validating admission webhook (default ":9443")
   --webhook-service string        Name of the Kubernetes Service the apiserver dials to reach the webhook,
                                   used as TLS SAN (default "katamaran-mgr-webhook")
@@ -77,7 +78,9 @@ Exit codes:
   2   Argument or configuration error
 
 Environment variables:
-  KATAMARAN_POD_WAIT_TIMEOUT   Override --pod-wait-timeout (Go duration; per-CR spec.podWaitTimeoutSeconds wins over both)
+  KATAMARAN_POD_WAIT_TIMEOUT   Overrides the --pod-wait-timeout default; an explicitly set
+                               flag wins (Go duration; per-CR spec.podWaitTimeoutSeconds
+                               wins over both)
 
 Examples:
   # Run in-cluster with leader election (default)
