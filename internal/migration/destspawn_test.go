@@ -133,7 +133,7 @@ func TestTransformCmdline_StripsAndAppendsIncomingDefer(t *testing.T) {
 		"-daemonize",
 		"-nodefaults",
 	}
-	binary, out, err := transformCmdline(args, "", "", "", "", "", "")
+	binary, out, err := transformCmdline(args, cmdlineRewrite{})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTransformCmdline_StripsAndAppendsIncomingDefer(t *testing.T) {
 
 func TestTransformCmdline_EmptyArgsErrors(t *testing.T) {
 	t.Parallel()
-	if _, _, err := transformCmdline(nil, "", "", "", "", "", ""); err == nil {
+	if _, _, err := transformCmdline(nil, cmdlineRewrite{}); err == nil {
 		t.Fatal("expected error for empty args")
 	}
 }
@@ -184,7 +184,7 @@ func TestTransformCmdline_PathSubstitutions(t *testing.T) {
 		// must be remapped to the dest sandbox id.
 		"-name", "sandbox-SRC-UUID",
 	}
-	_, out, err := transformCmdline(args, srcDir, dstDir, "SRC-UUID", "DST-UUID", "", "")
+	_, out, err := transformCmdline(args, cmdlineRewrite{srcSandboxDir: srcDir, dstSandboxDir: dstDir, srcSandboxID: "SRC-UUID", dstSandboxID: "DST-UUID"})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestTransformCmdline_StripsReadonly(t *testing.T) {
 		"-object", "memory-backend-file,id=nvdimm,mem-path=/img,size=512M,readonly=on",
 		"-drive", "file=/img,readonly=true,if=none",
 	}
-	_, out, err := transformCmdline(args, "", "", "", "", "", "")
+	_, out, err := transformCmdline(args, cmdlineRewrite{})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestTransformCmdline_NvdimmPathSubstitution(t *testing.T) {
 		"/opt/kata/bin/qemu-system-x86_64",
 		"-object", "memory-backend-file,id=nvdimm,mem-path=" + srcImg + ",size=512M,readonly=on",
 	}
-	_, out, err := transformCmdline(args, "", "", "", "", srcImg, dstImg)
+	_, out, err := transformCmdline(args, cmdlineRewrite{srcNvdimmPath: srcImg, dstNvdimmPath: dstImg})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestTransformCmdline_DropsBareIncoming(t *testing.T) {
 		"-incoming", "defer",
 		"-no-shutdown",
 	}
-	_, out, err := transformCmdline(args, "", "", "", "", "", "")
+	_, out, err := transformCmdline(args, cmdlineRewrite{})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestTransformCmdline_StripsInheritedFDs(t *testing.T) {
 		"-netdev", "tap,id=net0,fd=4,vhost=on,vhostfd=5",
 		"-device", "vhost-vsock-pci,id=vsock0,vhostfd=6",
 	}
-	_, out, err := transformCmdline(args, "", "", "", "", "", "")
+	_, out, err := transformCmdline(args, cmdlineRewrite{tapIface: DefaultTapIface})
 	if err != nil {
 		t.Fatalf("transformCmdline: %v", err)
 	}

@@ -63,11 +63,9 @@ func ValidateDNSSubdomain(s string) bool {
 	return len(s) > 0 && len(s) <= maxDNS1123Len && dns1123SubdomainRe.MatchString(s)
 }
 
-const (
-	cmdlineMarker     = "KATAMARAN_CMDLINE_B64="
-	vmConfigMarker    = "KATAMARAN_VMCONFIG_B64="
-	agentConfigMarker = "KATAMARAN_AGENTCONFIG_B64="
-)
+// The marker prefixes scanned from source pod logs below are the exported
+// constants in markers.go, shared with the emitters and the orchestrator's
+// scrapers so the spellings cannot drift.
 
 // podLogClient bundles the apiserver pod-log fetch parameters: the
 // authenticated HTTP client, the resolved log URL, the bearer token,
@@ -136,12 +134,12 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 	deadline, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	slog.Info("Fetching source QEMU cmdline from pod log", "endpoint", pc.endpoint, "marker", cmdlineMarker)
+	slog.Info("Fetching source QEMU cmdline from pod log", "endpoint", pc.endpoint, "marker", CmdlineB64Marker)
 	timeoutErr := func(lastErr error) error {
 		if lastErr != nil {
-			return fmt.Errorf("source pod %s/%s did not emit %s within timeout: %w", pc.ns, pc.pod, cmdlineMarker, lastErr)
+			return fmt.Errorf("source pod %s/%s did not emit %s within timeout: %w", pc.ns, pc.pod, CmdlineB64Marker, lastErr)
 		}
-		return fmt.Errorf("source pod %s/%s did not emit %s within timeout", pc.ns, pc.pod, cmdlineMarker)
+		return fmt.Errorf("source pod %s/%s did not emit %s within timeout", pc.ns, pc.pod, CmdlineB64Marker)
 	}
 	var lastFetchErr error
 	for attempt := 1; ; attempt++ {
@@ -150,11 +148,11 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 			return "", timeoutErr(lastFetchErr)
 		default:
 		}
-		markers, bytesScanned, err := scanPodLogMarkers(deadline, pc.client, pc.endpoint, pc.token, cmdlineMarker)
+		markers, bytesScanned, err := scanPodLogMarkers(deadline, pc.client, pc.endpoint, pc.token, CmdlineB64Marker)
 		if err != nil {
 			lastFetchErr = err
 			logPodLogFetchRetry("pod-log fetch attempt failed", attempt, "error", err)
-		} else if b64 := markers[cmdlineMarker]; b64 != "" {
+		} else if b64 := markers[CmdlineB64Marker]; b64 != "" {
 			if len(b64) > maxMarkerB64Size {
 				return "", fmt.Errorf("KATAMARAN_CMDLINE_B64 marker too large: %d bytes (max %d)", len(b64), maxMarkerB64Size)
 			}
@@ -211,7 +209,7 @@ func fetchVMConfigFromPodLog(ctx context.Context, ref string) (vmConfig, agentCo
 	}
 	defer pc.client.CloseIdleConnections()
 
-	markers, _, err := scanPodLogMarkers(ctx, pc.client, pc.endpoint, pc.token, vmConfigMarker, agentConfigMarker)
+	markers, _, err := scanPodLogMarkers(ctx, pc.client, pc.endpoint, pc.token, VMConfigB64Marker, AgentConfigB64Marker)
 	if err != nil {
 		slog.Warn("Failed to fetch source pod log for VMConfig", "error", err)
 		if len(markers) == 0 {
@@ -234,7 +232,7 @@ func fetchVMConfigFromPodLog(ctx context.Context, ref string) (vmConfig, agentCo
 		}
 		return decoded
 	}
-	return decode("VMConfig", markers[vmConfigMarker]), decode("AgentConfig", markers[agentConfigMarker])
+	return decode("VMConfig", markers[VMConfigB64Marker]), decode("AgentConfig", markers[AgentConfigB64Marker])
 }
 
 // parsePodRef splits "<ns>/<name>" into its components and rejects

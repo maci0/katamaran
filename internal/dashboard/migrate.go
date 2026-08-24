@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/maci0/katamaran/internal/migration"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
@@ -143,9 +144,9 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	var downtimeMS int
 	if dt := r.PostFormValue("downtime"); dt != "" {
 		d, err := strconv.Atoi(dt)
-		if err != nil || d < 1 || d > 60000 {
+		if err != nil || d < 1 || d > migration.MaxDowntimeMS {
 			slog.Warn("Migration request rejected: invalid downtime value", "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Invalid downtime value (must be between 1 and 60000 milliseconds)", http.StatusBadRequest)
+			jsonError(w, fmt.Sprintf("Invalid downtime value (must be between 1 and %d milliseconds)", migration.MaxDowntimeMS), http.StatusBadRequest)
 			return
 		}
 		downtimeMS = d

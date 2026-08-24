@@ -102,7 +102,7 @@ func TestRunDestination_ReplayFromPod_RemovesTempCmdlineFile(t *testing.T) {
 	})
 
 	cmdlineBody := "qemu-system-x86_64\n-machine q35\n"
-	marker := cmdlineMarker + base64.StdEncoding.EncodeToString([]byte(cmdlineBody))
+	marker := CmdlineB64Marker + base64.StdEncoding.EncodeToString([]byte(cmdlineBody))
 	setupAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, marker+"\n")

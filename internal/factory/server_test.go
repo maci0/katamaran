@@ -86,7 +86,7 @@ func TestServerOfferVMBoundsQueue(t *testing.T) {
 
 	srv := NewServer()
 	for i := 0; i < maxQueuedVMs+3; i++ {
-		srv.OfferVM(MigrationState{ID: fmt.Sprintf("mig-%03d", i), QEMUPid: 100 + i})
+		srv.OfferVM(MigrationState{ID: fmt.Sprintf("mig-%03d", i), QEMUPid: int64(100 + i)})
 	}
 
 	st, err := srv.Status(context.Background(), &emptypb.Empty{})

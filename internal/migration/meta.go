@@ -15,11 +15,15 @@ const MigrationMetaFile = "migration-meta.json"
 // The dest binary writes it next to the QMP socket after a successful
 // incoming live migration; the factory's directory watcher picks it up and
 // offers the state to Kata shims via GetBaseVM for VM adoption.
+//
+// Pid fields are explicitly 64-bit (not int): writer and reader are
+// separate binaries that may run on different architectures, and the
+// protobuf surface this feeds (cachepb) already uses int64.
 type MigrationMeta struct {
 	ID              string          `json:"id"`
-	QEMUPid         int             `json:"qemu_pid"`
+	QEMUPid         int64           `json:"qemu_pid"`
 	QMPSocket       string          `json:"qmp_socket"`
-	VirtiofsdPid    int             `json:"virtiofsd_pid"`
+	VirtiofsdPid    int64           `json:"virtiofsd_pid"`
 	HypervisorState json.RawMessage `json:"hypervisor_state,omitempty"`
 	CPU             uint32          `json:"cpu"`
 	Memory          uint32          `json:"memory"`

@@ -165,7 +165,7 @@ func (s *Server) GetBaseVM(ctx context.Context, _ *emptypb.Empty) (*cachepb.Grpc
 	return &cachepb.GrpcVM{
 		Id:         state.ID,
 		Hypervisor: state.HypervisorState,
-		ProxyPid:   int64(state.VirtiofsdPid),
+		ProxyPid:   state.VirtiofsdPid,
 		Cpu:        state.CPU,
 		Memory:     state.Memory,
 	}, nil
@@ -178,7 +178,7 @@ func (s *Server) Status(_ context.Context, _ *emptypb.Empty) (*cachepb.GrpcStatu
 	vms := make([]*cachepb.GrpcVMStatus, n)
 	for i, st := range s.queue {
 		vms[i] = &cachepb.GrpcVMStatus{
-			Pid:    int64(st.QEMUPid),
+			Pid:    st.QEMUPid,
 			Cpu:    st.CPU,
 			Memory: st.Memory,
 		}

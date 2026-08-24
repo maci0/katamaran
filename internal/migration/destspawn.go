@@ -152,6 +152,29 @@ func isAllowedNvdimmPath(p string) bool {
 	return false
 }
 
+// cmdlineRewrite groups the substitution pairs transformCmdline applies to
+// the captured argv. Six positional string parameters could be swapped
+// silently at the call site; named fields make each pair's direction
+// explicit.
+type cmdlineRewrite struct {
+	// srcSandboxDir → dstSandboxDir remaps the /run/vc/vm/<uuid>/ prefixes.
+	srcSandboxDir string
+	dstSandboxDir string
+	// srcSandboxID → dstSandboxID remaps sandbox-<id> path segments
+	// (kata-agent / virtiofs share-dir paths).
+	srcSandboxID string
+	dstSandboxID string
+	// srcNvdimmPath → dstNvdimmPath repoints the nvdimm backend at the
+	// writable copy made on dest.
+	srcNvdimmPath string
+	dstNvdimmPath string
+	// tapIface is injected into a tap -netdev when the captured cmdline lost
+	// its ifname= key with the kata-shim's inherited fd. Must match the
+	// interface spawnReplayedQEMU pre-creates and the qdisc RunDestination
+	// installs, or the zero-drop buffering silently targets the wrong device.
+	tapIface string
+}
+
 // transformCmdline rewrites a captured source QEMU cmdline so it can run on
 // the destination node with -incoming defer.
 //
@@ -159,9 +182,9 @@ func isAllowedNvdimmPath(p string) bool {
 // is argv[0] (the QEMU binary itself) and is consumed as the spawn target.
 //
 // Substitutions performed:
-//   - srcSandboxDir → dstSandboxDir (typically /run/vc/vm/<src> → /run/vc/vm/<dst>)
-//   - sandbox-<srcID> → sandbox-<dstID> (kata-agent / virtiofs share-dir paths)
-//   - srcNvdimmPath → dstNvdimmPath (writable copy)
+//   - rw.srcSandboxDir → rw.dstSandboxDir (typically /run/vc/vm/<src> → /run/vc/vm/<dst>)
+//   - sandbox-<rw.srcSandboxID> → sandbox-<rw.dstSandboxID> (kata-agent / virtiofs share-dir paths)
+//   - rw.srcNvdimmPath → rw.dstNvdimmPath (writable copy)
 //   - strip ,readonly=on / ,readonly=true on the nvdimm backend
 //   - drop existing -daemonize and -incoming <arg>
 //   - append -incoming defer (QEMU runs in the foreground; see body for why)
@@ -169,7 +192,7 @@ func isAllowedNvdimmPath(p string) bool {
 // The returned slice is the QEMU argv (without argv[0], which is returned
 // separately so the caller can wrap it in nsenter or similar). Returns an
 // error only if args is empty.
-func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID, dstSandboxID, srcNvdimmPath, dstNvdimmPath string) (binary string, qemuArgs []string, err error) {
+func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs []string, err error) {
 	if len(args) == 0 {
 		return "", nil, errors.New("empty cmdline (no argv[0])")
 	}
@@ -180,9 +203,9 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 	// Pre-compose the sandbox-id replacement keys once; transformCmdline runs
 	// against potentially hundreds of argv entries.
 	var srcSandboxKey, dstSandboxKey string
-	if srcSandboxID != "" && dstSandboxID != "" {
-		srcSandboxKey = "sandbox-" + srcSandboxID
-		dstSandboxKey = "sandbox-" + dstSandboxID
+	if rw.srcSandboxID != "" && rw.dstSandboxID != "" {
+		srcSandboxKey = "sandbox-" + rw.srcSandboxID
+		dstSandboxKey = "sandbox-" + rw.dstSandboxID
 	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
@@ -217,8 +240,8 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 			if i+1 < len(args) {
 				next := stripFDKeys(args[i+1])
 				if strings.HasPrefix(next, "tap,") || next == "tap" {
-					if !strings.Contains(next, "ifname=") {
-						next += ",ifname=tap0_kata"
+					if rw.tapIface != "" && !strings.Contains(next, "ifname=") {
+						next += ",ifname=" + rw.tapIface
 					}
 					if !strings.Contains(next, "script=") {
 						next += ",script=no,downscript=no"
@@ -242,14 +265,14 @@ func transformCmdline(args []string, srcSandboxDir, dstSandboxDir, srcSandboxID,
 			continue
 		}
 
-		if srcSandboxDir != "" && dstSandboxDir != "" && strings.Contains(a, srcSandboxDir) {
-			a = strings.ReplaceAll(a, srcSandboxDir, dstSandboxDir)
+		if rw.srcSandboxDir != "" && rw.dstSandboxDir != "" && strings.Contains(a, rw.srcSandboxDir) {
+			a = strings.ReplaceAll(a, rw.srcSandboxDir, rw.dstSandboxDir)
 		}
 		if srcSandboxKey != "" && strings.Contains(a, srcSandboxKey) {
 			a = strings.ReplaceAll(a, srcSandboxKey, dstSandboxKey)
 		}
-		if srcNvdimmPath != "" && dstNvdimmPath != "" && strings.Contains(a, srcNvdimmPath) {
-			a = strings.ReplaceAll(a, srcNvdimmPath, dstNvdimmPath)
+		if rw.srcNvdimmPath != "" && rw.dstNvdimmPath != "" && strings.Contains(a, rw.srcNvdimmPath) {
+			a = strings.ReplaceAll(a, rw.srcNvdimmPath, rw.dstNvdimmPath)
 		}
 		if strings.Contains(a, "readonly=") {
 			a = readonlyRegex.ReplaceAllString(a, "")
@@ -467,9 +490,16 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	}
 
 	// Pre-create the tap interface QEMU expects. Without this, QEMU's
-	// `-netdev tap,ifname=tap0_kata,script=no` falls back to running an
+	// `-netdev tap,ifname=<tap>,script=no` falls back to running an
 	// ifup script and fails. Idempotent: ignore "exists" errors.
-	if err := setupTapIface(ctx, "tap0_kata"); err != nil {
+	// Honor the configured TapIface so the interface matches both the
+	// ifname injected into the netdev below and the sch_plug qdisc that
+	// RunDestination installs on cfg.TapIface.
+	tapName := cfg.TapIface
+	if tapName == "" {
+		tapName = DefaultTapIface
+	}
+	if err := setupTapIface(ctx, tapName); err != nil {
 		return fmt.Errorf("setup tap iface: %w", err)
 	}
 
@@ -480,7 +510,15 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 		return fmt.Errorf("start virtiofsd: %w", err)
 	}
 
-	_, qemuArgs, err := transformCmdline(args, srcSandboxDir, dstSandboxDir, srcSandboxID, dstSandboxID, srcNvdimm, dstNvdimm)
+	_, qemuArgs, err := transformCmdline(args, cmdlineRewrite{
+		srcSandboxDir: srcSandboxDir,
+		dstSandboxDir: dstSandboxDir,
+		srcSandboxID:  srcSandboxID,
+		dstSandboxID:  dstSandboxID,
+		srcNvdimmPath: srcNvdimm,
+		dstNvdimmPath: dstNvdimm,
+		tapIface:      tapName,
+	})
 	if err != nil {
 		return fmt.Errorf("transform cmdline: %w", err)
 	}

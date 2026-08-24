@@ -149,7 +149,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}()
 		// Marker line consumed by deploy/migrate.sh — print on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
-		fmt.Printf("KATAMARAN_CMDLINE_AT=%s\n", cfg.EmitCmdlineTo)
+		fmt.Printf("%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo)
 		// Also emit the cmdline file's contents as a single base64 line on
 		// stdout. The dest binary scrapes the source pod's log via the
 		// apiserver (--replay-cmdline-from-pod), avoiding a separate file
@@ -157,7 +157,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if cmdlineBytes, err := os.ReadFile(cfg.EmitCmdlineTo); err != nil {
 			slog.Warn("Failed to read captured cmdline for KATAMARAN_CMDLINE_B64; in-pod-log replay will fail", "error", err, "path", cfg.EmitCmdlineTo)
 		} else {
-			fmt.Printf("KATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdlineBytes))
+			fmt.Printf("%s%s\n", CmdlineB64Marker, base64.StdEncoding.EncodeToString(cmdlineBytes))
 		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
 	}
@@ -294,11 +294,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// Always enable auto-converge: if the guest's dirty page rate exceeds the
 	// transfer rate, QEMU will throttle guest vCPUs to ensure migration converges.
 	// Without this, migration could run indefinitely on write-heavy workloads.
-	caps := []qmp.MigrationCapability{
-		{Capability: "auto-converge", State: true},
-	}
+	caps := migrationCapabilities(cfg.MultifdChannels)
 	if cfg.MultifdChannels > 0 {
-		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
 		slog.Info("Multifd enabled", "channels", cfg.MultifdChannels)
 	}
 	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
@@ -332,8 +329,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// came from the RTT calculation; on RTT failure the --downtime
 	// fallback is programmed and auto stays false so consumers don't
 	// mistake spec.downtimeMS for an auto-derived limit.
-	fmt.Printf("KATAMARAN_DOWNTIME_LIMIT applied_ms=%d rtt_ms=%d auto=%t\n",
-		downtimeLimitMS, rttMS, downtimeFromRTT)
+	fmt.Printf("%s applied_ms=%d rtt_ms=%d auto=%t\n",
+		DowntimeLimitMarker, downtimeLimitMS, rttMS, downtimeFromRTT)
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
@@ -373,14 +370,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			}
 			queryErrors = 0
 			// Log only on status change or significant progress (remaining bytes halved).
-			statusChanged := info.Status != lastLoggedStatus
-			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
-			if statusChanged || remainingChanged {
-				var pct float64
-				if info.RAM.Total > 0 {
-					pct = float64(info.RAM.Transferred) / float64(info.RAM.Total) * 100
-				}
-				slog.Info("Migration progress", "status", info.Status, "progress_pct", pct, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+			if migrationProgressChanged(lastLoggedStatus, lastLoggedRemaining, info) {
+				slog.Info("Migration progress", "status", info.Status, "progress_pct", ramProgressPct(info), "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
 				lastLoggedStatus = info.Status
 				lastLoggedRemaining = info.RAM.Remaining
 			}
@@ -415,7 +406,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// traffic is now buffered/redirected, so the downtime window is open. The
 	// orchestrator scrapes this from the pod log and surfaces it as the
 	// PhaseCutover status update.
-	fmt.Printf("KATAMARAN_PHASE phase=cutover\n")
+	fmt.Printf("%sphase=cutover\n", PhaseMarker)
 	slog.Info("Waiting for migration to complete")
 
 	migrationErr := waitForMigrationComplete(ctx, client)
@@ -430,8 +421,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			// Stable, parser-friendly final-result marker the orchestrator
 			// scrapes from pod logs to populate StatusUpdate.DowntimeMS in
 			// the PhaseSucceeded event.
-			fmt.Printf("KATAMARAN_RESULT downtime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
-				info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
+			fmt.Printf("%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+				ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
 		}
 	}
 
@@ -590,6 +581,25 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 // every transient timeout.
 func logTransientQueryError(ctx context.Context, msg string, err error, consecutive int) {
 	slog.Log(ctx, logging.TransientLevel(consecutive), msg, "error", err, "consecutive_errors", consecutive)
+}
+
+// migrationProgressChanged reports whether an updated query-migrate sample
+// crosses a log threshold compared to the previously logged sample: the
+// migration status changed, or the remaining byte count halved. Shared by
+// the STOP-event poller and the completion poller so their throttling
+// behavior cannot drift.
+func migrationProgressChanged(lastStatus qmp.MigrateStatus, lastRemaining int64, info qmp.MigrateInfo) bool {
+	return info.Status != lastStatus ||
+		(lastRemaining > 0 && info.RAM.Remaining <= lastRemaining/2)
+}
+
+// ramProgressPct returns the transferred share of total RAM in percent,
+// guarded against a zero Total.
+func ramProgressPct(info qmp.MigrateInfo) float64 {
+	if info.RAM.Total == 0 {
+		return 0
+	}
+	return float64(info.RAM.Transferred) / float64(info.RAM.Total) * 100
 }
 
 // migrationTerminalError checks if a migration status indicates a terminal
@@ -782,15 +792,13 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 				"error", err, "last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
 		} else {
 			firstStallAt = time.Time{} // reset on any successful query
-			statusChanged := info.Status != prevStatus
-			remainingChanged := lastLoggedRemaining > 0 && info.RAM.Remaining <= lastLoggedRemaining/2
-			if statusChanged || remainingChanged {
+			if migrationProgressChanged(prevStatus, lastLoggedRemaining, info) {
 				slog.Info("Migration status", "status", info.Status, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
 				// Stable, parser-friendly progress marker the orchestrator
 				// scrapes from pod logs to surface RAM transfer progress
 				// without depending on slog's text/json layout.
-				fmt.Printf("KATAMARAN_PROGRESS status=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
-					info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
+				fmt.Printf("%sstatus=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
+					ProgressMarker, info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
 				prevStatus = info.Status
 				lastLoggedRemaining = info.RAM.Remaining
 			}
@@ -843,8 +851,8 @@ func emitVMConfig(qemuPID int) {
 		}
 		vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		agentCfg := persist.Config.KataAgentConfig
-		fmt.Printf("KATAMARAN_VMCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(vmCfg))
-		fmt.Printf("KATAMARAN_AGENTCONFIG_B64=%s\n", base64.StdEncoding.EncodeToString(agentCfg))
+		fmt.Printf("%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg))
+		fmt.Printf("%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg))
 		slog.Info("Emitted VMConfig for factory adoption", "sandbox", e.Name(), "size", len(vmCfg))
 		return
 	}

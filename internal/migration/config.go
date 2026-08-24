@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/netip"
 	"time"
+
+	"github.com/maci0/katamaran/internal/qmp"
 )
 
 // Migration tuning constants.
@@ -34,6 +36,13 @@ const (
 	// extraMonitorSocketName is the per-sandbox filename Kata binds the
 	// QEMU monitor socket to under /run/vc/vm/<sandbox>/.
 	extraMonitorSocketName = "extra-monitor.sock"
+
+	// DefaultTapIface is the standard Kata tap interface name inside the
+	// sandbox netns. Cmdline replay pre-creates it and injects it into a
+	// fd-stripped tap -netdev; callers that configure a different interface
+	// via DestConfig.TapIface override it so the sch_plug qdisc and the
+	// spawned QEMU always target the same device.
+	DefaultTapIface = "tap0_kata"
 
 	// maxBandwidth is the maximum migration bandwidth in bytes/second (10 GB/s).
 	// Set high to ensure the final dirty page flush completes as fast as possible.
@@ -100,6 +109,13 @@ const (
 	// improving throughput when per-connection bandwidth is limited (e.g.
 	// nested KVM, high-latency links). Set to 0 to disable multifd.
 	DefaultMultifdChannels = 4
+
+	// MaxDowntimeMS is the upper bound (in milliseconds) accepted for a
+	// downtime limit at every layer: the katamaran CLI's --downtime, the
+	// orchestrator Request validator (DowntimeMS and AutoDowntimeFloorMS),
+	// and the dashboard form. One constant keeps the three validators from
+	// drifting apart and rejecting values another layer accepts.
+	MaxDowntimeMS = 60000
 
 	// cleanupTimeout is the deadline for deferred cleanup operations
 	// (qdisc removal, NBD server stop, block-job-cancel, tunnel teardown).
@@ -234,6 +250,23 @@ type KataPersistConfig struct {
 	HypervisorType   string          `json:"HypervisorType"`
 	HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
 	KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
+}
+
+// migrationCapabilities builds the QEMU migration capability list both ends
+// of a migration program before the handshake. The source and destination
+// lists must match exactly or the migration fails with magic-mismatch
+// errors ("Failed to peek at channel"), so this one constructor is the
+// single definition shared by RunSource and RunDestination. multifdChannels
+// > 0 enables the multifd capability; RunSource/RunDestination additionally
+// program the channel count via migrate-set-parameters.
+func migrationCapabilities(multifdChannels int) []qmp.MigrationCapability {
+	caps := []qmp.MigrationCapability{
+		{Capability: "auto-converge", State: true},
+	}
+	if multifdChannels > 0 {
+		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
+	}
+	return caps
 }
 
 // cleanupCtx returns a context with cleanupTimeout that is independent of the

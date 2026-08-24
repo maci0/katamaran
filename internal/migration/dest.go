@@ -204,12 +204,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// Step 2: Configure migration capabilities and open incoming listener.
 	// Capabilities must match the source's; otherwise the migration handshake
 	// fails with "Failed to peek at channel" or similar magic-mismatch errors.
-	caps := []qmp.MigrationCapability{
-		{Capability: "auto-converge", State: true},
-	}
-	if cfg.MultifdChannels > 0 {
-		caps = append(caps, qmp.MigrationCapability{Capability: "multifd", State: true})
-	}
+	caps := migrationCapabilities(cfg.MultifdChannels)
 	if _, err = client.Execute(ctx, "migrate-set-capabilities", qmp.MigrateSetCapabilitiesArgs{
 		Capabilities: caps,
 	}); err != nil {
@@ -524,7 +519,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	pidPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "pid")
 	if pidBytes, err := os.ReadFile(pidPath); err != nil {
 		slog.Warn("Could not read QEMU pid file (factory adoption will be skipped)", "path", pidPath, "error", err)
-	} else if pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes))); err != nil {
+	} else if pid, err := strconv.ParseInt(strings.TrimSpace(string(pidBytes)), 10, 64); err != nil {
 		slog.Warn("Could not parse QEMU pid file (factory adoption will be skipped)", "path", pidPath, "error", err)
 	} else {
 		meta.QEMUPid = pid

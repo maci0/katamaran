@@ -139,7 +139,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	driveID := fs.String("drive-id", "drive-virtio-disk0", "QEMU block device ID(s), comma-separated for multi-disk")
 	sharedStorage := fs.Bool("shared-storage", false, "Skip NBD drive-mirror (use with shared storage)")
 	tunnelMode := fs.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
-	downtimeLimit := fs.Int("downtime", 25, "Max allowed downtime in milliseconds (1-60000)")
+	downtimeLimit := fs.Int("downtime", 25, fmt.Sprintf("Max allowed downtime in milliseconds (1-%d)", migration.MaxDowntimeMS))
 	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT (overrides --downtime)")
 	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, "Lower bound + overhead for the auto-calculated downtime (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime")
 	cniConvergenceDelay := fs.Duration("cni-convergence-delay", 0, "Post-cutover wait that keeps the IP tunnel alive while the CNI propagates the pod's new node binding (0 uses the compiled-in default of 5s)")
@@ -350,8 +350,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			printUsage(stderr)
 			return 2
 		}
-		if *downtimeLimit < 1 || *downtimeLimit > 60000 {
-			_, _ = fmt.Fprintf(stderr, "Error: --downtime must be between 1 and 60000, got %d\n\n", *downtimeLimit)
+		if *downtimeLimit < 1 || *downtimeLimit > migration.MaxDowntimeMS {
+			_, _ = fmt.Fprintf(stderr, "Error: --downtime must be between 1 and %d, got %d\n\n", migration.MaxDowntimeMS, *downtimeLimit)
 			printUsage(stderr)
 			return 2
 		}

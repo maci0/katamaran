@@ -335,11 +335,14 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		}
 		return // source pod never appeared; poll will surface the failure
 	}
+	// The KATAMARAN_* markers below are the wire protocol printed by the
+	// source binary; reference the shared constants in internal/migration
+	// so scraper and emitter cannot drift apart.
 	const (
-		progressMarker      = "KATAMARAN_PROGRESS "
-		resultMarker        = "KATAMARAN_RESULT "
-		downtimeLimitMarker = "KATAMARAN_DOWNTIME_LIMIT "
-		phaseMarker         = "KATAMARAN_PHASE "
+		progressMarker      = migration.ProgressMarker
+		resultMarker        = migration.ResultMarker
+		downtimeLimitMarker = migration.DowntimeLimitMarker
+		phaseMarker         = migration.PhaseMarker
 		// The log is consumed as ONE followed stream instead of re-fetching
 		// a rolling SinceSeconds window every tick: polling a 30s window at
 		// a 2s cadence re-transfers every log byte ~15x through the
@@ -608,7 +611,7 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 		return 0, 0, 0, false
 	}
 	defer func() { _ = stream.Close() }()
-	const marker = "KATAMARAN_RESULT "
+	const marker = migration.ResultMarker
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {

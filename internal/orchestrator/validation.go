@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/maci0/katamaran/internal/migration"
 )
 
 // maxPodWaitTimeoutSeconds caps spec.podWaitTimeoutSeconds at 24 hours. See
@@ -63,8 +65,8 @@ func Validate(req Request) error {
 	if req.TunnelMode != "" && req.TunnelMode != "ipip" && req.TunnelMode != "gre" && req.TunnelMode != "none" {
 		return fmt.Errorf("tunnelMode must be one of ipip, gre, or none, got %q", req.TunnelMode)
 	}
-	if req.DowntimeMS < 0 || req.DowntimeMS > 60000 {
-		return fmt.Errorf("downtimeMS must be between 0 and 60000, got %d", req.DowntimeMS)
+	if req.DowntimeMS < 0 || req.DowntimeMS > migration.MaxDowntimeMS {
+		return fmt.Errorf("downtimeMS must be between 0 and %d, got %d", migration.MaxDowntimeMS, req.DowntimeMS)
 	}
 	if req.MultifdChannels < 0 {
 		return fmt.Errorf("multifdChannels must be non-negative, got %d", req.MultifdChannels)
@@ -72,10 +74,10 @@ func Validate(req Request) error {
 	// AutoDowntimeFloorMS is the lower bound for the auto-calculated downtime
 	// and becomes the programmed downtime directly when the RTT is ~0, so it is
 	// the same unit and budget as DowntimeMS and shares its upper bound. A floor
-	// above 60s would pause the guest longer than the fixed-downtime path ever
-	// allows, defeating the tool's purpose.
-	if req.AutoDowntimeFloorMS < 0 || req.AutoDowntimeFloorMS > 60000 {
-		return fmt.Errorf("autoDowntimeFloorMS must be between 0 and 60000, got %d", req.AutoDowntimeFloorMS)
+	// above MaxDowntimeMS would pause the guest longer than the fixed-downtime
+	// path ever allows, defeating the tool's purpose.
+	if req.AutoDowntimeFloorMS < 0 || req.AutoDowntimeFloorMS > migration.MaxDowntimeMS {
+		return fmt.Errorf("autoDowntimeFloorMS must be between 0 and %d, got %d", migration.MaxDowntimeMS, req.AutoDowntimeFloorMS)
 	}
 	if req.CNIConvergenceDelaySeconds < 0 {
 		return fmt.Errorf("cniConvergenceDelaySeconds must be non-negative, got %d", req.CNIConvergenceDelaySeconds)
