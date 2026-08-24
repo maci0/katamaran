@@ -1,4 +1,4 @@
-.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim test smoke fuzz fuzz-long image dashboard mgr factory clean vet help
+.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim test smoke fuzz fuzz-long image dashboard mgr factory clean vet lint-shell help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
@@ -38,6 +38,12 @@ build-adopted-shim:
 vet:
 	go vet ./...
 	@test -z "$$(gofmt -s -l $$(git ls-files '*.go'))" || (echo "gofmt needed on:"; gofmt -s -l $$(git ls-files '*.go'); exit 1)
+
+# Lint every tracked shell script. git ls-files keeps this in sync with the
+# tree (same rationale as the gofmt check above) so a script added outside
+# scripts/ cannot silently escape analysis.
+lint-shell:
+	shellcheck -x $$(git ls-files '*.sh')
 
 # Run unit tests with race detector
 test:
@@ -116,6 +122,7 @@ help:
 	@echo "  fuzz                Run fuzz test seed corpus (instant)"
 	@echo "  fuzz-long           Run actual fuzzing for 30s per target"
 	@echo "  vet                 Run go vet and gofmt checks"
+	@echo "  lint-shell          Run shellcheck over every tracked .sh file"
 	@echo "  image               Build katamaran container image"
 	@echo "  dashboard           Build dashboard container image"
 	@echo "  mgr                 Build katamaran-mgr container image"
