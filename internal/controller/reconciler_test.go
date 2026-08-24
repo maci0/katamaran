@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -242,6 +243,9 @@ type fakeDiscoverer struct {
 	podName       string
 	node          string
 	podScheduling orchestrator.PodScheduling
+	podNodeErr    error
+	nodeIPErr     error
+	schedErr      error
 	deletedPods   []string
 	orphanedPods  []string
 }
@@ -257,16 +261,16 @@ func (f *fakeDiscoverer) ListKataNodes(context.Context) ([]orchestrator.NodeInfo
 func (f *fakeDiscoverer) LookupPodNode(_ context.Context, namespace, name string) (string, error) {
 	f.podNS = namespace
 	f.podName = name
-	return f.podNode, nil
+	return f.podNode, f.podNodeErr
 }
 
 func (f *fakeDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (string, error) {
 	f.node = name
-	return f.nodeIP, nil
+	return f.nodeIP, f.nodeIPErr
 }
 
 func (f *fakeDiscoverer) LookupPodScheduling(_ context.Context, namespace, name string) (orchestrator.PodScheduling, error) {
-	return f.podScheduling, nil
+	return f.podScheduling, f.schedErr
 }
 
 func (f *fakeDiscoverer) DeletePod(_ context.Context, namespace, name string) error {
@@ -402,6 +406,169 @@ func TestReconciler_DispatchResolvesPodRequest(t *testing.T) {
 	}
 	if got.DestIP != "10.0.0.20" {
 		t.Fatalf("DestIP = %q, want 10.0.0.20", got.DestIP)
+	}
+}
+
+// TestResolveSourcePodDiscovery_FailuresAndSelectorMerge pins two contracts
+// dispatch depends on. First, every resolution failure must return an error
+// AND leave a Failed status on the CR naming the failed step — that status is
+// what a kubectl describe shows the operator, and without the early return
+// dispatch would Apply a half-resolved Request (empty SourceNode/DestIP).
+// Second, in auto-select mode the source pod's nodeSelector merges with any
+// spec.destNodeSelector, with the CRD-level value winning key conflicts
+// (the user's explicit constraint must not be silently overridden by the
+// source pod's scheduling).
+func TestResolveSourcePodDiscovery_FailuresAndSelectorMerge(t *testing.T) {
+	t.Parallel()
+	key := types.NamespacedName{Namespace: "default", Name: "m-disc"}
+	newReq := func(t *testing.T, cr *unstructured.Unstructured) orchestrator.Request {
+		t.Helper()
+		req, err := specToRequest(cr.Object, key.Namespace)
+		if err != nil {
+			t.Fatalf("specToRequest: %v", err)
+		}
+		return req
+	}
+
+	tests := []struct {
+		name           string
+		mutateCR       func(*unstructured.Unstructured)
+		disc           *fakeDiscoverer
+		wantErr        string
+		wantMsg        string // expected status.message on the patched CR
+		verify         func(*testing.T, orchestrator.Request)
+		skipStatusWant bool // merge/success cases do not write Failed status
+	}{
+		{
+			name:    "no discoverer configured",
+			wantErr: "discoverer unavailable",
+			wantMsg: "resolve migration",
+		},
+		{
+			name:    "source pod lookup fails",
+			disc:    &fakeDiscoverer{podNodeErr: errors.New("apiserver unreachable")},
+			wantErr: "apiserver unreachable",
+			wantMsg: "resolve source pod node",
+		},
+		{
+			name:    "source pod has no node yet",
+			disc:    &fakeDiscoverer{podNode: ""},
+			wantErr: "source pod node is empty",
+			wantMsg: "resolve source pod node",
+		},
+		{
+			name: "auto-select scheduling lookup fails",
+			disc: &fakeDiscoverer{podNode: "worker-a", schedErr: errors.New("scheduling lookup boom")},
+			mutateCR: func(cr *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(cr.Object, nil, "spec", "destNode")
+			},
+			wantErr: "scheduling lookup boom",
+			wantMsg: "resolve source pod scheduling",
+		},
+		{
+			name: "auto-select merges nodeSelectors CRD-wins",
+			disc: &fakeDiscoverer{
+				podNode: "worker-a",
+				podScheduling: orchestrator.PodScheduling{
+					NodeSelector: map[string]string{"katamaran.io/enabled": "true", "zone": "us-east-1a"},
+					Tolerations: []corev1.Toleration{{
+						Key:      "katamaran",
+						Operator: corev1.TolerationOpExists,
+					}},
+				},
+			},
+			mutateCR: func(cr *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(cr.Object, nil, "spec", "destNode")
+				_ = unstructured.SetNestedMap(cr.Object, map[string]any{"zone": "eu-west-1b", "gpu": "true"}, "spec", "destNodeSelector")
+			},
+			wantErr:        "",
+			skipStatusWant: true,
+			verify: func(t *testing.T, req orchestrator.Request) {
+				t.Helper()
+				// CRD-level values win conflicts; source-pod-only keys are added.
+				want := map[string]string{"zone": "eu-west-1b", "gpu": "true", "katamaran.io/enabled": "true"}
+				if !maps.Equal(req.DestNodeSelector, want) {
+					t.Fatalf("DestNodeSelector = %v, want %v", req.DestNodeSelector, want)
+				}
+				if len(req.DestTolerations) != 1 || req.DestTolerations[0].Key != "katamaran" {
+					t.Fatalf("DestTolerations = %+v, want source toleration copied", req.DestTolerations)
+				}
+				if req.SourceNode != "worker-a" {
+					t.Fatalf("SourceNode = %q, want worker-a", req.SourceNode)
+				}
+			},
+		},
+		{
+			name:    "dest node IP lookup fails",
+			disc:    &fakeDiscoverer{podNode: "worker-a", nodeIPErr: errors.New("node gone")},
+			wantErr: "node gone",
+			wantMsg: "resolve dest node IP",
+		},
+		{
+			name:    "dest node has no InternalIP",
+			disc:    &fakeDiscoverer{podNode: "worker-a", nodeIP: ""},
+			wantErr: "destination node InternalIP is empty",
+			wantMsg: "resolve dest node IP",
+		},
+		{
+			name:    "same-node migration rejected",
+			disc:    &fakeDiscoverer{podNode: "worker-b", nodeIP: "10.0.0.20"},
+			wantErr: "already runs on destNode",
+			wantMsg: "invalid spec",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cr := newMigrationCR("m-disc", []string{finalizerName}, false, nil)
+			if tt.mutateCR != nil {
+				tt.mutateCR(cr)
+			}
+			rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+			if tt.disc != nil {
+				rec.Discoverer = tt.disc
+			}
+
+			req := newReq(t, cr)
+			err := rec.resolveSourcePodDiscovery(context.Background(), key, &req)
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected success, got: %v", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+			}
+			if tt.verify != nil {
+				tt.verify(t, req)
+			}
+
+			got, gerr := dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("get CR: %v", gerr)
+			}
+			phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+			message, _, _ := unstructured.NestedString(got.Object, "status", "message")
+			errField, _, _ := unstructured.NestedString(got.Object, "status", "error")
+			if tt.skipStatusWant {
+				if phase != "" {
+					t.Fatalf("status.phase = %q, want untouched on success path", phase)
+				}
+				return
+			}
+			if phase != string(orchestrator.PhaseFailed) {
+				t.Fatalf("status.phase = %q, want %q (failure must be persisted for the operator)", phase, orchestrator.PhaseFailed)
+			}
+			if !strings.Contains(message, tt.wantMsg) {
+				t.Fatalf("status.message = %q, want containing %q", message, tt.wantMsg)
+			}
+			if !strings.Contains(errField, tt.wantErr) {
+				t.Fatalf("status.error = %q, want containing %q", errField, tt.wantErr)
+			}
+		})
 	}
 }
 

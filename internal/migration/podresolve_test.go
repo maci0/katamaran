@@ -5,11 +5,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -128,6 +131,62 @@ func TestResolveSandboxByPodIP_AmbiguousMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("error should mention 'ambiguous'; got: %v", err)
+	}
+}
+
+// TestRealProcPIDsForSandboxes_FindsSpawnedProcess exercises the production
+// /proc scanner, which every resolveSandbox test bypasses via fakeProc. A
+// regression in the real scanner (sandboxUUIDRe gate, literal substring match
+// against the raw NUL-separated cmdline) would otherwise only surface at
+// migration time on a live node as "no sandbox contains pod IP".
+func TestRealProcPIDsForSandboxes_FindsSpawnedProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux /proc")
+	}
+	t.Parallel()
+
+	const uuid = "11111111-2222-3333-4444-555555555555"
+	// Helper whose argv carries sandbox-<uuid>: the interpreter loops so the
+	// process and its cmdline stay observable until we kill it. PIDsForSandboxes
+	// matches the needle literally against /proc/<pid>/cmdline.
+	script := filepath.Join(t.TempDir(), "helper.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	cmd := exec.Command(script, "sandbox-"+uuid)
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn helper process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	pidPath := fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(pidPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("helper pid %d never appeared under /proc", cmd.Process.Pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got := (realProc{}).PIDsForSandboxes([]string{uuid})
+	pid, ok := got[uuid]
+	if !ok {
+		t.Fatalf("sandbox %s not resolved; got %v", uuid, got)
+	}
+	if pid != cmd.Process.Pid {
+		t.Fatalf("sandbox %s resolved to pid %d, want %d", uuid, pid, cmd.Process.Pid)
+	}
+
+	// Unknown identifiers must be absent; invalid ones (regex gate) skipped.
+	empty := (realProc{}).PIDsForSandboxes([]string{"no-such-sandbox-ffffffff", "../evil"})
+	if len(empty) != 0 {
+		t.Fatalf("unexpected resolutions for unknown/invalid uuids: %v", empty)
 	}
 }
 

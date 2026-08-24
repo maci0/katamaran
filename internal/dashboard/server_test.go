@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -705,6 +706,55 @@ func TestSafeDialContext_BlocksUnsafeAddress(t *testing.T) {
 	}
 }
 
+func TestSafeDialContext_MalformedAddress(t *testing.T) {
+	t.Parallel()
+	// No port: SplitHostPort must reject before any DNS work or dialing.
+	if _, err := safeDialContext(context.Background(), "tcp", "192.0.2.1"); err == nil {
+		t.Fatal("expected error for address without a port")
+	}
+}
+
+// TestSafeDialContext_ConnectsToSafeAddress pins the success path of the
+// HTTP load generator's dialer: an address that passes the SSRF screen must
+// actually connect. The blocklist forbids loopback, so the listener is bound
+// to a non-loopback IP the host itself owns; without one (common in
+// single-homed sandboxes) there is no safe address to dial and the test
+// skips rather than failing.
+func TestSafeDialContext_ConnectsToSafeAddress(t *testing.T) {
+	t.Parallel()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("cannot enumerate interface addresses: %v", err)
+	}
+	var hostIP net.IP
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || !ipnet.IP.IsGlobalUnicast() {
+			continue
+		}
+		if blockedTargetIP(ipnet.IP) {
+			continue
+		}
+		hostIP = ipnet.IP
+		break
+	}
+	if hostIP == nil {
+		t.Skip("no non-blocked interface address available to bind a listener on")
+	}
+
+	l, err := net.Listen("tcp", net.JoinHostPort(hostIP.String(), "0"))
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", hostIP, err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	conn, err := safeDialContext(context.Background(), "tcp", l.Addr().String())
+	if err != nil {
+		t.Fatalf("safeDialContext(%s) = %v, want successful connection", l.Addr(), err)
+	}
+	_ = conn.Close()
+}
+
 func TestHandleHTTPStart_MissingTarget(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1027,6 +1077,41 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Error("Content-Security-Policy header missing")
 	} else if strings.Contains(csp, "cdn.tailwindcss.com") || strings.Contains(csp, "jsdelivr") {
 		t.Errorf("Content-Security-Policy still allowlists remote script hosts after vendoring: %q", csp)
+	}
+}
+
+// TestMux_ServesHome pins the GET /{$} route: the dashboard's main page is
+// the embedded index.html served via ServeContent, so it must come back as
+// 200 text/html carrying exactly the embedded bytes (the same document the
+// vendored-assets contract below keeps CDN-free).
+func TestMux_ServesHome(t *testing.T) {
+	t.Parallel()
+	app := &App{startTime: time.Now()}
+	mux := app.newMux(false)
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(method, "/", nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %v", w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html prefix", ct)
+			}
+			if method == http.MethodGet && w.Body.Len() == 0 {
+				t.Fatal("index body is empty")
+			}
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if !bytes.Equal(w.Body.Bytes(), indexHTML) {
+		t.Fatalf("GET / served %d bytes, want the embedded index.html (%d bytes)", w.Body.Len(), len(indexHTML))
 	}
 }
 
