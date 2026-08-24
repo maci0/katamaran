@@ -488,14 +488,19 @@ func (a *App) setMigrationResult(result, errMsg string) {
 		a.migrationsFailed++
 	}
 
-	now := time.Now().UTC()
+	// completedAt must keep its monotonic clock reading until the duration is
+	// measured: t.UTC() strips it, and a stripped instant makes Sub fall back
+	// to wall-clock arithmetic, so an NTP step or manual change mid-migration
+	// would record a negative or inflated DurationMS in the history.
+	completedAt := time.Now()
+	durationMS := completedAt.Sub(a.migrationStart).Milliseconds()
 	entry := MigrationHistoryEntry{
 		MigrationID: a.migrationID,
 		Result:      result,
 		Error:       errMsg,
 		StartedAt:   a.migrationStart.UTC().Format(time.RFC3339),
-		CompletedAt: now.Format(time.RFC3339),
-		DurationMS:  now.Sub(a.migrationStart).Milliseconds(),
+		CompletedAt: completedAt.UTC().Format(time.RFC3339),
+		DurationMS:  durationMS,
 	}
 	if a.latestProgress != nil {
 		entry.RAMTransferred = a.latestProgress.RAMTransferred

@@ -1836,6 +1836,57 @@ func TestSetMigrationResult(t *testing.T) {
 	app.migrationMutex.Unlock()
 }
 
+// TestSetMigrationResult_HistoryTimes pins the history entry's time contract:
+// StartedAt/CompletedAt are RFC3339 UTC instants with CompletedAt not before
+// StartedAt, and DurationMS reflects the elapsed interval (non-negative,
+// matching the injected start offset) even when migrationStart carries no
+// monotonic clock reading — the degraded representation a restart or
+// deserialization would produce.
+func TestSetMigrationResult_HistoryTimes(t *testing.T) {
+	t.Parallel()
+	for name, start := range map[string]time.Time{
+		"monotonic": time.Now().Add(-1500 * time.Millisecond),
+		"stripped":  time.Now().UTC().Add(-1500 * time.Millisecond),
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := &App{}
+			app.migrationStart = start
+			app.setMigrationResult("success", "")
+
+			app.migrationMutex.Lock()
+			entry := app.migrationHistory[len(app.migrationHistory)-1]
+			app.migrationMutex.Unlock()
+
+			startedAt, err := time.Parse(time.RFC3339, entry.StartedAt)
+			if err != nil {
+				t.Fatalf("StartedAt %q is not RFC3339: %v", entry.StartedAt, err)
+			}
+			completedAt, err := time.Parse(time.RFC3339, entry.CompletedAt)
+			if err != nil {
+				t.Fatalf("CompletedAt %q is not RFC3339: %v", entry.CompletedAt, err)
+			}
+			if startedAt.Location() != time.UTC {
+				t.Errorf("StartedAt %q is not UTC", entry.StartedAt)
+			}
+			if completedAt.Location() != time.UTC {
+				t.Errorf("CompletedAt %q is not UTC", entry.CompletedAt)
+			}
+			if completedAt.Before(startedAt) {
+				t.Errorf("CompletedAt %s before StartedAt %s", entry.CompletedAt, entry.StartedAt)
+			}
+			if entry.DurationMS < 0 {
+				t.Errorf("DurationMS = %d, want non-negative", entry.DurationMS)
+			}
+			// Elapsed real time between the injected start and now is at
+			// least the 1500ms offset; allow scheduler slack above it.
+			sinceStart := time.Since(start).Milliseconds()
+			if entry.DurationMS < sinceStart-100 || entry.DurationMS > sinceStart+100 {
+				t.Errorf("DurationMS = %d, want within 100ms of elapsed %d", entry.DurationMS, sinceStart)
+			}
+		})
+	}
+}
+
 func TestHandleReadyz_WithScript(t *testing.T) {
 	t.Parallel()
 	app := &App{orch: dummyOrchestrator(t)}
