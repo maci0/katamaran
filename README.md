@@ -296,7 +296,6 @@ cmd/
     main_test.go                # Shim sandbox-id validation tests
   katamaran-factory/
     main.go                     # Kata VM cache gRPC server entrypoint
-    sandbox_config.go           # Reads VMConfig + AgentConfig from sandbox persist.json
     main_test.go                # Factory CLI tests
 internal/
   adopt/
@@ -327,6 +326,8 @@ internal/
     server_test.go              # Cache gRPC server unit tests
     watcher.go                  # migration-meta.json directory watcher
     watcher_test.go             # Watcher unit tests
+    nodeconfig.go               # Node VMConfig loader (Kata sandbox persist.json polling)
+    nodeconfig_test.go          # Node VMConfig loader unit tests
     cachepb/                    # Generated CacheService protobuf bindings
   katamaran/
     cli.go                      # Primary source/destination CLI implementation

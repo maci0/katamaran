@@ -92,7 +92,7 @@ func withKataSBSRoot(t *testing.T, dir string) {
 }
 
 // TestMarshalVMConfig pins the JSON contract consumed by the factory's
-// VMConfig loader (cmd/katamaran-factory tryLoadFromSandbox): three keys,
+// node VMConfig loader (internal/factory tryLoadFromSandbox): three keys,
 // raw passthrough of both config blobs, typed hypervisor field.
 func TestMarshalVMConfig(t *testing.T) {
 	t.Parallel()
@@ -204,9 +204,10 @@ func TestEmitVMConfig_NoMatchingPidEmitsNothing(t *testing.T) {
 	}
 }
 
-// TestFindAnyPersistJSON covers the dest-side fallback that enriches
-// migration-meta.json from any local sandbox persist.json.
-func TestFindAnyPersistJSON_PicksFirstReadableSandbox(t *testing.T) {
+// TestFindSandboxPersist covers the sandbox persist.json scanner shared by
+// the dest-side migration-meta enrichment and the factory's node VMConfig
+// loader.
+func TestFindSandboxPersist_PicksFirstReadableSandbox(t *testing.T) {
 	// Not parallel: swaps kataSBSRoot.
 	root := t.TempDir()
 	withKataSBSRoot(t, root)
@@ -216,25 +217,27 @@ func TestFindAnyPersistJSON_PicksFirstReadableSandbox(t *testing.T) {
 	}
 	writeSandboxPersist(t, root, "sb-full", 7, "full")
 
-	data, path := findAnyPersistJSON()
-	if data == nil {
-		t.Fatal("findAnyPersistJSON returned nil for a readable persist.json")
+	got := FindSandboxPersist(kataSBSRoot)
+	if got == nil {
+		t.Fatal("FindSandboxPersist returned nil for a readable persist.json")
 	}
-	if want := filepath.Join(root, "sb-full", "persist.json"); path != want {
-		t.Fatalf("path = %q, want %q", path, want)
+	if want := filepath.Join(root, "sb-full", "persist.json"); got.Path != want {
+		t.Fatalf("path = %q, want %q", got.Path, want)
 	}
-	if !strings.Contains(string(data), `"Pid":7`) {
-		t.Fatalf("data = %s, want the seeded persist.json contents", data)
+	if !strings.Contains(string(got.HypervisorState), `"Pid":7`) {
+		t.Fatalf("HypervisorState = %s, want persist.json HypervisorState passthrough", got.HypervisorState)
+	}
+	if !strings.Contains(string(got.Config.HypervisorConfig), `qemu-full`) {
+		t.Fatalf("HypervisorConfig = %s, want the seeded payload", got.Config.HypervisorConfig)
 	}
 }
 
-func TestFindAnyPersistJSON_MissingRootReturnsNil(t *testing.T) {
+func TestFindSandboxPersist_MissingRootReturnsNil(t *testing.T) {
 	// Not parallel: swaps kataSBSRoot.
 	withKataSBSRoot(t, filepath.Join(t.TempDir(), "no-such-root"))
 
-	data, path := findAnyPersistJSON()
-	if data != nil || path != "" {
-		t.Fatalf("findAnyPersistJSON = (%v, %q), want (nil, \"\") for missing root", data, path)
+	if got := FindSandboxPersist(kataSBSRoot); got != nil {
+		t.Fatalf("FindSandboxPersist = %+v, want nil for missing root", got)
 	}
 }
 

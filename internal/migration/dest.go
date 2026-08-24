@@ -535,24 +535,15 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	// Try to load VMConfig from any sandbox persist.json on this node.
 	// We scan all sandboxes, not just ours — VMConfig is the same across
 	// all Kata pods on the same node (same Kata version + config).
-	persistBytes, persistPath := findAnyPersistJSON()
-	if persistBytes != nil {
-		var persist struct {
-			HypervisorState json.RawMessage   `json:"HypervisorState"`
-			Config          KataPersistConfig `json:"Config"`
+	if persist := FindSandboxPersist(kataSBSRoot); persist != nil {
+		if len(persist.HypervisorState) > 0 {
+			meta.HypervisorState = persist.HypervisorState
 		}
-		if err := json.Unmarshal(persistBytes, &persist); err != nil {
-			slog.Warn("Failed to parse persist.json (VMConfig will be unavailable)", "path", persistPath, "error", err)
-		} else {
-			if len(persist.HypervisorState) > 0 {
-				meta.HypervisorState = persist.HypervisorState
-			}
-			if len(persist.Config.HypervisorConfig) > 0 {
-				meta.VMConfig = MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
-				meta.AgentConfig = persist.Config.KataAgentConfig
-			}
-			slog.Info("Loaded state from persist.json", "path", persistPath)
+		if len(persist.Config.HypervisorConfig) > 0 {
+			meta.VMConfig = MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
+			meta.AgentConfig = persist.Config.KataAgentConfig
 		}
+		slog.Info("Loaded state from persist.json", "path", persist.Path)
 	} else {
 		// No persist.json locally — try to fetch VMConfig from the source pod's log.
 		srcRef := cfg.ReplayCmdlineFromPod
@@ -589,24 +580,4 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	} else {
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
 	}
-}
-
-// findAnyPersistJSON scans Kata's sandbox state root for any sandbox
-// persist.json.
-func findAnyPersistJSON() ([]byte, string) {
-	entries, err := os.ReadDir(kataSBSRoot)
-	if err != nil {
-		return nil, ""
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		p := filepath.Join(kataSBSRoot, e.Name(), "persist.json")
-		data, err := os.ReadFile(p)
-		if err == nil {
-			return data, p
-		}
-	}
-	return nil, ""
 }

@@ -194,7 +194,10 @@ func main() {
 		stop() // A second signal will now force exit.
 	}()
 
-	loadVMConfig(ctx, srv, *watchDir)
+	// Kata stages per-sandbox state (persist.json) in the sbs dir, the
+	// sibling of the watch dir (/run/vc/vm/ and /run/vc/sbs by default).
+	sbsDir := filepath.Join(filepath.Dir(strings.TrimRight(*watchDir, "/")), "sbs")
+	factory.LoadVMConfigFromNode(ctx, srv, sbsDir)
 	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(recoverUnaryInterceptor))
 	cachepb.RegisterCacheServiceServer(grpcServer, srv)
 

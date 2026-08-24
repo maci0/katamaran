@@ -6,7 +6,10 @@ package migration
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/maci0/katamaran/internal/qmp"
@@ -244,12 +247,55 @@ var kataSBSRoot = "/run/vc/sbs"
 
 // KataPersistConfig is the subset of Kata's per-sandbox persist.json
 // Config object shared by every reader of that file: the source/dest
-// migration paths and the katamaran-factory VMConfig loader. Keep field
-// tags identical to Kata's marshalling.
+// migration paths and the factory's node VMConfig loader (internal/factory).
+// Keep field tags identical to Kata's marshalling.
 type KataPersistConfig struct {
 	HypervisorType   string          `json:"HypervisorType"`
 	HypervisorConfig json.RawMessage `json:"HypervisorConfig"`
 	KataAgentConfig  json.RawMessage `json:"KataAgentConfig"`
+}
+
+// SandboxPersist is a parsed Kata per-sandbox persist.json: exactly the
+// fields katamaran reads when enriching migration-meta (dest) or serving
+// VMConfig to adopters.
+type SandboxPersist struct {
+	// Path is the file the struct was parsed from.
+	Path string
+	// HypervisorState is Kata's hypervisor state blob, passed through
+	// uninterpreted into migration-meta.json.
+	HypervisorState json.RawMessage   `json:"HypervisorState"`
+	Config          KataPersistConfig `json:"Config"`
+}
+
+// FindSandboxPersist scans root for any sandbox subdirectory holding a
+// readable persist.json and returns the first one that parses. Sandboxes on
+// one node share VMConfig state (same Kata version + config), so "first" is
+// sufficient for every caller. Unreadable or malformed entries are skipped
+// with a warning. Returns nil when no sandbox has a usable persist.json,
+// including when root itself does not exist.
+func FindSandboxPersist(root string) *SandboxPersist {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, e.Name(), "persist.json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var p SandboxPersist
+		if err := json.Unmarshal(raw, &p); err != nil {
+			slog.Warn("Failed to parse Kata persist.json; skipping", "path", path, "error", err)
+			continue
+		}
+		p.Path = path
+		return &p
+	}
+	return nil
 }
 
 // migrationCapabilities builds the QEMU migration capability list both ends
