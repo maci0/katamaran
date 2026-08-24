@@ -86,6 +86,12 @@ const (
 	// must not pollute stdout (containerd parses stdout for the ttrpc
 	// address on the start command).
 	shimLogPath = "/var/log/katamaran-shim/shim.log"
+
+	// shimLogMaxBytes caps shim.log before startup rotation. The file is
+	// node-wide host state that every adoption pod's shim appends to for
+	// its lifetime and nothing else rotates it, so without this bound it
+	// grows forever across adoptions.
+	shimLogMaxBytes = 32 << 20 // 32 MiB
 )
 
 func main() {
@@ -97,11 +103,15 @@ func main() {
 	var logw *os.File = os.Stderr
 	if err := os.MkdirAll(filepath.Dir(shimLogPath), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot create log dir %s: %v; logging to stderr\n", filepath.Dir(shimLogPath), err)
-	} else if logf, err := os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot open log file %s: %v; logging to stderr\n", shimLogPath, err)
 	} else {
-		defer func() { _ = logf.Close() }()
-		logw = logf
+		rotateShimLogIfLarge(shimLogPath, shimLogMaxBytes)
+		logf, err := os.OpenFile(shimLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot open log file %s: %v; logging to stderr\n", shimLogPath, err)
+		} else {
+			defer func() { _ = logf.Close() }()
+			logw = logf
+		}
 	}
 	logFn := func(format string, args ...any) {
 		fmt.Fprintf(logw, "%s [%d] ", time.Now().UTC().Format(time.RFC3339Nano), os.Getpid())
@@ -298,6 +308,27 @@ func runServer(logFn func(format string, args ...any)) error {
 		logFn("server: shutdown did not drain cleanly within %s: %v", 5*time.Second, err)
 	}
 	return nil
+}
+
+// rotateShimLogIfLarge moves an oversized shim.log aside so the starting
+// shim writes a fresh file instead of compounding unbounded disk growth on
+// the node. One previous generation is kept (as <path>.old, replaced on each
+// rotation), bounding the pair at roughly twice maxBytes: shims already
+// holding the old inode open keep appending to the renamed file until they
+// exit. Best-effort: any stat/rename failure falls back to plain appending,
+// which is today's behavior.
+func rotateShimLogIfLarge(path string, maxBytes int64) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() < maxBytes {
+		return
+	}
+	old := path + ".old"
+	_ = os.Remove(old)
+	if err := os.Rename(path, old); err != nil {
+		fmt.Fprintf(os.Stderr, "katamaran-adopted shim: cannot rotate oversized log %s (%d bytes): %v\n", path, fi.Size(), err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "katamaran-adopted shim: rotated oversized log %s (%d bytes) to %s\n", path, fi.Size(), old)
 }
 
 // removeShimSocket unlinks the ttrpc socket file the shim's server was

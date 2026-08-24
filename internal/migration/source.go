@@ -346,6 +346,27 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	}
 	slog.Info("RAM migration started. Waiting for VM to pause (STOP event)")
 
+	// From here until waitForMigrationComplete settles the outcome, the RAM
+	// migration is an external job running inside the source QEMU. Every
+	// early return in between (STOP-wait failure, tunnel name/setup failure)
+	// must cancel it, or the abandoned migration keeps streaming toward the
+	// destination and holds the guest paused after this process gave up.
+	// Disarmed once the completion path has owned the outcome; it issues its
+	// own migrate-cancel when waitForMigrationComplete reports a failure.
+	migrationActive := true
+	defer func() {
+		if !migrationActive {
+			return
+		}
+		cctx, ccancel := cleanupCtx(ctx)
+		defer ccancel()
+		if _, cancelErr := client.Execute(cctx, "migrate-cancel", nil); cancelErr != nil {
+			slog.Warn("Failed to cancel abandoned migration", "error", cancelErr)
+		} else {
+			slog.Info("Abandoned migration cancelled via QMP")
+		}
+	}()
+
 	// Wait for the STOP event (downtime window begins).
 	// We poll migration status sequentially in the same loop rather than using a
 	// separate goroutine for WaitForEvent vs query-migrate. This prevents QMP
@@ -435,6 +456,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			slog.Info("Migration cancelled via QMP")
 		}
 	}
+	migrationActive = false
 
 	if !cfg.SharedStorage {
 		cctx, ccancel := cleanupCtx(ctx)

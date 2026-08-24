@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
@@ -105,5 +106,51 @@ func TestRemoveShimSocket(t *testing.T) {
 	removeShimSocket("", logFn)
 	if len(logs) != 0 {
 		t.Fatalf("removeShimSocket(\"\") logged %v; want none", logs)
+	}
+}
+
+// TestRotateShimLogIfLarge pins the node-wide shim.log growth bound: a log
+// past the cap is moved to <path>.old (replacing any previous generation) so
+// the starting shim appends to a fresh file, while an absent or small log is
+// left untouched.
+func TestRotateShimLogIfLarge(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "shim.log")
+
+	// Absent file: no-op.
+	rotateShimLogIfLarge(logPath, 10)
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("rotation created %s for an absent log (err=%v)", logPath, err)
+	}
+
+	// Small file: untouched.
+	if err := os.WriteFile(logPath, []byte("tiny"), 0o644); err != nil {
+		t.Fatalf("seed small log: %v", err)
+	}
+	rotateShimLogIfLarge(logPath, 10)
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("small log was rotated away: %v", err)
+	}
+	if _, err := os.Stat(logPath + ".old"); !os.IsNotExist(err) {
+		t.Fatalf("small log produced an .old generation (err=%v)", err)
+	}
+
+	// Oversized file: rotated aside; previous .old replaced.
+	if err := os.WriteFile(logPath+".old", []byte("previous-generation"), 0o644); err != nil {
+		t.Fatalf("seed old generation: %v", err)
+	}
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), 64), 0o644); err != nil {
+		t.Fatalf("seed oversized log: %v", err)
+	}
+	rotateShimLogIfLarge(logPath, 32)
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("oversized log not rotated (err=%v)", err)
+	}
+	oldData, err := os.ReadFile(logPath + ".old")
+	if err != nil {
+		t.Fatalf("read rotated generation: %v", err)
+	}
+	if len(oldData) != 64 {
+		t.Fatalf(".old holds %d bytes; want the oversized content (64)", len(oldData))
 	}
 }

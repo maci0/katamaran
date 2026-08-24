@@ -439,6 +439,70 @@ func TestRunSource_SharedStorage_MigrationFailed(t *testing.T) {
 	}
 }
 
+// TestRunSource_AbandonedMigrationCancelledOnStopWaitError pins the deferred
+// migrate-cancel safety net: when the source gives up between starting the
+// RAM migration and waiting out its completion (here the STOP-event stream
+// delivers an unparsable line), the in-flight migration must be cancelled
+// via QMP instead of streaming on unowned inside the source QEMU.
+func TestRunSource_AbandonedMigrationCancelledOnStopWaitError(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "migrate":
+			// Command response followed by a malformed event line: the
+			// STOP wait fails with an unmarshaling error while the socket
+			// stays alive, so the deferred cleanup can still reach QEMU.
+			return `{"return":{}}` + "\n" + `{"event":broken`
+		default:
+			return `{"return":{}}`
+		}
+	})
+
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
+	if err == nil {
+		t.Fatal("expected error when STOP-event stream is unparsable")
+	}
+	if !strings.Contains(err.Error(), "unexpected error waiting for STOP event") {
+		t.Fatalf("expected STOP-wait failure, got: %v", err)
+	}
+	assertRecordedSubsequence(t, rec.Commands(), []string{"migrate", "migrate-cancel"})
+}
+
+// TestRunSource_SuccessIssuesNoMigrateCancel pins the disarm side of the
+// deferred safety net: a completed migration must not be followed by a
+// redundant migrate-cancel command.
+func TestRunSource_SuccessIssuesNoMigrateCancel(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "migrate":
+			return `{"return":{}}` + "\n" + `{"event":"STOP"}`
+		case "query-migrate":
+			return `{"return":{"status":"completed","downtime":10,"total-time":800,"setup-time":30}}`
+		default:
+			return `{"return":{}}`
+		}
+	})
+
+	err := RunSource(context.Background(), SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
+		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
+	if err != nil {
+		t.Fatalf("RunSource happy path: %v", err)
+	}
+	for _, cmd := range rec.Commands() {
+		if cmd.Execute == "migrate-cancel" {
+			t.Fatalf("migrate-cancel issued on success path; got %v", recordedCommandNames(rec.Commands()))
+		}
+	}
+}
+
 func TestRunSource_NonShared_HappyPath(t *testing.T) {
 	t.Parallel()
 	callCount := 0
