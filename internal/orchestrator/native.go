@@ -146,13 +146,36 @@ func SetPodWaitTimeout(o Orchestrator, d time.Duration) {
 	}
 }
 
+// cleanupJobTimeout bounds each compensating Job delete issued by
+// cleanupDestJob. Matches the per-cleanup budget migration.cleanupCtx uses.
+const cleanupJobTimeout = 10 * time.Second
+
 // cleanupDestJob best-effort deletes the dest Job after a setup error and
 // logs a warning if the delete itself fails. Consolidates the cleanup
 // branches scattered through the auto-select and dest-first code paths.
+//
+// The delete deliberately runs on a context that ignores the caller's
+// cancellation (values preserved, deadline fresh): cancellation is itself one
+// of the failures this compensation exists for — a Migration CR deleted while
+// Apply is waiting for dest scheduling has no status.migrationID yet, so the
+// controller's Stop path cannot reach these Jobs, and issuing the delete with
+// the already-cancelled ctx would fail instantly and orphan the Job in the
+// cluster until its activeDeadlineSeconds expires. Same pattern as
+// migration.cleanupCtx.
 func (n *native) cleanupDestJob(ctx context.Context, destJobName, reason string) {
-	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, destJobName, metav1.DeleteOptions{}); err != nil {
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	if err := n.client.BatchV1().Jobs(n.namespace).Delete(cctx, destJobName, metav1.DeleteOptions{}); err != nil {
 		slog.Warn("failed to clean up dest job", "reason", reason, "dest_job", destJobName, "namespace", n.namespace, "error", err)
 	}
+}
+
+// cleanupContext derives a fresh, bounded deadline that ignores the parent's
+// cancellation state but inherits its values, for compensating actions that
+// must run after the operation they compensate was itself aborted by that
+// cancellation. Same pattern as migration.cleanupCtx.
+func cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), cleanupJobTimeout)
 }
 
 // Apply renders both Job manifests, submits them, and returns a fresh ID.

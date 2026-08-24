@@ -377,6 +377,64 @@ func TestNative_Apply_AutoSelectSameNodeRejectedCleansUpDestJob(t *testing.T) {
 	}
 }
 
+// TestNative_Apply_CancelDuringSchedulingWaitCleansUpDestJob locks the
+// compensation contract behind cleanupDestJob: a Migration CR deleted while
+// Apply is waiting for dest scheduling has no status.migrationID yet, so the
+// controller's Stop path cannot reach its Jobs. The compensating dest-Job
+// delete must therefore survive the very cancellation that aborted Apply —
+// issued on a cancellation-proof context (see cleanupContext) — instead of
+// failing instantly and orphaning the Job in the cluster until its
+// activeDeadlineSeconds expires.
+func TestNative_Apply_CancelDuringSchedulingWaitCleansUpDestJob(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := fake.NewSimpleClientset()
+	// Cancellation lands exactly while Apply is inside the scheduling wait;
+	// no dest pod ever appears, so waitForJobPod exits via ctx.Done().
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		cancel()
+		return true, &corev1.PodList{}, nil
+	})
+	n := newFromClient(cs)
+	req := validRequest()
+	req.SourceNode = "worker-a"
+	req.DestNode = ""
+	req.DestIP = ""
+
+	if _, err := n.Apply(ctx, req); err == nil {
+		t.Fatal("Apply must fail once the context is cancelled during the scheduling wait")
+	}
+	jobs, err := cs.BatchV1().Jobs(DefaultJobNamespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatalf("cancelled migration left %d Job(s) behind: %+v", len(jobs.Items), jobs.Items)
+	}
+}
+
+// TestCleanupContext_IgnoresParentCancellation pins the property the dest-Job
+// compensation relies on: the derived context keeps working (fresh deadline,
+// no inherited cancellation) even when the caller's context is already dead.
+func TestCleanupContext_IgnoresParentCancellation(t *testing.T) {
+	t.Parallel()
+	parent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	cctx, cancel := cleanupContext(parent)
+	defer cancel()
+	if err := cctx.Err(); err != nil {
+		t.Fatalf("cleanup context must ignore caller cancellation, got %v", err)
+	}
+	deadline, ok := cctx.Deadline()
+	if !ok {
+		t.Fatal("cleanup context must carry a bounded deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > cleanupJobTimeout {
+		t.Fatalf("cleanup context remaining budget = %v, want (0,%s]", remaining, cleanupJobTimeout)
+	}
+}
+
 // TestNative_Apply_EmitsStartingPhases_LegacyMode: legacy mode creates the
 // dest Job first (migrate-incoming listener before source connects), then the
 // source Job. The update stream must surface that staging order as
