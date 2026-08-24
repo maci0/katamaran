@@ -216,7 +216,7 @@ deploy/migrate.sh --help
 
 ## Structured CLI: `katamaran-orchestrator`
 
-`bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin, submits Jobs through client-go, and emits newline-delimited JSON `StatusUpdate` events on stdout. Exit code: 0 on success, 1 on migration failure, 2 on input error.
+`bin/katamaran-orchestrator` is a thin wrapper around the same Go orchestrator package the dashboard uses. It reads a single `orchestrator.Request` JSON object on stdin, submits Jobs through client-go, and emits newline-delimited JSON `StatusUpdate` events on stdout. Exit codes: 0 on success, 1 on migration failure or runtime error, 2 on input error, 130 on signal-induced shutdown.
 
 Useful for CI pipelines and local automation that need structured status instead of parsing `migrate.sh` output.
 
