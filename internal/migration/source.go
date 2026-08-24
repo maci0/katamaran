@@ -58,26 +58,12 @@ func queryMigrateInfo(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo,
 // it fills cfg.VMIP and cfg.QMPSocket from the live sandbox state and
 // returns the resolved QEMU PID.
 func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (int, error) {
-	ip, err := lookupPodIP(ctx, cfg.PodNamespace, cfg.PodName)
+	addr, res, err := resolvePodSandbox(ctx, cfg.PodNamespace, cfg.PodName)
 	if err != nil {
-		return 0, fmt.Errorf("lookup pod IP: %w", err)
-	}
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return 0, fmt.Errorf("parse resolved pod IP %q: %w", ip, err)
+		return 0, err
 	}
 	cfg.VMIP = addr
-	res, err := resolveSandbox(sandboxRoot, procImpl, ip)
-	if err != nil {
-		return 0, fmt.Errorf("resolve sandbox: %w", err)
-	}
-	// Override QMPSocket in pod mode unless the user supplied an explicit
-	// non-default override. The CLI default is DefaultQMPSocket (no
-	// sandbox UUID) — anything matching that gets replaced with the
-	// resolved sandbox-specific path.
-	if cfg.QMPSocket == "" || cfg.QMPSocket == DefaultQMPSocket {
-		cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
-	}
+	cfg.QMPSocket = overrideQMPSocket(cfg.QMPSocket, DefaultQMPSocket, res.Sandbox)
 	// Remove the kata-installed tc mirred ingress filter on the pod's eth0,
 	// which redirects ALL ingress to tap0_kata and breaks QEMU's outbound
 	// TCP migration stream. Best-effort: a pod without the filter (e.g.

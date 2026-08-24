@@ -47,20 +47,14 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		slog.SetDefault(slog.Default().With("role", "dest", "dest_pod", cfg.DestPodName, "namespace", cfg.DestPodNamespace))
 	}
 	if cfg.DestPodName != "" {
-		ip, err := lookupPodIP(ctx, cfg.DestPodNamespace, cfg.DestPodName)
+		_, res, err := resolvePodSandbox(ctx, cfg.DestPodNamespace, cfg.DestPodName)
 		if err != nil {
-			return fmt.Errorf("lookup dest pod IP: %w", err)
-		}
-		res, err := resolveSandbox(sandboxRoot, procImpl, ip)
-		if err != nil {
-			return fmt.Errorf("resolve dest sandbox: %w", err)
+			return err
 		}
 		// Override both an empty QMPSocket and the templated default,
 		// since the orchestrator can't know the real sandbox UUID up front
 		// and bakes the well-known placeholder into the dest Job spec.
-		if cfg.QMPSocket == "" || cfg.QMPSocket == DestDefaultQMPSocket {
-			cfg.QMPSocket = filepath.Join(sandboxRoot, res.Sandbox, extraMonitorSocketName)
-		}
+		cfg.QMPSocket = overrideQMPSocket(cfg.QMPSocket, DestDefaultQMPSocket, res.Sandbox)
 	}
 
 	// Validate all cheap config invariants before any side effects. In

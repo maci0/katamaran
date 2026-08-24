@@ -30,6 +30,7 @@ import (
 	"expvar"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -503,12 +504,7 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 				"migration", key, "migration_id", id,
 				"pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", err)
 		} else {
-			for k, v := range src.Labels {
-				if srcLabels == nil {
-					srcLabels = make(map[string]string, len(src.Labels))
-				}
-				srcLabels[k] = v
-			}
+			srcLabels = maps.Clone(src.Labels)
 			srcOwnerRefs = src.OwnerReferences
 			for _, o := range src.OwnerReferences {
 				if o.Controller != nil && *o.Controller && isManagedPodControllerKind(o.Kind) {

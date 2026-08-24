@@ -11,8 +11,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -91,6 +93,48 @@ func resolveSandbox(root string, p procFS, podIP string) (Resolved, error) {
 	default:
 		return Resolved{}, fmt.Errorf("ambiguous: %d sandboxes match pod IP %s: %+v", len(matches), podIP, matches)
 	}
+}
+
+// resolvePodSandbox resolves a kata pod to its sandbox directory and
+// QEMU PID: fetch status.podIP via LookupPodIP, then find the unique
+// sandbox whose netns carries that IP. The parsed pod IP is returned
+// alongside because RunSource programs it into tunnel/route setup;
+// RunDestination ignores it. Shared by both ends so their resolution
+// semantics cannot drift.
+func resolvePodSandbox(ctx context.Context, namespace, name string) (podIP netip.Addr, res Resolved, err error) {
+	ip, err := lookupPodIP(ctx, namespace, name)
+	if err != nil {
+		return netip.Addr{}, Resolved{}, fmt.Errorf("lookup pod IP: %w", err)
+	}
+	podIP, err = netip.ParseAddr(ip)
+	if err != nil {
+		return netip.Addr{}, Resolved{}, fmt.Errorf("parse resolved pod IP %q: %w", ip, err)
+	}
+	res, err = resolveSandbox(sandboxRoot, procImpl, ip)
+	if err != nil {
+		return netip.Addr{}, Resolved{}, fmt.Errorf("resolve sandbox: %w", err)
+	}
+	return podIP, res, nil
+}
+
+// sandboxQMPSocket is the per-sandbox extra-monitor socket path Kata
+// binds under sandboxRoot/<sandboxID>/.
+func sandboxQMPSocket(sandboxID string) string {
+	return filepath.Join(sandboxRoot, sandboxID, extraMonitorSocketName)
+}
+
+// overrideQMPSocket applies the QMP-socket override rule shared by both
+// ends of a migration: an empty socket or the role's well-known
+// placeholder means "no explicit override", and the resolved
+// sandbox-specific path wins. placeholder is DefaultQMPSocket on the
+// source and DestDefaultQMPSocket on the dest; keeping the comparison
+// in one function keeps the "empty or placeholder" contract from
+// drifting between the two call sites.
+func overrideQMPSocket(socket, placeholder, sandboxID string) string {
+	if socket == "" || socket == placeholder {
+		return sandboxQMPSocket(sandboxID)
+	}
+	return socket
 }
 
 // realProc is the production implementation of procFS.
