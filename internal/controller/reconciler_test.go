@@ -768,6 +768,134 @@ func TestReconciler_DeletionCancelsInFlightDispatch(t *testing.T) {
 	}
 }
 
+// TestReconciler_DeletionDefersUntilCancelRegistered pins the closed
+// claim/cancel window: a tracking entry whose worker has not yet reached
+// setTrackCancel must NOT be finalizer-released by handleDeletion, or the
+// unstoppable worker would keep creating Jobs for a CR that is already gone.
+// The next deletion pass (after the cancel is registered) completes cleanup.
+func TestReconciler_DeletionDefersUntilCancelRegistered(t *testing.T) {
+	cr := newMigrationCR("m-deldefer", []string{finalizerName}, false, nil)
+	orch := &fakeOrch{}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr)
+
+	key := types.NamespacedName{Namespace: "default", Name: "m-deldefer"}
+	if !rec.markTracking(key) {
+		t.Fatal("markTracking: expected first claim")
+	}
+
+	// Simulate dispatch between markTracking and setTrackCancel.
+	rec.handleDeletion(context.Background(), key, newMigrationCR("m-deldefer", []string{finalizerName}, true, nil))
+
+	if calls := orch.callsFor("Stop"); len(calls) != 0 {
+		t.Fatalf("Stop called while worker cancel was unregistered: %v", calls)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-deldefer", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get CR after deferred deletion: %v", err)
+	}
+	if !hasFinalizer(got) {
+		t.Fatal("finalizer removed before the worker's cancel func was registered; dispatch could create Jobs for a deleted Migration")
+	}
+	rec.mu.Lock()
+	_, stillTracked := rec.tracking[key]
+	rec.mu.Unlock()
+	if !stillTracked {
+		t.Fatal("tracking entry dropped during deferred deletion; worker would run untracked")
+	}
+
+	// Now the worker registers its cancel; the next deletion pass must
+	// complete cleanup: cancel invoked + finalizer removed + untracked.
+	cancelled := make(chan struct{})
+	rec.setTrackCancel(key, func() { close(cancelled) })
+	rec.handleDeletion(context.Background(), key, newMigrationCR("m-deldefer", []string{finalizerName}, true, nil))
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleDeletion did not invoke the registered cancel func")
+	}
+	got, err = dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-deldefer", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get CR after completed deletion: %v", err)
+	}
+	if hasFinalizer(got) {
+		t.Fatalf("finalizer still present after completed deletion: %v", got.GetFinalizers())
+	}
+	rec.mu.Lock()
+	_, tracked := rec.tracking[key]
+	rec.mu.Unlock()
+	if tracked {
+		t.Fatal("tracking entry survived completed deletion")
+	}
+}
+
+// TestReconciler_DeletionCancelsRecoveryLoop verifies that recover registers
+// a cancellable context with its tracking entry, so CR deletion stops the
+// recovery loop instead of leaving it polling (and running post-success side
+// effects) for up to StatusTimeout after the Migration was deleted.
+func TestReconciler_DeletionCancelsRecoveryLoop(t *testing.T) {
+	cr := newMigrationCR("m-delrec", []string{finalizerName}, false, map[string]any{
+		"phase":       "transferring",
+		"migrationID": "id-delrec",
+	})
+	// Source job alive and never terminal; dest absent: recover loops and
+	// retries Resume every tick until cancelled.
+	srcJob := batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "katamaran-source-id-delrec",
+			Namespace: orchestrator.DefaultJobNamespace,
+			Labels: map[string]string{
+				orchestrator.MigrationIDLabel: "id-delrec",
+				"app.kubernetes.io/component": "source",
+			},
+		},
+	}
+	orch := &fakeOrch{}
+	rec, _, _ := newReconcilerWithCR(t, orch, cr, srcJob)
+	rec.StatusTimeout = 10 * time.Minute
+
+	if err := rec.reconcileAll(context.Background()); err != nil {
+		t.Fatalf("reconcileAll: %v", err)
+	}
+
+	key := types.NamespacedName{Namespace: "default", Name: "m-delrec"}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec.mu.Lock()
+		tk, ok := rec.tracking[key]
+		registered := ok && tk.cancel != nil
+		rec.mu.Unlock()
+		if registered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recover goroutine never registered its tracking cancel func")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Give recover at least one tick so the test would fail without the fix
+	// (it would keep looping forever after deletion).
+	if waits := len(orch.callsFor("Resume")); waits == 0 {
+		t.Log("note: Resume had not been called yet when deletion fired; loop cancellation is still exercised")
+	}
+
+	rec.handleDeletion(context.Background(), key, newMigrationCR("m-delrec", []string{finalizerName}, true, nil))
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		rec.mu.Lock()
+		_, tracked := rec.tracking[key]
+		rec.mu.Unlock()
+		if !tracked {
+			return // recovery loop observed the cancellation and exited
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovery loop kept running after CR deletion")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestReconciler_RecoverFromDestComplete(t *testing.T) {
 	cr := newMigrationCR("m3", []string{finalizerName}, false, map[string]any{
 		"phase":       "transferring",

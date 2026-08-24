@@ -633,19 +633,30 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		return
 	}
 
+	// Budget recovery like dispatch and register its cancel func before any
+	// slow work: without this, handleDeletion finds a track entry with no
+	// cancel and CR deletion could not stop this loop — recover would keep
+	// polling for up to StatusTimeout and could still run post-success
+	// side effects (adoption pod create) for a Migration the user deleted.
+	// The StatusTimeout budget itself stays on the manual deadline below so
+	// the timed-out path still patches phase=Failed instead of exiting.
+	jobCtx, cancel := context.WithCancel(ctx)
+	r.setTrackCancel(key, cancel)
+	defer cancel()
+
 	selector := orchestrator.MigrationIDLabel + "=" + id
 	deadline := time.Now().Add(r.StatusTimeout)
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-jobCtx.Done():
 			return
 		case <-ticker.C:
 		}
 		if time.Now().After(deadline) {
 			slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
-			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			return
 		}
 		// Watch-cache read: this loop re-lists every PollInterval for the
@@ -654,7 +665,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		// staleness is invisible, while quorum reads would sustain one etcd
 		// round-trip per tick per recovering migration (same rationale as
 		// native.poll's cacheRead).
-		jobs, err := r.Kube.BatchV1().Jobs(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{
+		jobs, err := r.Kube.BatchV1().Jobs(orchestrator.DefaultJobNamespace).List(jobCtx, metav1.ListOptions{
 			LabelSelector:   selector,
 			ResourceVersion: "0",
 		})
@@ -675,7 +686,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		if dest != nil {
 			if cond := orchestrator.TerminalJobCondition(dest); cond == batchv1.JobComplete {
 				slog.Info("Recovery completed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
-				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
+				_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				// Run the documented post-success side effects
 				// (sourceCleanup, adoptVM) exactly like the dispatch
 				// path — a controller restart mid-migration must not
@@ -685,13 +696,13 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 					slog.Warn("recover: specToRequest failed; skipping post-success cleanup/adoption", "migration", key, "migration_id", id, "error", sErr)
 					return
 				}
-				r.handleMigrationOutcome(ctx, key, req, orchestrator.MigrationID(id), string(orchestrator.PhaseSucceeded))
+				r.handleMigrationOutcome(jobCtx, key, req, orchestrator.MigrationID(id), string(orchestrator.PhaseSucceeded))
 				return
 			} else if cond == batchv1.JobFailed {
 				detail, attrs := jobFailureDetails(dest)
 				attrs = append([]any{"migration", key, "migration_id", id, "dest_job", dest.Name}, attrs...)
 				slog.Error("Recovery failed from destination job", attrs...)
-				_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
+				_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
 				return
 			}
 		}
@@ -699,7 +710,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			detail, attrs := jobFailureDetails(src)
 			attrs = append([]any{"migration", key, "migration_id", id, "source_job", src.Name}, attrs...)
 			slog.Error("Recovery failed from source job before destination started", attrs...)
-			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
+			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
 			return
 		}
 		// Source still running but dest never got created — orchestrator
@@ -720,7 +731,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				slog.Warn("recover: specToRequest failed; cannot resume", "migration", key, "error", sErr)
 				continue
 			}
-			created, rErr := r.Orchestrator.Resume(ctx, orchestrator.MigrationID(id), req)
+			created, rErr := r.Orchestrator.Resume(jobCtx, orchestrator.MigrationID(id), req)
 			switch {
 			case rErr != nil:
 				slog.Warn("recover: Resume failed; will retry next tick", "migration", key, "migration_id", id, "error", rErr)
@@ -731,7 +742,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		}
 		if dest == nil && src == nil {
 			slog.Error("Recovery failed: source and destination jobs disappeared", "migration", key, "migration_id", id)
-			_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
+			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
 			return
 		}
 	}
@@ -760,6 +771,26 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 	}
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
 	slog.Info("Migration deleted; stopping orchestrator + removing finalizer", "migration", key, "migration_id", id)
+
+	// A tracking entry without a cancel func means dispatch/recover claimed
+	// this key but has not yet reached its setTrackCancel call. Removing the
+	// finalizer now would let the CR disappear while that goroutine is still
+	// unstoppable: it would create Jobs (and later run adoption side effects)
+	// for a Migration that no longer exists. Skip this tick; the next
+	// reconcile pass re-enters handleDeletion once the cancel is registered
+	// (or finds no entry at all if the worker already finished).
+	r.mu.Lock()
+	if t, ok := r.tracking[key]; ok && t.cancel == nil {
+		r.mu.Unlock()
+		slog.Debug("Migration deletion deferred one tick: worker has not registered its cancel func yet", "migration", key)
+		return
+	}
+	if t, ok := r.tracking[key]; ok && t.cancel != nil {
+		t.cancel()
+		delete(r.tracking, key)
+	}
+	r.mu.Unlock()
+
 	if id != "" {
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		func() {
@@ -769,12 +800,6 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 			}
 		}()
 	}
-	r.mu.Lock()
-	if t, ok := r.tracking[key]; ok && t.cancel != nil {
-		t.cancel()
-	}
-	delete(r.tracking, key)
-	r.mu.Unlock()
 	if err := r.removeFinalizer(ctx, obj); err != nil {
 		slog.Error("remove finalizer failed", "migration", key, "error", err)
 	} else {
