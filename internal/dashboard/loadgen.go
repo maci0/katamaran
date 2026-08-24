@@ -260,7 +260,7 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Block redirects to prevent SSRF bypass: an attacker-controlled
 				// target could redirect to internal/metadata IPs, bypassing the
-				// validTarget check on the original URL.
+				// safeTargetIPs check on the original URL.
 				return http.ErrUseLastResponse
 			},
 		}

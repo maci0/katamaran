@@ -93,8 +93,8 @@ func lookupSafeTargetIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
-// safeTargetIPs runs every static and SSRF check that validTarget performs
-// and additionally resolves the host, returning the screened IPs so callers
+// safeTargetIPs runs every static and SSRF check on the target and
+// additionally resolves the host, returning the screened IPs so callers
 // can pin the target to the exact address that was validated instead of
 // paying for (and racing) a second lookup. ok=false means the target must be
 // rejected: unresolvable hostnames fail closed here to prevent SSRF bypass
@@ -145,17 +145,6 @@ func safeTargetIPs(target string) ([]net.IP, bool) {
 		return nil, false
 	}
 	return ips, true
-}
-
-// validTarget checks that the target is a plausible IP or hostname for
-// ping/HTTP probing. Rejects loopback, link-local, cloud metadata
-// addresses, and unresolvable hostnames to prevent SSRF.
-//
-// Callers that probe by IP literal should use safeTargetIPs instead so the
-// validated addresses are reused rather than resolved twice.
-func validTarget(target string) bool {
-	_, ok := safeTargetIPs(target)
-	return ok
 }
 
 // validFormValue wraps orchestrator.ValidateSafeArgValue to check that a form

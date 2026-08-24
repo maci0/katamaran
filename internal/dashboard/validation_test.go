@@ -8,7 +8,7 @@ import (
 )
 
 // TestBlockedTargetIP pins the SSRF blocklist class-by-class. The guard is
-// the last line of defense for both load generators (validTarget resolves
+// the last line of defense for both load generators (safeTargetIPs resolves
 // through lookupSafeTargetIPs, and safeDialContext re-resolves at connect
 // time), so every address class that could reach an internal service or a
 // cloud metadata endpoint must stay blocked.
