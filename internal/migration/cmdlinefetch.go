@@ -32,6 +32,14 @@ const maxPodLogScanBytes = 16 * 1024 * 1024
 // driving an unbounded allocation.
 const maxMarkerB64Size = 6 * 1024 * 1024
 
+// cmdlineStreamTTL bounds how long one followed pod-log stream is trusted.
+// A kubelet/apiserver hiccup can leave a stream silently stalled; closing
+// and redialing guarantees forward progress (same design as the
+// orchestrator's tailProgress). Each redial re-scans at most
+// maxPodLogScanBytes of backfill, so worst-case cost stays bounded by the
+// same cap as a one-shot fetch.
+const cmdlineStreamTTL = time.Minute
+
 // dns1123LabelRe matches a single DNS-1123 label (used for the namespace in
 // <namespace>/<pod> references).
 // Defense-in-depth: the values are URL-escaped before going on the wire,
@@ -69,17 +77,23 @@ func ValidateDNSSubdomain(s string) bool {
 
 // podLogClient bundles the apiserver pod-log fetch parameters: the
 // authenticated HTTP client, the resolved log URL, the bearer token,
-// and the parsed <namespace, pod> tuple.
+// and the parsed <namespace, pod> tuple. Two URL/client pairs are
+// exposed: endpoint/client for one-shot fetches (bounded by the shared
+// client's overall Timeout) and followEndpoint/followClient for
+// long-lived followed streams, where the per-attempt context — not a
+// fixed client deadline — must bound the transfer.
 type podLogClient struct {
-	client   *http.Client
-	endpoint string
-	token    string
-	ns       string
-	pod      string
+	client         *http.Client
+	endpoint       string
+	followClient   *http.Client
+	followEndpoint string
+	token          string
+	ns             string
+	pod            string
 }
 
-// newPodLogClient builds an authenticated HTTP client and the apiserver
-// pod-log URL for the given <ns>/<pod> ref. Reuses the shared in-cluster
+// newPodLogClient builds authenticated HTTP clients and the apiserver
+// pod-log URLs for the given <ns>/<pod> ref. Reuses the shared in-cluster
 // client plumbing (SA token + CA bundle + no-redirect policy) from
 // podresolve.go so every apiserver-driven fetch stays consistent.
 func newPodLogClient(ref string) (*podLogClient, error) {
@@ -98,9 +112,24 @@ func newPodLogClient(ref string) (*podLogClient, error) {
 	q := url.Values{}
 	q.Set("container", "katamaran")
 	q.Set("limitBytes", fmt.Sprint(maxPodLogScanBytes))
-	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s/log?%s",
-		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(pod), q.Encode())
-	return &podLogClient{client: api.http, endpoint: endpoint, token: api.token, ns: ns, pod: pod}, nil
+	base := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s/log?",
+		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(pod))
+	endpoint := base + q.Encode()
+	// followClient drops the 10s http.Client.Timeout (which also caps
+	// body reads): a followed stream is open-ended by design and is
+	// bounded per attempt by cmdlineStreamTTL instead.
+	followClient := *api.http
+	followClient.Timeout = 0
+	q.Set("follow", "true")
+	return &podLogClient{
+		client:         api.http,
+		endpoint:       endpoint,
+		followClient:   &followClient,
+		followEndpoint: base + q.Encode(),
+		token:          api.token,
+		ns:             ns,
+		pod:            pod,
+	}, nil
 }
 
 // fetchCmdlineFromPodLog retrieves the source QEMU cmdline that the
@@ -148,7 +177,19 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 			return "", timeoutErr(lastFetchErr)
 		default:
 		}
-		markers, bytesScanned, err := scanPodLogMarkers(deadline, pc.client, pc.endpoint, pc.token, CmdlineB64Marker)
+		// Consume the log as ONE followed stream instead of re-fetching
+		// the whole log every tick: at a 2s cadence with a 16 MiB cap,
+		// polling re-transfers up to ~150 x 16 MiB (~2.4 GB) through the
+		// apiserver-to-kubelet proxy over the 5-minute deadline and sets
+		// up a fresh HTTP request per tick. With Follow=true the backfill
+		// is delivered once, then each marker line arrives exactly once
+		// as the source emits it. cmdlineStreamTTL closes silently
+		// stalled streams; the reconnect's backfill rescans at most
+		// maxPodLogScanBytes, so worst-case cost per attempt equals one
+		// legacy poll.
+		streamCtx, cancelStream := context.WithTimeout(deadline, cmdlineStreamTTL)
+		markers, bytesScanned, err := scanPodLogMarkers(streamCtx, pc.followClient, pc.followEndpoint, pc.token, CmdlineB64Marker)
+		cancelStream()
 		if err != nil {
 			lastFetchErr = err
 			logPodLogFetchRetry("pod-log fetch attempt failed", attempt, "error", err)
@@ -165,9 +206,9 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 		} else {
 			logPodLogMarkerMissing(attempt, bytesScanned)
 		}
-		// Retry every 2s. Either the pod isn't up yet (404), the
-		// cmdline marker hasn't been emitted (apiserver returns the
-		// log so far), or a transient apiserver error.
+		// Retry after a short pause. Either the pod isn't up yet (404),
+		// the stream ended without the marker (limitBytes exhausted), or
+		// cmdlineStreamTTL expired on a stalled stream.
 		timer := time.NewTimer(2 * time.Second)
 		select {
 		case <-deadline.Done():
@@ -258,8 +299,10 @@ func parsePodRef(ref string) (string, string, error) {
 }
 
 // scanPodLogMarkers fetches the pod's log via the apiserver and scans it
-// line-by-line for marker values. Non-2xx responses are surfaced as errors
-// so callers can retry.
+// line-by-line for marker values. The endpoint decides one-shot vs
+// followed-stream semantics; callers pass a context that bounds each
+// attempt either way. Non-2xx responses are surfaced as errors so callers
+// can retry.
 func scanPodLogMarkers(ctx context.Context, client *http.Client, endpoint, token string, markers ...string) (map[string]string, int64, error) {
 	found := make(map[string]string, len(markers))
 	if len(markers) == 0 {

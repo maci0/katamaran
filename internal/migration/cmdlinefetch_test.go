@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePodRef(t *testing.T) {
@@ -88,6 +89,9 @@ func TestFetchCmdlineFromPodLogWritesDecodedCmdline(t *testing.T) {
 	cmdline := []byte("/usr/bin/qemu-system-x86_64\x00-name\x00sandbox-demo")
 	setupAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assertPodLogRequest(t, r, "myns", "mypod")
+		if got := r.URL.Query().Get("follow"); got != "true" {
+			t.Errorf("follow query = %q, want true", got)
+		}
 		_, _ = fmt.Fprintf(w, "noise\nKATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdline))
 	})
 
@@ -110,6 +114,70 @@ func TestFetchCmdlineFromPodLogWritesDecodedCmdline(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("decoded cmdline mode = %v, want 0600", got)
+	}
+}
+
+// TestFetchCmdlineFromPodLogStreamsLateMarker pins the followed-stream
+// contract: a marker emitted AFTER the dest connected (source pod slow to
+// start) must be delivered over the still-open stream instead of waiting
+// for a reconnect.
+func TestFetchCmdlineFromPodLogStreamsLateMarker(t *testing.T) {
+	cmdline := []byte("/usr/bin/qemu-system-x86_64\x00-name\x00late-emitter")
+	setupAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertPodLogRequest(t, r, "myns", "mypod")
+		_, _ = fmt.Fprintln(w, "backfill without marker")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = fmt.Fprintf(w, "KATAMARAN_CMDLINE_B64=%s\n", base64.StdEncoding.EncodeToString(cmdline))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // hold the followed stream open after the marker
+	})
+
+	path, err := fetchCmdlineFromPodLog(context.Background(), "myns/mypod")
+	if err != nil {
+		t.Fatalf("fetchCmdlineFromPodLog: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read decoded cmdline: %v", err)
+	}
+	if !bytes.Equal(got, cmdline) {
+		t.Fatalf("decoded cmdline = %q, want %q", got, cmdline)
+	}
+}
+
+// TestFetchCmdlineFromPodLogAbortsOnCancelledContext pins the stall bound:
+// a followed stream that never delivers the marker must not outlive the
+// caller's context.
+func TestFetchCmdlineFromPodLogAbortsOnCancelledContext(t *testing.T) {
+	setupAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertPodLogRequest(t, r, "myns", "mypod")
+		_, _ = fmt.Fprintln(w, "noise, no marker ever")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // hold the stream open until the fetch gives up
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	path, err := fetchCmdlineFromPodLog(ctx, "myns/mypod")
+	if err == nil {
+		_ = os.Remove(path)
+		t.Fatal("fetchCmdlineFromPodLog succeeded, want timeout error")
+	}
+	if !strings.Contains(err.Error(), "did not emit") {
+		t.Fatalf("error = %v, want did-not-emit timeout error", err)
 	}
 }
 

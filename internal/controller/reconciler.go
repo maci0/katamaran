@@ -207,7 +207,14 @@ func (r *Reconciler) tickOnce(ctx context.Context) {
 }
 
 func (r *Reconciler) reconcileAll(ctx context.Context) error {
-	list, err := r.Dynamic.Resource(MigrationGVR).List(ctx, metav1.ListOptions{})
+	// Watch-cache read: this loop re-lists every PollInterval for the
+	// controller's lifetime. Quorum reads would sustain one etcd
+	// round-trip per tick forever; a tick of staleness only delays
+	// dispatch/recovery by one interval (same rationale as recover's
+	// job list below).
+	list, err := r.Dynamic.Resource(MigrationGVR).List(ctx, metav1.ListOptions{
+		ResourceVersion: "0",
+	})
 	if err != nil {
 		return fmt.Errorf("list Migrations: %w", err)
 	}
@@ -1016,6 +1023,9 @@ func (r *Reconciler) lookupDestPodNode(ctx context.Context, id orchestrator.Migr
 	}
 	pods, err := r.Kube.CoreV1().Pods(orchestrator.DefaultJobNamespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "batch.kubernetes.io/job-name=" + orchestrator.DestJobName(id),
+		// Watch-cache read: the dest Job reached Complete before this
+		// lookup runs, so spec.nodeName landed in the cache minutes ago.
+		ResourceVersion: "0",
 	})
 	if err != nil {
 		return "", err
