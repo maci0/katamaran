@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-26
+## [0.4.1] - 2026-08-26
+
+v0.4.0 was tagged but its release run failed before publishing anything:
+no images, no GitHub Release. Everything below ships under v0.4.1.
 
 ### Added
 
@@ -411,8 +414,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.0
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.1
 [0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/maci0/katamaran/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/maci0/katamaran/compare/v0.1.1...v0.1.2
