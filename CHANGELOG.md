@@ -7,81 +7,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-26
+
 ### Added
 
-- Mid-flight controller-restart recovery for ReplayCmdline mode.
-  `Orchestrator.Resume(ctx, id, req) (created bool, err error)`
-  re-attempts the resolve-source-pod + submit-dest-job staging step
-  that previously ran in a goroutine inside katamaran-mgr. If the
-  leader pod restarts between source-job creation and dest-job
-  creation, the new leader's recovery loop calls Resume on every
-  tick (idempotent: returns `(false, nil)` when the dest Job already
-  exists) until the dest is up. Without this branch the migration
-  would have stalled forever: source running, no dest, recovery
-  loop spinning until timeout.
-- `orchestrator.SourceJobName(id)` / `DestJobName(id)` helpers
-  exposing the `katamaran-{source,dest}-<id>` naming convention so
-  the controller's recovery path constructs job names from the CR's
-  `.status.migrationID` without round-tripping through label
-  listing.
-- `katamaran_migrations_resumed_total` counter exposed at
-  `/debug/vars` and `/metrics` on katamaran-mgr. Increments only
-  when `Orchestrator.Resume` actually creates the dest Job during
-  recovery (idempotent no-ops on subsequent reconcile ticks do not
-  bump the counter). Live-verified on minikube against v0.2.0
-  before the v0.3.0 rebase.
+- Kata sandbox adoption. A migrated VM can now be handed back to
+  Kubernetes as a running pod instead of being left as a bare QEMU
+  process. `spec.adoptVM: true` on a Migration makes the controller
+  create an adoption pod on the destination node once the migration
+  succeeds. Three pieces make that work:
+  - `katamaran-factory`, a gRPC server implementing Kata's
+    `CacheService` (`GetBaseVM` / `Config` / `Status` / `Quit`). It
+    watches `/run/vc/vm/` for the `migration-meta.json` the dest Job
+    writes and serves the migrated VM's state to the Kata shim. Runs
+    as a DaemonSet sidecar; the init container points Kata's
+    `vm_cache_endpoint` at its socket.
+  - `internal/migration`'s `surviveContainerExit`, which re-parents the
+    migrated QEMU (and its KVM helper kernel threads) into
+    `/sys/fs/cgroup/katamaran-adopted/<sandbox-id>` so it outlives the
+    dest Job container's cgroup.
+  - `containerd-shim-katamaran-adopted-v2`, a containerd v2 shim that
+    attaches to that surviving QEMU and exposes it as a containerd task.
+    It serves both the v2 and v3 TTRPC TaskService APIs (containerd
+    2.2.x dispatches to v2), resolves the pid from the surviving cgroup,
+    and implements Create/Start/State/Wait/Kill/Delete/Connect/Pids.
+    Enabled by `config/crd/runtimeclass-adopted.yaml`. Exec, checkpoint,
+    and QMP pause/resume are not wired.
+- Validating admission webhook on katamaran-mgr that denies replacement
+  pods while an adoption is pending, closing the race where a workload
+  controller sees zero replicas between the source-pod delete and the
+  adoption-pod create and dispatches a cold replacement. Covers
+  ReplicaSet (so Deployments), StatefulSet, DaemonSet, and Job owners.
+  Certificates are self-signed in-process (ECDSA P-256) and the
+  `caBundle` is patched by the leader only, so no cert-manager
+  dependency. `failurePolicy: Ignore` keeps the cluster usable when mgr
+  is down. New flags: `--webhook-addr`, `--webhook-service`,
+  `--webhook-namespace`, `--disable-webhook`.
+- Multi-disk migration. `--drive-id` accepts a comma-separated list.
+  Source issues a `drive-mirror` per drive and waits for every mirror to
+  reach Ready before RAM pre-copy; dest exports each drive from a single
+  NBD server.
+- Automatic destination node selection. `spec.destNode` is now optional.
+  When omitted the controller copies the source pod's nodeSelector and
+  tolerations onto the dest Job, adds anti-affinity excluding the source
+  node, and lets the scheduler place it. New `spec.destNodeSelector`
+  constrains that choice by label without naming a node.
+- `spec.sourceCleanup` controls the source pod after a successful
+  migration: `none` (default), `delete`, or `orphan` (strip
+  ownerReferences, then delete, so the owner does not reschedule).
+- Mid-flight controller-restart recovery via
+  `Orchestrator.Resume(ctx, id, req) (created bool, err error)`. If the
+  mgr leader dies between source-Job and dest-Job creation in
+  ReplayCmdline mode, the new leader re-runs the staging step on every
+  reconcile tick instead of letting the migration stall until
+  StatusTimeout. Counted by `katamaran_migrations_resumed_total`.
+  `orchestrator.SourceJobName(id)` / `DestJobName(id)` expose the
+  `katamaran-{source,dest}-<id>` naming the recovery path needs.
+- Per-migration Prometheus gauges on the controller's `/metrics`,
+  labeled by `migration_id`: `katamaran_migration_ram_transferred_bytes`,
+  `_ram_total_bytes`, `_phase`, `_downtime_ms`, `_applied_downtime_ms`,
+  `_rtt_ms`. Sourced from the existing progress markers, no new QEMU
+  queries.
+- `dest-starting`, `src-starting`, and `cutover` phases in the status
+  stream, so a migration's progress is visible before RAM transfer
+  starts and at the VM pause.
+- Dashboard migration history: last 100 completed migrations in memory,
+  served by `GET /api/history` and included in `GET /api/status`, with a
+  UI table. Resets on restart.
+- `spec.cniConvergenceDelaySeconds` and the `--cni-convergence-delay`
+  flag, a per-migration override for how long the source holds the IP
+  tunnel open after cutover while the CNI rebinds the pod.
+- `make lint-shell`, which shellchecks every tracked `.sh` file via
+  `git ls-files` so scripts added outside `scripts/` cannot escape
+  linting. CI runs it, plus a native arm64 job for vet, tests, and fuzz
+  seeds.
 
 ### Changed
 
-- Dashboard: vendored the two runtime CDN scripts into the binary.
-  `index.html` previously loaded Tailwind CSS 3.4.17 from
-  `cdn.tailwindcss.com` (no SRI hash) and Chart.js 4.5.1 from
-  `cdn.jsdelivr.net` on every page load. Both files now live under
-  `internal/dashboard/assets/` and are served same-origin from
-  `/assets/` via `go:embed` (immutable, versioned filenames). This
-  removes unverified remote script execution from the dashboard
-  origin (a compromised CDN or hostile network path could otherwise
-  run arbitrary script in a page that starts/stops live VM migrations), and
-  makes the UI work on air-gapped or egress-restricted clusters
-  where the CDNs never load. Chart.js bytes were verified against the
-  SRI hash that was already pinned in-tree before vendoring. The
-  Content-Security-Policy drops both CDN origins (`script-src` /
-  `style-src` are now `'self' 'unsafe-inline'` only).
-
-- Docs (`README.md`, `docs/INSTALL.md`, `docs/USAGE.md`,
-  `docs/TESTING.md`, `internal/orchestrator/templates/job-dest.yaml`):
-  fixed every stale reference to `deploy/job-{source,dest}.yaml` (the
-  v0.1.0 release deleted those files; the canonical templates have
-  lived under `internal/orchestrator/templates/` since). README §6's
-  manual-jobs walkthrough now invokes `deploy/migrate.sh` (which
-  renders the canonical templates) instead of the broken
-  `envsubst < deploy/job-source.yaml` recipe. Job-template comment
-  on `cmdline-dir` rewritten to cover both shell-driven (kubectl cp)
-  and orchestrator-driven (apiserver pod-log fetch) population paths.
+- Dashboard Tailwind and Chart.js are vendored under
+  `internal/dashboard/assets/` and served same-origin via `go:embed`
+  with versioned filenames. The CSP no longer lists any CDN origin. This
+  removes unverified remote script execution from an origin that can
+  start and stop live VM migrations, and makes the UI work on air-gapped
+  clusters. Chart.js bytes were verified against the SRI hash already
+  pinned in-tree.
+- `deploy/manager.yaml` is the manager manifest's home; it moved out of
+  `config/crd/`. The dashboard command was renamed to match its binary.
+- Dest Job memory limit raised 4Gi to 8Gi to cover the `/dev/shm`-backed
+  memory-backend-file allocation, which is charged to the container's
+  cgroup. The previous limit OOMKilled larger VMs.
+- Source's wait for the dest QEMU raised 25s to 60s. On a freshly added
+  worker, dest scheduling plus image pull plus virtiofsd bind plus QEMU
+  spawn overran the old budget and the first `migrate` hit connection
+  refused.
+- Job `activeDeadlineSeconds` and the controller's `StatusTimeout` both
+  rounded up to 4h to cover drive-mirror on large disks plus CNI
+  convergence. The previous 900s silently capped mirroring at 15
+  minutes.
+- Controller and dashboard reads come from the apiserver watch cache
+  rather than quorum reads, source pod logs are followed rather than
+  re-fetched on a rolling window, and transferring-phase status patches
+  are coalesced to one per 10s. One poll tick of staleness in exchange
+  for far less apiserver and etcd load.
+- A source-side QMP stall after the VM pause is treated as a successful
+  handover rather than an error: kata-shim routinely tears the source
+  QEMU down once the destination has resumed.
+- RBAC: katamaran-mgr gains pod `create`/`patch`/`delete` for adoption
+  and source cleanup, and scoped `get`/`update` on its own
+  ValidatingWebhookConfiguration so it can patch its `caBundle` and
+  nothing else. The webhook Service routes only to the leader replica.
+- Byte sizes in the dashboard use IEC units, and migration duration is
+  measured on the monotonic clock.
+- `go.mod` on k8s.io v0.36.4 and protobuf v1.36.12.
 
 ### Removed
 
 - `orchestrator.ErrReplayCmdlineNotSupported` and the `*rest.Config`
   field on `native`. Both were load-bearing only for the v0.1.x
-  SPDY/stager-pod cmdline-replay pipeline (removed in v0.2.0). The
-  `ReplayCmdline` path now needs nothing beyond the standard
-  `kubernetes.Interface`, so `NewFromClient(cs)` is fully featured for
-  tests too. `New` / `NewFromKubeconfig` still exist and produce the
-  same clientset; only the dead error / dead field are gone. Drops
-  the `TestNative_Apply_RejectsReplayCmdline` test that asserted on
-  the dead error.
-- `katamaran-dashboard` Role: dropped `pods/exec create` and `pods
-  create / delete` (namespaced). Same v0.2.0 cleanup that the
-  controller's RBAC already got. Dashboard's in-process orchestrator
-  only needs `jobs create/delete/get/list/watch` + `pods
-  get/list/watch` + `pods/log get`. Cluster-scope `pods
-  delete/patch` in the separate ClusterRole stays, and those are used
-  by the v0.3.0 source-pod cleanup feature. Apply the updated
-  `deploy/dashboard.yaml` when upgrading.
-- `cmd/katamaran-mgr/main.go` package doc: removed the
-  "pods/exec, transient stager pods for replayCmdline" line that
-  described the v0.1.x RBAC the controller no longer needs.
+  SPDY/stager-pod cmdline-replay pipeline removed in v0.2.0.
+  `NewFromClient(cs)` is now fully featured, tests included.
+- `katamaran-dashboard` Role: `pods/exec create` and namespaced `pods
+  create`/`delete`. The in-process orchestrator needs only `jobs
+  create/delete/get/list/watch`, `pods get/list/watch`, and `pods/log
+  get`. Cluster-scope `pods delete/patch` stays for source-pod cleanup.
+  Apply the updated `deploy/dashboard.yaml` when upgrading.
+- v0.1.x SPDY-era RBAC grants and the doc lines describing them.
 
+### Fixed
+
+- Dest Job cleanup runs on a cancellation-proof context, so a Migration
+  CR deleted while Apply is still waiting for dest scheduling no longer
+  orphans Jobs until their `activeDeadlineSeconds` expires.
+- CR deletion is deferred until the worker registers its cancel func,
+  and in-flight dispatch is cancelled on delete.
+- Abandoned status streams and the config poller exit instead of
+  wedging; orchestrator shutdown is bounded; QMP timeouts are reported
+  as timeouts rather than generic failures.
+- The migrate stop endpoint actually calls `Orchestrator.Stop`.
+- Errors that previously vanished are surfaced: poller failures, stop
+  path failures, pending-mark failures, dest migration cleanup, and shim
+  failures.
+- Marker integers that are malformed or out of range are rejected in
+  `parseInt64` instead of being silently coerced.
+- Pod references in the Migration CRD are validated against DNS-1123 and
+  pinned to their own namespace. Source pod log URL paths are
+  URL-encoded so a name containing `/` cannot address `/exec` or `/log`.
+- Temporary cmdline files are removed at exit and on failure paths, the
+  factory VM queue is bounded, and shim log growth is capped.
+- `GetBaseVM` does not block when the queue is empty; it returns
+  Unavailable so kata-shim falls back to cold VM creation instead of
+  stalling every fresh sandbox.
+- Arch-specific Kata QEMU binary is picked for cmdline replay.
+- Certificate validity uses calendar years and timestamps are UTC.
+- Stale shim sockets are cleaned up, and the dest Job is removed when
+  re-rendering fails.
 ## [0.3.0] - 2026-05-07
 
 ### Added
@@ -326,5 +405,10 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/maci0/katamaran/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/maci0/katamaran/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/maci0/katamaran/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/maci0/katamaran/releases/tag/v0.1.0
