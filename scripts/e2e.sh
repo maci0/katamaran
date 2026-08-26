@@ -1,5 +1,5 @@
 #!/bin/bash
-# e2e.sh — Unified E2E test harness for Katamaran live migration.
+# e2e.sh: Unified E2E test harness for Katamaran live migration.
 #
 # Usage: ./scripts/e2e.sh [options]
 #
@@ -126,30 +126,14 @@ PROFILE="katamaran-e2e-${PROVIDER}-${CNI}-${STORAGE}-${METHOD}"
 # node_exec and node_cp_to are provided by lib.sh.
 
 # qmp_hotplug_disk attaches a virtio-blk data disk to a running QEMU via QMP.
-# Uses a fixed PCI address (bus=pci-bridge-0,addr=0x8) so source and destination
-# have matching PCI topology for live migration.
+# The QMP conversation lives in scripts/qmp-hotplug-disk.py, which runs on the
+# node (only the stdlib is available there).
 #
 # Usage: qmp_hotplug_disk <node> <qmp_socket> <disk_image_path>
 qmp_hotplug_disk() {
     local node="$1" sock="$2" disk="$3"
-    local tmp
-    tmp=$(mktemp)
-    cat > "${tmp}" <<PYEOF
-import socket, json, time, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sys.argv[1])
-s.recv(4096)
-s.sendall(b'{"execute":"qmp_capabilities"}\n')
-time.sleep(0.2); s.recv(4096)
-s.sendall(json.dumps({"execute":"blockdev-add","arguments":{"driver":"raw","node-name":"drive-virtio-disk0","file":{"driver":"file","filename":sys.argv[2]}}}).encode() + b"\n")
-time.sleep(0.2); s.recv(4096)
-s.sendall(json.dumps({"execute":"device_add","arguments":{"driver":"virtio-blk-pci","drive":"drive-virtio-disk0","id":"data-disk0","bus":"pci-bridge-0","addr":"0x8"}}).encode() + b"\n")
-time.sleep(0.3); s.recv(4096)
-s.close()
-PYEOF
-    node_cp_to "${node}" "${tmp}" "/tmp/qmp-hotplug.py"
-    rm -f "${tmp}"
-    node_exec "${node}" "${SUDO} python3 /tmp/qmp-hotplug.py '${sock}' '${disk}'"
+    node_cp_to "${node}" "${SCRIPT_DIR}/qmp-hotplug-disk.py" "/tmp/qmp-hotplug-disk.py"
+    node_exec "${node}" "${SUDO} python3 /tmp/qmp-hotplug-disk.py '${sock}' '${disk}'"
 }
 
 cleanup() {
@@ -478,7 +462,7 @@ if [[ "${STORAGE}" == "nfs" ]]; then
     for node in "${NODE1}" "${NODE2}"; do
         node_exec "${node}" "${SUDO} mkdir -p ${NFS_MNT}"
         if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=3,nolock ${NFS_SERVER_IP}:${NFS_EXPORT_PATH} ${NFS_MNT}" 2>/dev/null; then
-            # NFSv4 with fsid=0 exports the path as root — mount via / not the export path.
+            # NFSv4 with fsid=0 exports the path as root, so mount via / not the export path.
             if ! node_exec "${node}" "${SUDO} mount -t nfs -o vers=4 ${NFS_SERVER_IP}:/ ${NFS_MNT}" 2>/dev/null; then
                 error "NFS mount failed on ${node} (tried v3 and v4)."
                 exit 1
@@ -556,7 +540,7 @@ SRC_QEMU_PID=$(node_exec "${NODE1}" "${SUDO} cat ${SRC_SANDBOX_DIR}/pid")
 SRC_CMDLINE=$(node_exec "${NODE1}" "${SUDO} cat /proc/${SRC_QEMU_PID}/cmdline | tr '\0' '\n'")
 # Extract the nvdimm image path from source (needed for writable copy on dest).
 SRC_NVDIMM_PATH=$(echo "${SRC_CMDLINE}" | sed -n 's/.*mem-path=\([^,]*\).*/\1/p' | grep -v '/dev/shm' | head -1 || true)
-success "Source QEMU PID: ${SRC_QEMU_PID} — cmdline captured ($(echo "${SRC_CMDLINE}" | wc -l) args)"
+success "Source QEMU PID: ${SRC_QEMU_PID}, cmdline captured ($(echo "${SRC_CMDLINE}" | wc -l) args)"
 
 log "Removing tc mirred redirect on source pod's eth0..."
 # Kata installs a tc filter that redirects ALL ingress on eth0 to tap0_kata.

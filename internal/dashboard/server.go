@@ -62,6 +62,7 @@ const (
 
 	// Load generator intervals.
 	httpLoadInterval  = 200 * time.Millisecond
+	pingInterval      = 200 * time.Millisecond
 	httpClientTimeout = 2 * time.Second
 
 	// maxResponseDiscard is the maximum response body bytes to consume
@@ -70,7 +71,7 @@ const (
 )
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, `katamaran-dashboard — Web dashboard for Kata Containers live migration
+	fmt.Fprintf(w, `katamaran-dashboard: Web dashboard for Kata Containers live migration
 
 Usage:
   katamaran-dashboard [flags]

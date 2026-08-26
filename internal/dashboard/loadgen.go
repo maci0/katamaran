@@ -155,7 +155,11 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		cmd := exec.CommandContext(ctx, "ping", "-i", "0.2", pingTarget)
+		// Shelling out to ping: an in-process ICMP echo needs CAP_NET_RAW or a
+		// net.ipv4.ping_group_range covering this uid, neither of which the
+		// dashboard pod holds.
+		interval := strconv.FormatFloat(pingInterval.Seconds(), 'f', -1, 64)
+		cmd := exec.CommandContext(ctx, "ping", "-i", interval, pingTarget)
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			slog.Error("Failed to create ping stdout pipe", "target", pingTarget, "error", err, "request_id", reqID)
