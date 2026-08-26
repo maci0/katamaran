@@ -525,6 +525,6 @@ func TestSurviveContainerExit_MissingPidFileIsBestEffort(t *testing.T) {
 	adoptedCgroupRoot = t.TempDir() + "/no-such-tree"
 	t.Cleanup(func() { adoptedCgroupRoot = prev })
 
-	// No pid file and no cgroup tree — must not panic, must not error.
+	// No pid file and no cgroup tree: must not panic, must not error.
 	surviveContainerExit("/no/such/qmp.sock")
 }

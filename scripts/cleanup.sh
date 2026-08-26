@@ -1,5 +1,5 @@
 #!/bin/bash
-# cleanup.sh — Mass cleanup of Katamaran test environments.
+# cleanup.sh: Mass cleanup of Katamaran test environments.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

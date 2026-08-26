@@ -27,7 +27,7 @@ const maxPodLogScanBytes = 16 * 1024 * 1024
 
 // maxMarkerB64Size caps the base64 payload accepted from a single marker
 // line before we attempt to allocate the decoded buffer. 6 MiB of base64
-// decodes to ~4.5 MiB — a comfortable headroom over real cmdline /
+// decodes to ~4.5 MiB, a comfortable headroom over real cmdline /
 // VMConfig payloads while preventing a malicious or runaway pod log from
 // driving an unbounded allocation.
 const maxMarkerB64Size = 6 * 1024 * 1024
@@ -80,8 +80,8 @@ func ValidateDNSSubdomain(s string) bool {
 // and the parsed <namespace, pod> tuple. Two URL/client pairs are
 // exposed: endpoint/client for one-shot fetches (bounded by the shared
 // client's overall Timeout) and followEndpoint/followClient for
-// long-lived followed streams, where the per-attempt context — not a
-// fixed client deadline — must bound the transfer.
+// long-lived followed streams, where the per-attempt context, not a
+// fixed client deadline, must bound the transfer.
 type podLogClient struct {
 	client         *http.Client
 	endpoint       string
@@ -135,7 +135,7 @@ func newPodLogClient(ref string) (*podLogClient, error) {
 // fetchCmdlineFromPodLog retrieves the source QEMU cmdline that the
 // source binary stamped on its own pod log as a
 // `KATAMARAN_CMDLINE_B64=<base64>` line. ref is `<namespace>/<podname>`.
-// Returns the path of a local file containing the decoded bytes — the
+// Returns the path of a local file containing the decoded bytes: the
 // caller (dest's spawnReplayedQEMU) treats it the same as the legacy
 // --replay-cmdline path.
 //

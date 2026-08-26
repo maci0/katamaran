@@ -40,7 +40,7 @@ func TestNewClient_FullHandshake(t *testing.T) {
 func TestNewClient_NoGreeting(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		// No greeting sent — client should time out on greeting read and proceed.
+		// No greeting sent: the client should time out on greeting read and proceed.
 		buf := make([]byte, 4096)
 		conn.Read(buf)
 		conn.Write([]byte(`{"return":{}}` + "\n"))
@@ -86,7 +86,7 @@ func TestNewClient_BadSocket(t *testing.T) {
 func TestNewClient_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		// Block until client disconnects — never send greeting.
+		// Block until client disconnects, never sending greeting.
 		io.Copy(io.Discard, conn)
 	})
 
@@ -277,7 +277,7 @@ func TestExecute_ContextCancelled(t *testing.T) {
 		qmptest.QMPHandshake(conn)
 		buf := make([]byte, 4096)
 		conn.Read(buf)
-		// Block until client disconnects — never respond.
+		// Block until client disconnects, never responding.
 		io.Copy(io.Discard, conn)
 	})
 
@@ -825,7 +825,7 @@ func TestMigrateInfo_Unmarshal(t *testing.T) {
 func TestNewClient_ReadGreetingError(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		// Close immediately after accept — read will fail.
+		// Close immediately after accept, so the read fails.
 		conn.Close()
 	})
 
@@ -896,7 +896,7 @@ func TestResponse_Unmarshal(t *testing.T) {
 func TestArgs_SealedInterface(t *testing.T) {
 	t.Parallel()
 	// Verify all Args types implement the sealed qmpArgs() method.
-	// This is a compile-time check — if any type doesn't implement Args,
+	// This is a compile-time check: if any type doesn't implement Args,
 	// the package won't compile.
 	var _ Args = NBDServerStartArgs{}
 	var _ Args = NBDServerAddArgs{}
@@ -964,7 +964,7 @@ func TestWaitForEvent_EOF(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Close immediately after handshake — EOF on next read.
+		// Close immediately after handshake, forcing EOF on the next read.
 		conn.Close()
 	})
 
@@ -1089,7 +1089,7 @@ func TestReadLine_MaxLineSizeGuard(t *testing.T) {
 			}
 			written += n
 		}
-		// Close without newline — forces ReadBytes to return with error.
+		// Close without newline, forcing ReadBytes to return with error.
 		conn.Close()
 	})
 

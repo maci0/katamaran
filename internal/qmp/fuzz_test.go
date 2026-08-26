@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// FuzzResponseUnmarshal targets JSON unmarshaling of QMP responses —
+// FuzzResponseUnmarshal targets JSON unmarshaling of QMP responses,
 // the primary attack surface since clients parse arbitrary data from QEMU sockets.
 func FuzzResponseUnmarshal(f *testing.F) {
 	f.Add([]byte(`{"return":{}}`))

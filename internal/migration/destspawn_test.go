@@ -251,7 +251,7 @@ func TestTransformCmdline_NvdimmPathSubstitution(t *testing.T) {
 func TestTransformCmdline_DropsBareIncoming(t *testing.T) {
 	t.Parallel()
 	// e.g. an existing -incoming with no positional follower (defer-style)
-	// followed by an unrelated flag — we must consume exactly one slot after
+	// followed by an unrelated flag: we must consume exactly one slot after
 	// -incoming, even when that slot is benign-looking.
 	args := []string{
 		"/opt/kata/bin/qemu-system-x86_64",

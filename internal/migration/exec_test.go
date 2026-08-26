@@ -80,7 +80,7 @@ func TestRunCmdInNetns_WithNetns(t *testing.T) {
 		t.Skip("requires linux")
 	}
 	t.Parallel()
-	// Use a nonexistent PID so nsenter always fails — even as root.
+	// Use a nonexistent PID so nsenter always fails, even as root.
 	// This ensures the test detects regressions where runCmdInNetns
 	// silently skips the nsenter code path.
 	err := runCmdInNetns(context.Background(), "/proc/999999999/ns/net", "true")

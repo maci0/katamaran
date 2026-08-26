@@ -369,7 +369,7 @@ func newInClusterAPIClient() (*inClusterAPIClient, error) {
 // the third empty response it returns a clear error.
 //
 // Any non-2xx response or transport error during a single attempt is treated
-// as a transient failure and aborts the call immediately (no retry) — the
+// as a transient failure and aborts the call immediately (no retry): the
 // retry budget is reserved for the "Pod exists but has no IP yet" race.
 func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 	host, port, err := resolveAPIServerHostPort()
@@ -384,7 +384,7 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 
 	// Escape ns/name as single path segments: callers may pass values with
 	// '/' (the orchestrator validation allowlist permits it for legitimate
-	// path-like arg values), but here they must address one Pod resource —
+	// path-like arg values), but here they must address one Pod resource,
 	// not subresources like /log or /exec.
 	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s",
 		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(name))
@@ -399,7 +399,7 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 		if ip != "" {
 			return ip, nil
 		}
-		// Empty IP — sleep before next attempt unless this was the last.
+		// Empty IP: sleep before next attempt unless this was the last.
 		if i < attempts-1 {
 			slog.Debug("Pod has no IP yet; will retry", "pod", ns+"/"+name, "attempt", i+1, "backoff", backoffs[i])
 			timer := time.NewTimer(backoffs[i])

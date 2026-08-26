@@ -332,7 +332,7 @@ func TestWaitForMigrationComplete_QMPStallTreatedAsSuccess(t *testing.T) {
 
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Accept the first query-migrate command, never reply — simulates
+		// Accept the first query-migrate command, never reply, simulating
 		// kata-shim tearing down source QEMU after handover so the QMP
 		// socket stops responding.
 		qmptest.ConsumeCommand(conn)
@@ -359,7 +359,7 @@ func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Block until client disconnects — never respond.
+		// Block until client disconnects, never responding.
 		io.Copy(io.Discard, conn)
 	})
 
@@ -751,7 +751,7 @@ func TestMigrationTerminalError(t *testing.T) {
 func TestMeasureRTT(t *testing.T) {
 	// measureRTT uses raw ICMP which needs CAP_NET_RAW (or
 	// net.ipv4.ping_group_range covering this uid). Skip when we can't
-	// open the listener instead of failing — production source pods run
+	// open the listener instead of failing: production source pods run
 	// privileged and always have the capability.
 	if c, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0"); err != nil {
 		t.Skipf("ICMP socket not available in this test env: %v", err)
@@ -907,7 +907,7 @@ func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
 		t.Fatalf("RunSource with auto-downtime fallback: %v", err)
 	}
 
-	// Prove the AutoDowntime branch actually ran — without this, the test
+	// Prove the AutoDowntime branch actually ran: without this, the test
 	// would silently pass if the branch were skipped (since DowntimeLimitMS=25
 	// matches both the fallback value and the non-AutoDowntime default).
 	if got := rttCalls.Load(); got != 1 {
@@ -928,7 +928,7 @@ func TestRunSource_ContextCancelled(t *testing.T) {
 
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)
-		// Block until client disconnects — force context cancellation.
+		// Block until client disconnects, forcing context cancellation.
 		io.Copy(io.Discard, conn)
 	})
 
@@ -988,7 +988,7 @@ func TestRunSource_PodResolver_PopulatesConfig(t *testing.T) {
 	const (
 		sandboxUUID = "11111111-2222-3333-4444-555555555555"
 		fakeQEMUPID = 4242
-		resolvedIP  = "fd00::1" // IPv6 — guaranteed to mismatch testDestIP (IPv4)
+		resolvedIP  = "fd00::1" // IPv6, guaranteed to mismatch testDestIP (IPv4)
 	)
 
 	// Stub the apiserver lookup so the resolver returns a known IP.
@@ -1026,7 +1026,7 @@ func TestRunSource_PodResolver_PopulatesConfig(t *testing.T) {
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
-		// VMIP and QMPSocket intentionally left zero — must be populated by resolver.
+		// VMIP and QMPSocket intentionally left zero: they must be populated by resolver.
 	})
 	if err == nil {
 		t.Fatal("expected family-mismatch error, got nil (resolver may not have run)")
@@ -1082,7 +1082,7 @@ func TestRunSource_EmitCmdline_RemovesFileAtExit(t *testing.T) {
 	origSleep := destReplaySleep
 	destReplaySleep = 10 * time.Millisecond
 	t.Cleanup(func() { destReplaySleep = origSleep })
-	// The run fails at the first QMP dial (nonexistent socket) — after the
+	// The run fails at the first QMP dial (nonexistent socket), after the
 	// capture, which is the point: removal must happen on failure paths too.
 	err := RunSource(context.Background(), SourceConfig{
 		PodName:         "vm-a",

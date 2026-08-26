@@ -123,7 +123,7 @@ func TestSpecToRequest_MissingRequired(t *testing.T) {
 }
 
 func TestSpecToRequest_OptionalDestNode(t *testing.T) {
-	// destNode is now optional — specToRequest should succeed without it.
+	// destNode is now optional: specToRequest should succeed without it.
 	obj := map[string]any{
 		"spec": map[string]any{
 			"sourcePod": map[string]any{"namespace": "default", "name": "p"},
@@ -159,7 +159,7 @@ func TestSpecToRequest_DestNodeSelector(t *testing.T) {
 	}
 }
 
-// Compile-time check: Discoverer is the right shape — keeps drift between
+// Compile-time check: Discoverer is the right shape. Keeps drift between
 // the orchestrator package's interface and what Reconciler.dispatch calls
 // from showing up at runtime.
 var _ orchestrator.Discoverer = (orchestrator.Discoverer)(nil)
@@ -411,7 +411,7 @@ func TestReconciler_DispatchResolvesPodRequest(t *testing.T) {
 
 // TestResolveSourcePodDiscovery_FailuresAndSelectorMerge pins two contracts
 // dispatch depends on. First, every resolution failure must return an error
-// AND leave a Failed status on the CR naming the failed step — that status is
+// AND leave a Failed status on the CR naming the failed step. That status is
 // what a kubectl describe shows the operator, and without the early return
 // dispatch would Apply a half-resolved Request (empty SourceNode/DestIP).
 // Second, in auto-select mode the source pod's nodeSelector merges with any
@@ -1035,7 +1035,7 @@ func TestMarkTracking_SingleClaim(t *testing.T) {
 // contract: Run drives tickOnce on a ticker for the life of the leader,
 // so a panicking reconcile pass must be absorbed (counted in
 // mWorkerPanics) and a List failure must surface as a counted
-// mReconcileErrors bump — neither may kill the goroutine, which would
+// mReconcileErrors bump: neither may kill the goroutine, which would
 // silently halt all reconciliation while the pod stays "healthy".
 func TestTickOnce_SurvivesPanicAndListErrors(t *testing.T) {
 	// Not parallel: asserts deltas on process-global expvar counters.
@@ -1267,7 +1267,7 @@ func newAdoptReconciler(t *testing.T, orch orchestrator.Orchestrator, cr *unstru
 
 // On migration success with adoptVM, the source-pod controller must be
 // marked pending so the webhook denies replacement pods. This mark must
-// happen even when sourceCleanup=none — the source container is killed
+// happen even when sourceCleanup=none: the source container is killed
 // when QEMU pauses, so the controller will otherwise spawn a replacement
 // to refill its replica count. Regression: the mark used to live inside
 // the sourceCleanup!=none branch and never ran for sourceCleanup=none.
@@ -1291,7 +1291,7 @@ func TestReconciler_MarksPendingWhenSourceCleanupNone(t *testing.T) {
 }
 
 // Non-managed owner kinds (e.g. a bare ReplicationController, or no
-// controller at all) must NOT be marked — only built-in workload
+// controller at all) must NOT be marked: only built-in workload
 // controllers that auto-refill replicas are denied.
 func TestReconciler_DoesNotMarkUnmanagedOwner(t *testing.T) {
 	const uid types.UID = "rc-uid"
@@ -1313,7 +1313,7 @@ func TestReconciler_DoesNotMarkUnmanagedOwner(t *testing.T) {
 // scheduled pod. Regression: the node resolution inside native.Apply only
 // mutates its local Request copy, so the reconciler used to see an empty
 // DestNode and silently skip adoption while keeping the webhook's
-// pending mark active — shrinking the workload by one replica.
+// pending mark active, shrinking the workload by one replica.
 func TestReconciler_AdoptVM_AutoSelectResolvesDestNode(t *testing.T) {
 	const rsUID types.UID = "rs-uid-autoselect"
 	const migID = "id-adopt1"

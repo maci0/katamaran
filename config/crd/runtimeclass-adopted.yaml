@@ -1,8 +1,8 @@
 # RuntimeClass for adoption pods created by katamaran-mgr after a
 # successful Migration with spec.adoptVM=true. The adoption pod uses
 # this runtime class (not kata-qemu) so containerd dispatches to
-# katamaran's own shim binary — `containerd-shim-katamaran-adopted-v2`,
-# resolved by name from the daemonset-installed PATH — which adopts
+# katamaran's own shim binary (`containerd-shim-katamaran-adopted-v2`,
+# resolved by name from the daemonset-installed PATH), which adopts
 # the surviving migrated QEMU instead of cold-booting a fresh VM.
 #
 # Status (May 2026): the shim is SCAFFOLDING only. Pods using this
@@ -15,8 +15,8 @@
 #
 # Until then, leaving spec.adoptVM=true with the default
 # runtimeClassName=kata-qemu (which controller.createAdoptionPod
-# uses today) produces an adoption pod that cold-boots a fresh VM
-# — the K8s view is correct (Deployment intact, no spurious pods)
+# uses today) produces an adoption pod that cold-boots a fresh VM:
+# the K8s view is correct (Deployment intact, no spurious pods)
 # but the migrated VM is not yet inherited.
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass

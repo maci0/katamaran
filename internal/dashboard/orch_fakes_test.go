@@ -20,11 +20,11 @@ type fakeOrchestrator struct {
 	stopCalls   int
 
 	// behaviour controls the StatusUpdate stream sent on Watch.
-	//   "success" — emit submitted + transferring + succeeded, then close.
-	//   "fail"    — emit submitted + failed (with err), then close.
-	//   "slow"    — emit submitted, hold the channel open until Stop is
+	//   "success": emit submitted + transferring + succeeded, then close.
+	//   "fail":    emit submitted + failed (with err), then close.
+	//   "slow":    emit submitted, hold the channel open until Stop is
 	//               called or the test cleanup cancels the run.
-	//   "watchlost" — emit submitted, then close without any terminal
+	//   "watchlost": emit submitted, then close without any terminal
 	//               phase, simulating a watch stream dying mid-migration.
 	behaviour string
 

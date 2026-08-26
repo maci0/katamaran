@@ -445,7 +445,7 @@ func TestRun_AutoDowntimeOverridesDowntimeWarning(t *testing.T) {
 		"--qmp", "/nonexistent/qmp.sock",
 		"--tunnel-mode", "none",
 	}, &stdout, &stderr)
-	// Bad QMP socket must surface as exit 1 — guarantees the warning was
+	// Bad QMP socket must surface as exit 1, which guarantees the warning was
 	// emitted on the path through to migration, not because validation
 	// short-circuited before the auto-downtime check ran.
 	if code != 1 {

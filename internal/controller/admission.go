@@ -12,7 +12,7 @@ import (
 // (ReplicaSet, StatefulSet, DaemonSet, or Job) whose source pod is
 // being migrated away as part of a Migration with adoptVM=true. While
 // the entry is present, the validating webhook denies any new Pod
-// whose controllerRef points at this controller — preventing it from
+// whose controllerRef points at this controller, preventing it from
 // spawning a fresh cold replacement during the window between the
 // source pod failing/terminating and the adoption pod being created.
 //
@@ -101,10 +101,10 @@ func (p *pendingAdoptionRegistry) MigrationFor(uid types.UID) string {
 // should be allowed.
 //
 // Denies pods whose controllerRef points at a managed-pod controller
-// (ReplicaSet, StatefulSet, DaemonSet, Job — any built-in workload
+// (ReplicaSet, StatefulSet, DaemonSet, Job: any built-in workload
 // controller that auto-creates replacement pods to keep its replica
 // count) currently flagged in pendingAdoption. Bypasses pods carrying
-// the `app.kubernetes.io/component=adopted-vm` label — those are
+// the `app.kubernetes.io/component=adopted-vm` label: those are
 // adoption pods created by the controller itself and inherit the
 // source pod's ownerReferences (Strategy A part 1), so without this
 // bypass the webhook would also deny the very pod that's supposed

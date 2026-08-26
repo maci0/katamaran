@@ -2,7 +2,7 @@
 //
 // QMP is a JSON-based protocol for programmatic control of a QEMU instance.
 // This client supports synchronous command execution and asynchronous event
-// waiting. It is NOT safe for concurrent use — callers must serialize calls
+// waiting. It is NOT safe for concurrent use: callers must serialize calls
 // to Execute and WaitForEvent externally. The internal mutex only protects
 // the connection state (nil check) and the buffered event queue.
 package qmp
@@ -142,7 +142,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 
 	if _, err := c.readLine(); err != nil {
 		if isTimeout(err) {
-			// Ignore timeout — QEMU likely skipped the greeting (wait=off).
+			// Ignore timeout: QEMU likely skipped the greeting (wait=off).
 		} else {
 			return fail(fmt.Errorf("reading QMP greeting: %w", err))
 		}
@@ -178,7 +178,7 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 	}
 
 	// Atomically prevent the AfterFunc from closing the connection.
-	// If stop() returns false, the callback already fired — conn is closed.
+	// If stop() returns false, the callback already fired, so conn is closed.
 	if !stop() {
 		return nil, fmt.Errorf("QMP handshake interrupted for %s: %w", socketPath, ctx.Err())
 	}
@@ -258,7 +258,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	// context is cancelled.
 	//
 	// callbackDone synchronizes the context.AfterFunc callback with our deferred
-	// SetDeadline(time.Time{}) clear — without it, the defer could race and undo
+	// SetDeadline(time.Time{}) clear, because without it, the defer could race and undo
 	// the deadline we just set to interrupt the read.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
@@ -337,7 +337,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout time.Duration) error {
 	c.mu.Lock()
 	conn := c.conn
-	// Check the buffered events first — an event might have arrived while we
+	// Check the buffered events first: an event might have arrived while we
 	// were executing a synchronous command.
 	for i, ev := range c.events {
 		if ev.Event == eventName {
@@ -365,7 +365,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 	// On context cancellation, shorten the read deadline instead of closing the
-	// connection — same strategy as Execute(). callbackDone prevents the deferred
+	// connection, same strategy as Execute(). callbackDone prevents the deferred
 	// SetReadDeadline(time.Time{}) from racing with the cancellation callback.
 	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
@@ -410,7 +410,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// events arriving between WaitForEvent calls would be silently
 		// dropped, causing subsequent WaitForEvent calls to hang. Log
 		// at INFO so production dest-job logs surface the events QEMU
-		// actually fires during migration — useful when chasing a
+		// actually fires during migration, useful when chasing a
 		// missing-RESUME hang where you can't enable debug logging
 		// on a stuck job.
 		if resp.Event != "" {

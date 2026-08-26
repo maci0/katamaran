@@ -381,8 +381,8 @@ func TestNative_Apply_AutoSelectSameNodeRejectedCleansUpDestJob(t *testing.T) {
 // compensation contract behind cleanupDestJob: a Migration CR deleted while
 // Apply is waiting for dest scheduling has no status.migrationID yet, so the
 // controller's Stop path cannot reach its Jobs. The compensating dest-Job
-// delete must therefore survive the very cancellation that aborted Apply —
-// issued on a cancellation-proof context (see cleanupContext) — instead of
+// delete must therefore survive the very cancellation that aborted Apply,
+// issued on a cancellation-proof context (see cleanupContext), instead of
 // failing instantly and orphaning the Job in the cluster until its
 // activeDeadlineSeconds expires.
 func TestNative_Apply_CancelDuringSchedulingWaitCleansUpDestJob(t *testing.T) {
@@ -576,7 +576,7 @@ func TestNative_Watch_TerminalSucceeded(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	// React to Get on either katamaran-{source,dest} by returning a Job
 	// whose conditions include JobComplete=True. fake.Clientset doesn't
-	// auto-update Job status from controller activity — we have to
+	// auto-update Job status from controller activity: we have to
 	// fabricate it. The Native.poll loop reports PhaseSucceeded as soon as
 	// the DEST Job is Complete (regardless of source's exit status).
 	cs.PrependReactor("get", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
@@ -722,7 +722,7 @@ func TestExpandShellVars(t *testing.T) {
 
 // TestExpandShellVars_NoBareNameExpansion pins the documented boundary
 // (see native_jobs.go): only ${NAME} is expanded. A bare $NAME must pass
-// through literally, and an unclosed ${ must too — rendered commands are
+// through literally, and an unclosed ${ must too: rendered commands are
 // shell-evaluated, so silent mangling of either would change every job.
 func TestExpandShellVars_NoBareNameExpansion(t *testing.T) {
 	t.Parallel()
@@ -781,7 +781,7 @@ func waitForJob(t *testing.T, cs *fake.Clientset, name string) *batchv1.Job {
 // 2s but poll fires PhaseSucceeded as soon as the dest Job reaches
 // Complete. If those land between tailProgress ticks, the
 // KATAMARAN_RESULT marker is in the source pod log but never copied
-// onto run.* — the terminal StatusUpdate would otherwise carry zeros.
+// onto run.*: the terminal StatusUpdate would otherwise carry zeros.
 func TestSucceededUpdate_RecoversFromTailRace(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset(
@@ -986,7 +986,7 @@ func TestNative_Resume_NoOpWhenNotReplay(t *testing.T) {
 }
 
 // TestNative_Resume_IdempotentWhenDestExists locks the contract that
-// Resume is a no-op once the dest Job is already created — letting the
+// Resume is a no-op once the dest Job is already created, letting the
 // recovery path call it on every reconcile tick without bumping counters.
 func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
 	t.Parallel()
@@ -1014,7 +1014,7 @@ func TestNative_Resume_IdempotentWhenDestExists(t *testing.T) {
 }
 
 // TestNative_Resume_ErrorsWhenSourceMissing covers the "source job
-// disappeared" case — Resume cannot proceed and surfaces the missing
+// disappeared" case: Resume cannot proceed and surfaces the missing
 // source so the reconciler can mark the CR Failed instead of looping.
 func TestNative_Resume_ErrorsWhenSourceMissing(t *testing.T) {
 	t.Parallel()

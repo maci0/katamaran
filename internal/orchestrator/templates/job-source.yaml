@@ -19,7 +19,7 @@ spec:
   # the Job mid-migration on exactly the workloads local-storage mode
   # exists for: storage sync up to storageSyncTimeout (2h) + RAM migration
   # up to migrationTimeout (1h) + dest replay startup wait (~1m) + CNI
-  # convergence delay (up to 10m), rounded up to 4h — matching the
+  # convergence delay (up to 10m), rounded up to 4h, matching the
   # controller's StatusTimeout budget. The previous 900s silently capped
   # drive-mirror at 15 minutes; the interim 7500s still killed Jobs at
   # 2h05m while storage sync alone may legitimately run up to 2h.

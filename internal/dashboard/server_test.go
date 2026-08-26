@@ -1614,7 +1614,7 @@ func TestHandlePingStart_RejectsUnknownFormField(t *testing.T) {
 func TestHandleMigrate_IgnoresQueryParams(t *testing.T) {
 	t.Parallel()
 	app := &App{}
-	// Send required fields via query string only — PostFormValue should ignore them.
+	// Send required fields via query string only: PostFormValue should ignore them.
 	req := httptest.NewRequest(http.MethodPost, "/api/migrate?source_node=node1&dest_node=node2&qmp_source=s&qmp_dest=d&dest_ip=10.0.0.2&vm_ip=10.244.1.5&tap=tap0&image=img", nil)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -1840,7 +1840,7 @@ func TestSetMigrationResult(t *testing.T) {
 // StartedAt/CompletedAt are RFC3339 UTC instants with CompletedAt not before
 // StartedAt, and DurationMS reflects the elapsed interval (non-negative,
 // matching the injected start offset) even when migrationStart carries no
-// monotonic clock reading — the degraded representation a restart or
+// monotonic clock reading, the degraded representation a restart or
 // deserialization would produce.
 func TestSetMigrationResult_HistoryTimes(t *testing.T) {
 	t.Parallel()
@@ -1909,7 +1909,7 @@ func TestHandleReadyz_WithScript(t *testing.T) {
 
 func TestHandleReadyz_NoScript(t *testing.T) {
 	t.Parallel()
-	// No orchestrator wired — readyz must report 503.
+	// No orchestrator wired: readyz must report 503.
 	app := &App{}
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -2142,7 +2142,7 @@ func TestPodsAndNodesEndpoints(t *testing.T) {
 // TestPodsAndNodesEndpoints_ErrorPaths pins the /api/pods and /api/nodes
 // status contracts for failures: a missing discoverer is a 503 (not wired,
 // same as readyz), while a discoverer that errors is a 502 (upstream
-// apiserver problem) — never a 200 with an empty body, which the UI would
+// apiserver problem), never a 200 with an empty body, which the UI would
 // render as "no VMs/nodes" instead of an error.
 func TestPodsAndNodesEndpoints_ErrorPaths(t *testing.T) {
 	t.Parallel()
@@ -2209,7 +2209,7 @@ func TestRunCommand_ScriptSuccess(t *testing.T) {
 }
 
 func TestMigrateHandler_PodPickerMode(t *testing.T) {
-	// Inject a fake Discoverer instead of stubbing kubectl on PATH —
+	// Inject a fake Discoverer instead of stubbing kubectl on PATH:
 	// the dashboard no longer shells out, so the resolver path runs
 	// through orchestrator.Discoverer directly.
 	disc := &stubDiscoverer{
@@ -2261,7 +2261,7 @@ func TestMigrateHandler_PodPickerMode(t *testing.T) {
 }
 
 func TestMigrateHandler_PodPickerSameNodeRejected(t *testing.T) {
-	// Source pod resolves to the same node as dest — should 400.
+	// Source pod resolves to the same node as dest, so it must 400.
 	disc := &stubDiscoverer{
 		pods:  []orchestrator.PodInfo{{Namespace: "default", Name: "vm-a", Node: "same-node", PodIP: "10.0.0.5"}},
 		nodes: []orchestrator.NodeInfo{{Name: "same-node", InternalIP: "10.0.0.1"}},

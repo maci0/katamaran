@@ -124,7 +124,7 @@ func TestHandleAdmit_FailsOpenOnNilRequest(t *testing.T) {
 // hard invariants are: it must never panic on malformed input (including a nil
 // Request, a non-Pod embedded object, or truncated JSON), and it must always
 // emit an HTTP 200 carrying a decodable AdmissionReview with a non-nil
-// Response — anything else either crashes the webhook or wedges pod creation
+// Response: anything else either crashes the webhook or wedges pod creation
 // cluster-wide.
 func FuzzHandleAdmit(f *testing.F) {
 	rec := controller.NewReconciler(nil, nil, nil, nil)

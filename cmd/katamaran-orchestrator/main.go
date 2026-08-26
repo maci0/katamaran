@@ -56,7 +56,7 @@ const (
 )
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, `katamaran-orchestrator — Submit a Migration request (JSON on stdin) and stream NDJSON status updates
+	fmt.Fprintf(w, `katamaran-orchestrator: Submit a Migration request (JSON on stdin) and stream NDJSON status updates
 
 Usage:
   echo '<json>' | katamaran-orchestrator [flags]
@@ -100,7 +100,7 @@ Example:
 // isStdinTTY reports whether stdin is connected to a terminal. The CLI is
 // designed to take a piped JSON request; if a user runs the binary
 // interactively without piping, ReadAll would block forever waiting for
-// EOF — this lets us fail fast with a helpful message instead.
+// EOF, so this lets us fail fast with a helpful message instead.
 func isStdinTTY(f *os.File) bool {
 	st, err := f.Stat()
 	if err != nil {
@@ -241,7 +241,7 @@ func main() {
 		exit = 1
 	}
 	// Signal-induced shutdown surfaces 130 even when the orchestrator
-	// emitted a final PhaseFailed update during teardown — otherwise a
+	// emitted a final PhaseFailed update during teardown: otherwise a
 	// Ctrl-C looks indistinguishable from a real migration failure.
 	if ctx.Err() != nil {
 		os.Exit(130)

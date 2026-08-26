@@ -19,24 +19,24 @@ sudo ./bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
   --dest-ip <dest-node-ip> --vm-ip <pod-ip>
 ```
 
-Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume — zero drops. Add `--shared-storage` with Ceph/NFS to skip the storage phase entirely.
+Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume, zero drops. Add `--shared-storage` with Ceph/NFS to skip the storage phase entirely.
 
 ---
 
-Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS — skip mirroring with `--shared-storage`).
+Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph, NFS: skip mirroring with `--shared-storage`).
 
-Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata Containers, pods typically use local virtio-blk disks — meaning the entire block device must be migrated alongside RAM and network state. `katamaran` orchestrates all three phases in the correct order while guaranteeing **zero in-flight packet drops** during the cutover.
+Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata Containers, pods typically use local virtio-blk disks, meaning the entire block device must be migrated alongside RAM and network state. `katamaran` orchestrates all three phases in the correct order while guaranteeing **zero in-flight packet drops** during the cutover.
 
-> *Like a catamaran glides between two hulls, katamaran glides your VM between two nodes — smoothly, with nothing lost overboard.*
+> *Like a catamaran glides between two hulls, katamaran glides your VM between two nodes: smoothly, with nothing lost overboard.*
 
 ---
 
 ## Table of Contents
 - [Getting Started](#getting-started)
 - [Architecture Overview](#architecture-overview)
-  - [Phase 1 — Storage Mirroring](#phase-1--storage-mirroring-nbd--drive-mirror)
-  - [Phase 2 — Compute Migration](#phase-2--compute-migration-ram-pre-copy--final-incremental-copy)
-  - [Phase 3 — Zero-Drop Network Cutover](#phase-3--zero-drop-network-cutover-tc-sch_plug--ip-tunnel)
+  - [Phase 1: Storage Mirroring](#phase-1-storage-mirroring-nbd--drive-mirror)
+  - [Phase 2: Compute Migration](#phase-2-compute-migration-ram-pre-copy--final-incremental-copy)
+  - [Phase 3: Zero-Drop Network Cutover](#phase-3-zero-drop-network-cutover-tc-sch_plug--ip-tunnel)
 - [Prerequisites](#prerequisites)
 - [Project Structure](#project-structure)
 - [Usage](#usage)
@@ -53,7 +53,7 @@ See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAG
 
 ## Getting Started
 
-This section walks you through building katamaran, setting up a two-node cluster with Kata Containers, and running your first live migration — step by step.
+This section walks you through building katamaran, setting up a two-node cluster with Kata Containers, and running your first live migration, step by step.
 
 ### Tutorial Requirements
 
@@ -158,7 +158,7 @@ curl http://$NODE_IP:30081
 
 ### 6. Run the Migration via Kubernetes Jobs
 
-To orchestrate the migration, katamaran uses two Kubernetes Jobs — one on the destination node and one on the source node. The canonical Job manifests live in `internal/orchestrator/templates/` (embedded into the binaries). For ad-hoc shell-driven runs, `deploy/migrate.sh` renders those templates with `envsubst`, applies them via `kubectl`, and waits for completion.
+To orchestrate the migration, katamaran uses two Kubernetes Jobs, one on the destination node and one on the source node. The canonical Job manifests live in `internal/orchestrator/templates/` (embedded into the binaries). For ad-hoc shell-driven runs, `deploy/migrate.sh` renders those templates with `envsubst`, applies them via `kubectl`, and waits for completion.
 
 The current shell path can run in pod-picker mode: the source job resolves the Kata sandbox at runtime, captures the source QEMU command line, and the destination job replays it with `-incoming defer`, so no placeholder destination Kata pod is required:
 
@@ -174,7 +174,7 @@ The current shell path can run in pod-picker mode: the source job resolves the K
   --replay-cmdline
 ```
 
-Production paths submit the same templates through the in-cluster `Native` orchestrator embedded in the dashboard or in `katamaran-mgr` (CRD controller) — see `kubectl apply -f deploy/migration-example.yaml` for the CRD path.
+Production paths submit the same templates through the in-cluster `Native` orchestrator embedded in the dashboard or in `katamaran-mgr` (CRD controller). See `kubectl apply -f deploy/migration-example.yaml` for the CRD path.
 
 > **Tip:** For a faster setup (~30s instead of ~5min), use Kind + Podman instead of minikube:
 > ```bash
@@ -194,31 +194,31 @@ sequenceDiagram
     participant D as Destination Node
 
     rect rgb(59, 130, 246, 0.1)
-    Note over S,D: Phase 1 — Storage Mirroring
+    Note over S,D: Phase 1: Storage Mirroring
     S->>D: NBD drive-mirror (background sync)
     D-->>S: Block device ready
     Note over S: VM keeps running
     end
 
     rect rgb(16, 185, 129, 0.1)
-    Note over S,D: Phase 2 — Compute Migration
+    Note over S,D: Phase 2: Compute Migration
     S->>D: RAM pre-copy (TCP)
     Note over S: VM pauses (STOP)
     Note over D: VM resumes (RESUME)
     end
 
     rect rgb(245, 158, 11, 0.1)
-    Note over S,D: Phase 3 — Network Cutover
+    Note over S,D: Phase 3: Network Cutover
     S->>D: IPIP/GRE tunnel (redirect traffic)
     Note over D: sch_plug unplug (flush buffered pkts)
     end
 ```
 
-### Phase 1 — Storage Mirroring (NBD + drive-mirror)
+### Phase 1: Storage Mirroring (NBD + drive-mirror)
 
 The destination QEMU starts an NBD server exporting the target block device. The source issues a `drive-mirror` QMP command that copies every block to the remote NBD target in the background while the VM keeps running. Dirty blocks are re-synced continuously until the mirror reports `ready` (fully synchronized).
 
-### Phase 2 — Compute Migration (RAM Pre-Copy & Final Incremental Copy)
+### Phase 2: Compute Migration (RAM Pre-Copy & Final Incremental Copy)
 
 Once storage is synchronized, the source starts standard QEMU RAM pre-copy migration (`migrate` QMP command) with `auto-converge` enabled. QEMU iteratively copies dirty RAM pages while the VM continues to run.
 
@@ -226,9 +226,9 @@ To achieve true "zero downtime" perception, `katamaran` configures QEMU with a *
 
 Once the remaining dirty RAM set is small enough to transfer within the configured downtime budget, the VM pauses (emitting the `STOP` event). **At this very last bit, QEMU performs a final incremental copy** of the remaining dirty RAM pages and device state. Only after this final copy completes does the destination VM resume (emitting the `RESUME` event).
 
-### Phase 3 — Zero-Drop Network Cutover (tc sch_plug + IP Tunnel)
+### Phase 3: Zero-Drop Network Cutover (tc sch_plug + IP Tunnel)
 
-The critical downtime window — between `STOP` on the source and `RESUME` on the destination — is where packets would normally be lost. `katamaran` eliminates this:
+The critical downtime window (between `STOP` on the source and `RESUME` on the destination) is where packets would normally be lost. `katamaran` eliminates this:
 
 1. **Source side**: Immediately after `STOP`, an IP tunnel is created pointing at the destination node. The tunnel encapsulation is selected by `--tunnel-mode`: with the default `ipip`, an IPIP tunnel is used for IPv4 (`mode ipip`) and an ip6tnl tunnel for IPv6 (`mode ip6ip6`); with `gre`, a GRE tunnel is used for IPv4 (`mode gre`) and an ip6gre tunnel for IPv6. GRE is recommended on cloud VPCs (AWS, GCP, Azure) where IPIP (IP protocol 4/41) is often blocked by security groups, while GRE (IP protocol 47) is widely permitted. A host route for the VM IP is added through the tunnel, forwarding any packets that arrive at the (now stale) source to the destination.
 2. **Destination side**: A `tc sch_plug` qdisc on the destination tap interface buffers all arriving packets (including those forwarded through the tunnel). The qdisc is installed in pass-through mode (`release_indefinite`) and switched to buffering (`block`) before waiting for RESUME. When the VM resumes, the queue is unplugged with `release_indefinite`, flushing all buffered packets into the now-running VM in order. QEMU's `announce-self` QMP command then broadcasts Gratuitous ARP using the guest's actual MAC address, ensuring switches learn the correct port binding immediately.
@@ -430,12 +430,12 @@ For full details on CLI flags, direct usage, shared storage mode, IPv6, Cloud VP
 
 A natural question: *why not mirror storage and RAM in parallel?*
 
-The `drive-mirror` operation generates substantial network I/O — it copies the **entire block device** (often tens of GB) over the wire. Running RAM pre-copy simultaneously would cause two problems:
+The `drive-mirror` operation generates substantial network I/O: it copies the **entire block device** (often tens of GB) over the wire. Running RAM pre-copy simultaneously would cause two problems:
 
-1. **Buffer overflow on the network path.** Both streams compete for bandwidth. RAM pre-copy is latency-sensitive (dirty pages must be re-sent each round). When storage mirroring saturates the link, RAM rounds take longer, more pages get re-dirtied, and convergence stalls — or the migration fails entirely.
+1. **Buffer overflow on the network path.** Both streams compete for bandwidth. RAM pre-copy is latency-sensitive (dirty pages must be re-sent each round). When storage mirroring saturates the link, RAM rounds take longer, more pages get re-dirtied, and convergence stalls, or the migration fails entirely.
 2. **Wasted bandwidth from redundant RAM retransmission.** While storage is still syncing, the VM keeps running and dirtying RAM. Each pre-copy round re-sends those dirty pages. If storage sync takes 5 minutes, that's 5 minutes of RAM rounds that will largely be invalidated. By waiting for storage to reach `ready`, we start RAM pre-copy on a quiet network with the shortest possible convergence path.
 
-The sequential approach — storage first, then RAM — minimizes total migration time and keeps the final downtime window (the `STOP`→`RESUME` gap) as short as possible.
+The sequential approach (storage first, then RAM) minimizes total migration time and keeps the final downtime window (the `STOP`→`RESUME` gap) as short as possible.
 
 ---
 
@@ -495,7 +495,7 @@ The storage strategy depends on whether the cluster uses **shared storage** (bot
 
 | CSI Driver | Storage Type | katamaran Mode | Notes |
 |-----------|-------------|-------------------|-------|
-| **Ceph RBD** (`rbd.csi.ceph.com`) | Shared block | `--shared-storage` | Ideal. Both nodes mount the same RBD image. No data transfer needed — only RAM + network state migrate. Requires `ReadWriteMany` or controlled handoff (unmap on source, map on dest). |
+| **Ceph RBD** (`rbd.csi.ceph.com`) | Shared block | `--shared-storage` | Ideal. Both nodes mount the same RBD image. No data transfer needed, only RAM + network state migrate. Requires `ReadWriteMany` or controlled handoff (unmap on source, map on dest). |
 | **CephFS** (`cephfs.csi.ceph.com`) | Shared filesystem | `--shared-storage` | Works if the VM's rootfs is on a CephFS-backed virtio-fs or virtiofs mount. Less common for block-level VM disks. |
 | **NFS** (`nfs.csi.k8s.io`) | Shared filesystem | `--shared-storage` | Simple but slower. NFS latency can affect VM disk I/O during and after migration. Acceptable for low-IOPS workloads. |
 | **Longhorn** (`driver.longhorn.io`) | Replicated local | NBD drive-mirror | Longhorn volumes are node-local with network replication. `katamaran` mirrors the block device via NBD, then the Longhorn controller can adopt the replica on the destination. |
@@ -526,7 +526,7 @@ sequenceDiagram
     S->>D: IPIP tunnel + sch_plug flush
 ```
 
-Total migration time is dominated by RAM pre-copy convergence — typically **seconds** for a 4 GB VM with moderate dirty page rate.
+Total migration time is dominated by RAM pre-copy convergence, typically **seconds** for a 4 GB VM with moderate dirty page rate.
 
 #### Local Storage: The Full Pipeline
 
@@ -538,18 +538,18 @@ sequenceDiagram
     participant D as Destination Node
 
     rect rgb(59, 130, 246, 0.1)
-    Note over S,D: Phase 1 — minutes to hours (scales with disk size)
+    Note over S,D: Phase 1: minutes to hours (scales with disk size)
     S->>D: NBD drive-mirror (entire block device)
     Note over S: VM keeps running
     end
 
     rect rgb(16, 185, 129, 0.1)
-    Note over S,D: Phase 2 — seconds (after storage sync)
+    Note over S,D: Phase 2: seconds (after storage sync)
     S->>D: RAM pre-copy
     end
 
     rect rgb(245, 158, 11, 0.1)
-    Note over S,D: Phase 3 — milliseconds
+    Note over S,D: Phase 3: milliseconds
     S->>D: Network cutover (tunnel + qdisc flush)
     end
 ```
@@ -579,7 +579,7 @@ This means the IPAM must allow the same IP to be assigned on the destination nod
 
 | CNI | Default IPAM | Migration-Safe Config |
 |-----|-------------|----------------------|
-| **OVN-Kubernetes** | Cluster-wide | Works out of the box — IPs are not tied to nodes |
+| **OVN-Kubernetes** | Cluster-wide | Works out of the box: IPs are not tied to nodes |
 | **Kube-OVN** | Cluster-wide | Works out of the box |
 | **Cilium** | `cluster-pool` | Works out of the box with default `cluster-pool` IPAM mode. Avoid `kubernetes` IPAM mode (per-node CIDRs) |
 | **Calico** | Per-node blocks | **Requires config change.** Use `ipipMode: Always` with a shared IPPool and disable `blockSize`-based per-node allocation, or use Calico's IPAM with `nat-outgoing: false` and a flat pool |
@@ -683,7 +683,7 @@ kubectl apply -f deploy/dashboard.yaml
 Once deployed, the dashboard is exposed via a ClusterIP service on port `8080`.
 
 1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080` and open `http://localhost:8080`.
-2. **Pick a Source Pod** and **Dest Node** from the dropdowns (auto-populated from `/api/pods` and `/api/nodes`). The hidden `vm_ip` and `dest_ip` form fields auto-fill from the selection. For full zero-config dest spawning, also enable `replay_cmdline=true` (recommended — see scripted example in the dashboard README).
+2. **Pick a Source Pod** and **Dest Node** from the dropdowns (auto-populated from `/api/pods` and `/api/nodes`). The hidden `vm_ip` and `dest_ip` form fields auto-fill from the selection. For full zero-config dest spawning, also enable `replay_cmdline=true` (recommended, see scripted example in the dashboard README).
 3. **Start Load Generation**: Click **ICMP Ping** or **HTTP Load**. A live Chart.js graph plots latency.
 4. **Migrate**: Click **Start Migration**. The real-time log viewer streams the orchestrator's progress.
 5. **Observe Zero-Drop**: As the migration crosses the configured downtime window (25 ms by default), you will see a latency spike on the chart (representing the buffered packets) but zero dropped packets.
@@ -694,7 +694,7 @@ For manual override of any auto-derived value, expand the **Advanced (override a
 
 ## Migration CRD (Operator Path)
 
-For GitOps / Argo / declarative workflows that prefer `kubectl apply` over a UI, katamaran ships a `Migration` Custom Resource and a small in-cluster controller (`katamaran-mgr`) that reconciles it through the same Native orchestrator the dashboard uses. Behaviour is identical — the only difference is the entry point.
+For GitOps / Argo / declarative workflows that prefer `kubectl apply` over a UI, katamaran ships a `Migration` Custom Resource and a small in-cluster controller (`katamaran-mgr`) that reconciles it through the same Native orchestrator the dashboard uses. Behaviour is identical: the only difference is the entry point.
 
 ```bash
 # Build + load the controller image
@@ -715,13 +715,13 @@ kubectl get migration -w
 # demo-1   kata-demo   kata-worker-b  succeeded    38s
 ```
 
-The CR's `.status` carries the same `migrationID`, `phase`, `startedAt`, `completedAt`, and `error` fields that the dashboard surfaces — so external systems can wait on a Migration the same way they wait on a Job.
+The CR's `.status` carries the same `migrationID`, `phase`, `startedAt`, `completedAt`, and `error` fields that the dashboard surfaces, so external systems can wait on a Migration the same way they wait on a Job.
 
 ---
 
 ## Testing
 
-katamaran includes a comprehensive test suite ranging from native Go fuzzing to multi-node live migration tests proving zero packet drops across various CNIs (OVN-Kubernetes, Cilium, Calico, Flannel) and storage backends.
+katamaran includes a test suite ranging from native Go fuzzing to multi-node live migration tests proving zero packet drops across various CNIs (OVN-Kubernetes, Cilium, Calico, Flannel) and storage backends.
 
 For instructions on running the test suite, verifying zero-drop behavior, and fuzzing the QMP protocol, please see the **[Testing Guide](docs/TESTING.md)**.
 
@@ -731,23 +731,23 @@ For instructions on running the test suite, verifying zero-drop behavior, and fu
 
 ### Cross-Cluster Migration
 
-Migrate a Kata VM pod from one Kubernetes cluster to another — not just between nodes within a single cluster. This would enable use cases like cluster upgrades, cloud-region failover, and hybrid-cloud burst.
+Migrate a Kata VM pod from one Kubernetes cluster to another, not just between nodes within a single cluster. This would enable use cases like cluster upgrades, cloud-region failover, and hybrid-cloud burst.
 
 - **Federation-aware orchestration**: A higher-level controller that discovers destination clusters (via Cluster API, Admiralty, or manual config) and negotiates resource reservations before starting migration
-- **Cross-cluster networking**: Establish a migration data path between clusters — WireGuard mesh, Submariner, or Cilium ClusterMesh — to carry NBD, RAM pre-copy, and tunnel traffic across cluster boundaries
+- **Cross-cluster networking**: Establish a migration data path between clusters (WireGuard mesh, Submariner, or Cilium ClusterMesh) to carry NBD, RAM pre-copy, and tunnel traffic across cluster boundaries
 - **IP address handoff**: Pod IP will change across clusters (different pod CIDRs). Requires a DNS-based or service-mesh-based identity layer (e.g. Istio, Linkerd) so clients reconnect transparently after migration
 - **Storage replication across clusters**: For non-shared-storage setups, NBD drive-mirror must traverse the inter-cluster link. For shared storage, both clusters need access to the same Ceph/NFS pool (stretched cluster or async replication with final sync)
 - **Credential and secret migration**: ServiceAccount tokens, mounted secrets, and ConfigMaps must be recreated or mirrored on the destination cluster before the VM resumes
-- **RBAC and admission policy alignment**: The destination cluster must accept the pod's SecurityContext, RuntimeClass, and resource requests — mismatches cause the destination pod to be rejected
-- **Multi-phase cutover**: Source cluster keeps serving traffic via the IPIP/GRE tunnel while the destination cluster's ingress, DNS, and service entries converge — then the tunnel is torn down
+- **RBAC and admission policy alignment**: The destination cluster must accept the pod's SecurityContext, RuntimeClass, and resource requests: mismatches cause the destination pod to be rejected
+- **Multi-phase cutover**: Source cluster keeps serving traffic via the IPIP/GRE tunnel while the destination cluster's ingress, DNS, and service entries converge, then the tunnel is torn down
 
 ### Multi-NIC Pod Migration (Multus)
 
-Kata Containers supports [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) for attaching multiple network interfaces to a pod — including SR-IOV passthrough via VFIO. Migrating multi-NIC pods adds complexity since each interface needs its own cutover handling.
+Kata Containers supports [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) for attaching multiple network interfaces to a pod, including SR-IOV passthrough via VFIO. Migrating multi-NIC pods adds complexity since each interface needs its own cutover handling.
 
-- **Per-interface tunnel setup**: Each network attachment needs its own IPIP/GRE tunnel and `sch_plug` qdisc during cutover — katamaran currently assumes a single tap interface
+- **Per-interface tunnel setup**: Each network attachment needs its own IPIP/GRE tunnel and `sch_plug` qdisc during cutover: katamaran currently assumes a single tap interface
 - **SR-IOV / VFIO passthrough**: Passthrough devices cannot be live-migrated (hardware-bound). Requires detach-on-source, re-attach-on-destination with a brief connectivity gap on that interface, or fallback to virtio-net for migratable NICs
 - **Mixed interface types**: A pod might combine a primary virtio-net (migratable) with a secondary SR-IOV NIC (non-migratable). Migration logic must handle each interface type differently
 - **NetworkAttachmentDefinition replay**: Destination must have matching `NetworkAttachmentDefinition` CRs and available device resources (e.g. SR-IOV VFs) on the target node
-- **IPAM coordination across interfaces**: Each Multus interface may use a different IPAM — the primary CNI's cluster-wide pool plus per-interface static or DHCP assignments that must be preserved or re-acquired
+- **IPAM coordination across interfaces**: Each Multus interface may use a different IPAM: the primary CNI's cluster-wide pool plus per-interface static or DHCP assignments that must be preserved or re-acquired
 - **QEMU device topology**: Additional NICs appear as hotplugged PCI devices in the guest VM. The destination QEMU must reconstruct the same PCI topology (device IDs, bus addresses) for the guest to recognize its interfaces after resume

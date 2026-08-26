@@ -44,7 +44,7 @@ import (
 )
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, `katamaran-mgr — Kubernetes controller for the Migration CRD (katamaran.io/v1alpha1)
+	fmt.Fprintf(w, `katamaran-mgr: Kubernetes controller for the Migration CRD (katamaran.io/v1alpha1)
 
 Usage:
   katamaran-mgr [flags]
@@ -236,7 +236,7 @@ func main() {
 	// the ValidatingWebhookConfiguration only by the leader (see
 	// OnStartedLeading callback). Followers serve TLS too (in case
 	// the Service routes to them during handoff) but their cert
-	// isn't trusted by the apiserver — failurePolicy=Ignore keeps
+	// isn't trusted by the apiserver: failurePolicy=Ignore keeps
 	// the cluster usable in that gap.
 	var webhookCABundle []byte
 	if !*disableWebhook {
@@ -296,7 +296,7 @@ func main() {
 				// cert so apiserver trusts the TLS handshake against the
 				// Service endpoint (which routes only to us). Doing this
 				// from a follower would publish a cert the Service-routed
-				// leader doesn't present — silent admission failure under
+				// leader doesn't present: silent admission failure under
 				// failurePolicy=Ignore.
 				if webhookCABundle != nil {
 					if err := patchWebhookConfigCABundle(leaderCtx, kube, webhookConfigName, webhookCABundle); err != nil {
@@ -330,12 +330,12 @@ func runReconciler(ctx context.Context, rec *controller.Reconciler) {
 // includes this label, so endpoints flip atomically with leader
 // election. Best-effort: log + continue on failure (the worst case is
 // the Service routes to a pod that returns Unavailable to admission,
-// which falls through failurePolicy=Ignore — same as if the webhook
+// which falls through failurePolicy=Ignore, same as if the webhook
 // were down).
 //
 // podName must equal the running pod's metadata.name. The mgr's lease
 // identity is os.Hostname(), which Kubernetes sets equal to the pod
-// name by default — that's what callers pass here.
+// name by default, and that's what callers pass here.
 func setLeaderLabel(ctx context.Context, kube kubernetes.Interface, namespace, podName string, leader bool) {
 	if podName == "" || namespace == "" {
 		return

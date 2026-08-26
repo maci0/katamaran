@@ -9,7 +9,7 @@ import (
 )
 
 // writeJSON sends a JSON response with the given status code. Sets
-// Cache-Control: no-store on every JSON response — all dashboard JSON
+// Cache-Control: no-store on every JSON response: all dashboard JSON
 // payloads are dynamic and must not be cached by intermediaries.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

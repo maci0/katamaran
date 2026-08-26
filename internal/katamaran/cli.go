@@ -51,7 +51,7 @@ var (
 )
 
 func printUsage(w io.Writer) {
-	_, _ = fmt.Fprintf(w, `katamaran — Zero-packet-drop live migration for Kata Containers
+	_, _ = fmt.Fprintf(w, `katamaran: Zero-packet-drop live migration for Kata Containers
 
 Usage:
   katamaran --mode <source|dest> [flags]

@@ -36,7 +36,7 @@ var (
 )
 
 // errQueryDecode marks a query-migrate reply that arrived but could not be
-// parsed as JSON — a protocol-level fault, distinct from a transport error.
+// parsed as JSON, a protocol-level fault, distinct from a transport error.
 var errQueryDecode = errors.New("decode query-migrate response")
 
 // queryMigrateInfo executes query-migrate and decodes the MigrateInfo reply.
@@ -133,7 +133,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 				slog.Warn("Failed to remove captured cmdline file", "path", cfg.EmitCmdlineTo, "error", rmErr)
 			}
 		}()
-		// Marker line consumed by deploy/migrate.sh — print on stdout so it
+		// Marker line consumed by deploy/migrate.sh, printed on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
 		fmt.Printf("%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo)
 		// Also emit the cmdline file's contents as a single base64 line on
@@ -150,7 +150,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 
 	// Emit VMConfig from the source sandbox's persist.json so the
 	// dest factory can serve it to the Kata shim for VM adoption.
-	// Done regardless of cmdline replay mode — any migration benefits
+	// Done regardless of cmdline replay mode: any migration benefits
 	// from having VMConfig available for adoption.
 	if resolvedQEMUPID != 0 {
 		emitVMConfig(resolvedQEMUPID)
@@ -497,7 +497,7 @@ var measureRTTFunc = measureRTT
 // measurement so callers can fall back explicitly.
 //
 // We previously TCP-probed dest:4444 but that's the same port the destination
-// QEMU's migrate-incoming listener accepts on — every probe consumed a
+// QEMU's migrate-incoming listener accepts on: every probe consumed a
 // connection and poisoned the listener, surfacing as "Failed to peek at
 // channel" once the real migration handshake arrived. ICMP is non-disruptive.
 func measureRTT(destIP netip.Addr) (time.Duration, error) {
@@ -746,13 +746,13 @@ var postActiveStallGrace = 30 * time.Second
 // waitForMigrationComplete polls query-migrate until migration reaches a terminal
 // state (completed, failed, or cancelled). Times out after migrationTimeout.
 //
-// Each poll uses a per-call queryMigrateTimeout — a stalled QMP socket
+// Each poll uses a per-call queryMigrateTimeout, so a stalled QMP socket
 // fails this short call rather than hanging the whole polling loop on the
 // global executeTimeout (2 min). Sustained QMP failures are interpreted
 // as a successful handover (kata-shim tearing down source QEMU
 // post-completion). The caller invokes this only after the VM is
 // paused and the tunnel cutover is complete, so the migration is
-// already in flight by the time we enter the loop — a QMP failure
+// already in flight by the time we enter the loop, so a QMP failure
 // here is a hand-off signal, not an early-stage error.
 func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)

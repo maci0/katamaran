@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/sweep.sh — Parameter sweep tool for katamaran downtime limit
+# scripts/sweep.sh: Parameter sweep tool for katamaran downtime limit
 #
 # Usage:
 #   ./scripts/sweep.sh [--provider <name>] [--help] <downtime1> [downtime2 ... | auto]

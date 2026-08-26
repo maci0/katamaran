@@ -84,7 +84,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// If a captured source cmdline is supplied, spawn the destination QEMU
 	// ourselves with -incoming defer before connecting to QMP. This bypasses
 	// Kata's sandbox lifecycle (which kills VMs that don't connect via vsock
-	// within dial_timeout — incompatible with -incoming).
+	// within dial_timeout, incompatible with -incoming).
 	// spawnReplayedQEMU mutates cfg.QMPSocket to point at the spawned QEMU's
 	// monitor; pod-resolver overrides above are intentionally superseded.
 	//
@@ -294,7 +294,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 		slog.Info("VM resumed")
 	}
 
-	// Step 6: Unplug the queue — flush all buffered packets into the now-running VM.
+	// Step 6: Unplug the queue, flushing all buffered packets into the now-running VM.
 	// Only disarm the deferred cleanup if the unplug succeeds. If it fails,
 	// the qdisc is still in "plugged" state and the deferred cleanup must
 	// remove it so the VM's network isn't left permanently blocked.
@@ -303,7 +303,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 			return fmt.Errorf("failed to unplug network queue on %s: %w", tapIface, err)
 		}
 		slog.Info("Queue unplugged. Buffered packets delivered. Zero drops achieved")
-		// Disarm qdisc deferred cleanup — we've successfully flushed and the
+		// Disarm qdisc deferred cleanup: we've successfully flushed and the
 		// qdisc will be naturally removed when the tap interface is torn down.
 		qdiscInstalled = false
 	}
@@ -390,7 +390,7 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 //     new cgroup persists with no parent constraint (lives directly
 //     under root).
 //
-// All errors are best-effort warnings — a failure here means the
+// All errors are best-effort warnings: a failure here means the
 // migration still succeeds operationally (source's VM is at the dest
 // node, dest binary's tunnel was set up, the new pod can be created)
 // but the migrated QEMU process won't survive long enough for a
@@ -432,12 +432,12 @@ func surviveContainerExit(qmpSocket string) {
 	// look like `kvm-nx-lpage-recovery-<qemu-pid>` (and `kvm-pit/<pid>`,
 	// etc., depending on the QEMU build). Cgroup v2 keeps these in the
 	// container's cgroup even after the userspace QEMU process is moved
-	// out — they're spawned by the kernel for the QEMU's KVM ioctls,
+	// out: they're spawned by the kernel for the QEMU's KVM ioctls,
 	// not as children of QEMU. If they stay in the dying container's
 	// cgroup, the cgroup is never empty, containerd never fires the
 	// "container exited" event, the pod stays in Status:Running until
 	// the Job's activeDeadlineSeconds elapses, and the migration CR
-	// stays in phase=transferring until that timeout — even though the
+	// stays in phase=transferring until that timeout, even though the
 	// migration itself succeeded and QEMU is happily running.
 	moved := moveKVMHelperThreads(pid, procsPath)
 	if moved > 0 {
@@ -508,7 +508,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 
 	// Read QEMU PID from the pid file next to the QMP socket. A missing or
 	// unparseable pid file leaves meta.QEMUPid at zero, which silently breaks
-	// factory adoption — surface both failure modes so operators can correlate
+	// factory adoption, so surface both failure modes so operators can correlate
 	// "VM not adopted" with the underlying read/parse error.
 	pidPath := filepath.Join(filepath.Dir(cfg.QMPSocket), "pid")
 	if pidBytes, err := os.ReadFile(pidPath); err != nil {
@@ -527,7 +527,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	}
 
 	// Try to load VMConfig from any sandbox persist.json on this node.
-	// We scan all sandboxes, not just ours — VMConfig is the same across
+	// We scan all sandboxes, not just ours: VMConfig is the same across
 	// all Kata pods on the same node (same Kata version + config).
 	if persist := FindSandboxPersist(kataSBSRoot); persist != nil {
 		if len(persist.HypervisorState) > 0 {
@@ -539,7 +539,7 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		}
 		slog.Info("Loaded state from persist.json", "path", persist.Path)
 	} else {
-		// No persist.json locally — try to fetch VMConfig from the source pod's log.
+		// No persist.json locally, so try to fetch VMConfig from the source pod's log.
 		srcRef := cfg.ReplayCmdlineFromPod
 		if srcRef == "" {
 			srcRef = cfg.SourcePodRef

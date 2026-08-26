@@ -25,7 +25,7 @@ var sourceJobTemplate []byte
 var destJobTemplate []byte
 
 // jobSuffix returns the per-migration Job name suffix. Migration IDs are
-// 16 lowercase hex chars — short enough to embed in a 253-char Job name
+// 16 lowercase hex chars, short enough to embed in a 253-char Job name
 // and long enough to avoid collisions across concurrent migrations.
 func jobSuffix(id MigrationID) string { return string(id) }
 
@@ -99,7 +99,7 @@ func renderJob(tmpl []byte, vars map[string]string) (*batchv1.Job, error) {
 // expandShellVars substitutes ${VAR} references in s with vars[VAR]. Unknown
 // references are replaced with the empty string (matching `envsubst`).
 //
-// Only supports the ${NAME} form — no $NAME, no ${NAME:-default}. Mirrors
+// Only supports the ${NAME} form: no $NAME, no ${NAME:-default}. Mirrors
 // migrate.sh's `envsubst '$NODE_NAME $QMP_SOCKET ...'` invocation.
 func expandShellVars(s string, vars map[string]string) string {
 	var out strings.Builder

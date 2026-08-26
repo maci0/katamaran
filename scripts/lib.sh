@@ -1,12 +1,12 @@
 #!/bin/bash
-# scripts/lib.sh — Shared utility functions for katamaran scripts.
+# scripts/lib.sh: Shared utility functions for katamaran scripts.
 #
 # Source this file after setting SCRIPT_DIR and PROJECT_ROOT.
 # Functions that access cluster nodes (node_exec, node_cp_to) require:
-#   PROVIDER  — 'minikube' or 'kind'
-#   PROFILE   — minikube profile name or kind cluster name
-#   SUDO      — 'sudo' or '' (empty for kind)
-#   CE        — container engine: 'podman' or 'docker'
+#   PROVIDER: 'minikube' or 'kind'
+#   PROFILE:  minikube profile name or kind cluster name
+#   SUDO:     'sudo' or '' (empty for kind)
+#   CE:       container engine, 'podman' or 'docker'
 
 # --- Argument helpers ---
 

@@ -168,7 +168,7 @@ func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orches
 		// or the watch dies mid-transfer and a healthy migration gets
 		// marked Failed. Worst case per the source binary: storage sync
 		// (2h) + RAM migration (1h) + dest replay startup wait (~1m) +
-		// CNI convergence delay (up to 10m), rounded up to 4h — which
+		// CNI convergence delay (up to 10m), rounded up to 4h, which
 		// also covers the rendered Jobs' activeDeadlineSeconds.
 		StatusTimeout: 4 * time.Hour,
 		tracking:      map[types.NamespacedName]*track{},
@@ -223,7 +223,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 		obj := &list.Items[i]
 		key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
 
-		// Deletion path first — runs even when phase is set.
+		// Deletion path first: runs even when phase is set.
 		if obj.GetDeletionTimestamp() != nil {
 			r.handleDeletion(ctx, key, obj)
 			continue
@@ -591,7 +591,7 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 		// replacement. If we cleared the Mark on adoption
 		// success, that replacement would slip through the
 		// webhook. The Mark's pendingAdoptionTTL (5m)
-		// covers the whole settle window — by the time it
+		// covers the whole settle window: by the time it
 		// expires, RS has long since accepted the adopted
 		// pod as its single replica.
 		slog.Info("Adoption pod created (pending mark left active until TTL expiry to cover RS settle window)",
@@ -631,7 +631,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 
 	// Budget recovery like dispatch and register its cancel func before any
 	// slow work: without this, handleDeletion finds a track entry with no
-	// cancel and CR deletion could not stop this loop — recover would keep
+	// cancel and CR deletion could not stop this loop: recover would keep
 	// polling for up to StatusTimeout and could still run post-success
 	// side effects (adoption pod create) for a Migration the user deleted.
 	// The StatusTimeout budget itself stays on the manual deadline below so
@@ -685,7 +685,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				// Run the documented post-success side effects
 				// (sourceCleanup, adoptVM) exactly like the dispatch
-				// path — a controller restart mid-migration must not
+				// path: a controller restart mid-migration must not
 				// silently drop them.
 				req, sErr := specToRequest(obj.Object, key.Namespace)
 				if sErr != nil {
@@ -709,12 +709,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
 			return
 		}
-		// Source still running but dest never got created — orchestrator
+		// Source still running but dest never got created: the orchestrator
 		// staging goroutine died with the previous controller leader. Re-attempt
 		// staging via Orchestrator.Resume; subsequent reconcile ticks will see
 		// the new dest Job and fall through to the normal terminal-condition
 		// branches above. Resume is idempotent, so calling it on every tick is
-		// safe — the counter only bumps on actual create.
+		// safe: the counter only bumps on actual create.
 		//
 		// Pass the spec-derived Request directly: Resume only consults
 		// req.ReplayCmdline + the dest-side fields (DestNode, Image, DestQMP)
@@ -848,7 +848,7 @@ func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unst
 // to it because this controller's ServiceAccount acts on pods cluster-wide:
 // without the check, a principal allowed to create Migrations in namespace X
 // could reference a pod in any other namespace and have the controller migrate
-// it away or delete it (spec.sourceCleanup=delete/orphan) — escalating
+// it away or delete it (spec.sourceCleanup=delete/orphan), escalating
 // migration rights into arbitrary-pod disruption across the cluster.
 func specToRequest(obj map[string]any, crNamespace string) (orchestrator.Request, error) {
 	var req orchestrator.Request
@@ -889,7 +889,7 @@ func specToRequest(obj map[string]any, crNamespace string) (orchestrator.Request
 	req.PodWaitTimeoutSeconds = nestedSpecInt(obj, "podWaitTimeoutSeconds")
 	req.SourceCleanup, _, _ = unstructured.NestedString(obj, "spec", "sourceCleanup")
 	req.AdoptVM, _, _ = unstructured.NestedBool(obj, "spec", "adoptVM")
-	// SourceNode + DestIP are not in the CRD spec — Reconciler.dispatch
+	// SourceNode + DestIP are not in the CRD spec: Reconciler.dispatch
 	// looks them up via the injected Discoverer before calling Apply.
 	return req, nil
 }

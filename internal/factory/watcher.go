@@ -75,7 +75,7 @@ func (w *Watcher) safeScan() {
 func (w *Watcher) scan() {
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
-		// The directory might not exist yet (no VMs running) — that
+		// The directory might not exist yet (no VMs running), and that
 		// case is expected and stays silent. Other errors (permissions,
 		// I/O) mean we are blind to migrations and need to be visible
 		// to operators.
@@ -98,7 +98,7 @@ func (w *Watcher) scan() {
 
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
-			// File doesn't exist (yet) in this sandbox dir — expected.
+			// File doesn't exist (yet) in this sandbox dir, which is expected.
 			// Other errors (permissions, I/O) mean we are silently blind
 			// to a real migration; surface them.
 			if !os.IsNotExist(err) {

@@ -73,7 +73,7 @@ func formToOrchestratorRequest(r *http.Request, podMode bool, resolvedSrcNode, r
 func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	// parseFormPOST rejects non-form content types early. Without that check,
 	// ParseForm silently ignores non-form bodies (e.g. JSON), and all fields
-	// appear empty — producing confusing "Missing required field" errors.
+	// appear empty, producing confusing "Missing required field" errors.
 	if !parseFormPOST(w, r, "Migration request") {
 		return
 	}
@@ -153,7 +153,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve pod-picker fields via the Discoverer up front, before
-	// acquiring the migration lock — keeps state-rollback off the failure
+	// acquiring the migration lock, which keeps state-rollback off the failure
 	// paths.
 	var resolvedSrcNode, resolvedDestIP string
 	if podMode {

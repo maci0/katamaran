@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-minikube-iso.sh — Build a custom minikube ISO with sch_plug kernel module.
+# build-minikube-iso.sh: Build a custom minikube ISO with sch_plug kernel module.
 #
 # Clones the minikube repo, patches the kernel defconfig to enable
 # CONFIG_NET_SCH_PLUG=m, and builds the ISO inside Docker.

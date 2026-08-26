@@ -107,7 +107,7 @@ func FuzzFindSrcSandboxDir(f *testing.F) {
 
 // FuzzParsePodRef fuzzes the "<namespace>/<name>" reference parser. The ref
 // originates from a marker emitted across the migration boundary, and the
-// parser applies a DNS-1123 regex to each half — so this also exercises that
+// parser applies a DNS-1123 regex to each half, so this also exercises that
 // regex against adversarial input (ReDoS / catastrophic backtracking).
 func FuzzParsePodRef(f *testing.F) {
 	seeds := []string{

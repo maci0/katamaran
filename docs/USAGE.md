@@ -6,8 +6,8 @@ This guide shows how to run `katamaran` in both direct CLI mode and Kubernetes J
 
 `katamaran` has two modes:
 
-- `dest` — destination-side listener and packet buffering setup
-- `source` — source-side migration orchestrator
+- `dest`: destination-side listener and packet buffering setup
+- `source`: source-side migration orchestrator
 
 Build the tool:
 
@@ -34,7 +34,7 @@ katamaran --mode <source|dest> [flags]
 | `--multifd-channels` | no | `4` | Parallel TCP channels for RAM migration (0 to disable) |
 | `--log-format` | no | `text` | Log output format: `text` or `json` |
 | `--log-level` | no | `info` | Log level: `debug`, `info`, `warn`, or `error` |
-| `--version`, `-v` | no | — | Show version and exit |
+| `--version`, `-v` | no | n/a | Show version and exit |
 
 ### Source mode flags
 
@@ -247,7 +247,7 @@ Sample stdout (one line per `StatusUpdate`; phases run
 {"id":"a1b2c3...","phase":"succeeded","downtime_ms":14,"ram_transferred":2147483648,"ram_total":2147483648,"applied_downtime_ms":25,"time":"2026-04-27T05:25:58.314Z"}
 ```
 
-The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/migrate` handler — anything callable from the dashboard is callable from the CLI and vice versa.
+The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/migrate` handler: anything callable from the dashboard is callable from the CLI and vice versa.
 
 ## Environment Variables
 

@@ -195,7 +195,7 @@ type StatusUpdate struct {
 	RAMTransferred int64
 	RAMTotal       int64
 
-	// DowntimeMS is set in the final PhaseSucceeded update — the actual VM
+	// DowntimeMS is set in the final PhaseSucceeded update: the actual VM
 	// pause duration measured by QEMU's query-migrate.
 	DowntimeMS int64
 

@@ -123,7 +123,7 @@ func main() {
 	// Containerd invokes the shim multiple times during a container's
 	// lifecycle. The first invocation is `start`; subsequent
 	// invocations may be `delete`. Anything else means we are the
-	// daemonized child started by our own `start` handler — fall
+	// daemonized child started by our own `start` handler: fall
 	// through to the ttrpc server loop.
 	cmd := ""
 	for i, arg := range os.Args {
@@ -238,7 +238,7 @@ func runStart(logFn func(format string, args ...any)) error {
 // runDelete handles containerd's `delete` command, which is called
 // after the task ends to give the shim a chance to clean up the
 // bundle dir. With Approach E, the QEMU and its surviving cgroup
-// outlive the pod by design — Delete only removes shim-local state
+// outlive the pod by design: Delete only removes shim-local state
 // (none yet).
 func runDelete(logFn func(format string, args ...any)) error {
 	logFn("delete: noop (QEMU + cgroup intentionally outlive the pod)")
@@ -286,7 +286,7 @@ func runServer(logFn func(format string, args ...any)) error {
 	// Containerd 2.2.x dispatches by default to the v2.Task service
 	// (`service containerd.task.v2.Task`), not v3. Register both so the
 	// shim works regardless of which API the host containerd happens to
-	// pick. The v2 wrapper just adapts the request/response types — the
+	// pick. The v2 wrapper just adapts the request/response types: the
 	// adoption logic lives in adoptedTaskService and is shared.
 	taskAPIv2.RegisterTTRPCTaskService(srv, &v2Adapter{inner: taskSvc, logFn: logFn})
 	logFn("ttrpc server starting")
@@ -373,7 +373,7 @@ func newAdoptedTaskService(logFn func(format string, args ...any)) *adoptedTaskS
 
 // Create looks up the surviving QEMU and answers with its pid. The
 // CreateTaskRequest's Bundle field holds the OCI bundle dir whose
-// config.json carries the pod annotations — we read the
+// config.json carries the pod annotations, so we read the
 // adoptedSandboxAnnotation from there.
 func (s *adoptedTaskService) Create(_ context.Context, req *taskAPI.CreateTaskRequest) (*taskAPI.CreateTaskResponse, error) {
 	s.mu.Lock()
@@ -386,7 +386,7 @@ func (s *adoptedTaskService) Create(_ context.Context, req *taskAPI.CreateTaskRe
 	// The sandbox id is interpolated into a cgroup filesystem path
 	// (adoptedCgroupRoot/<id>/cgroup.procs). It originates from the pod's
 	// OCI config.json annotation, which is controllable by anyone who can
-	// create a pod with runtimeClassName=katamaran-adopted — a broader set
+	// create a pod with runtimeClassName=katamaran-adopted, a broader set
 	// than katamaran-mgr. Reject anything but a single safe path component
 	// so a crafted annotation cannot traverse out of adoptedCgroupRoot and
 	// make the shim adopt (and later signal/kill) an arbitrary qemu-system
@@ -720,7 +720,7 @@ func (s *adoptedTaskService) Stats(_ context.Context, _ *taskAPI.StatsRequest) (
 // translates response back. Since v2 + v3 type definitions are
 // structurally identical (both auto-generated from the same proto
 // shape across major versions), the translation is field-by-field
-// copying via proto.Marshal+Unmarshal — works for any future field
+// copying via proto.Marshal+Unmarshal, which works for any future field
 // additions without per-method code changes.
 type v2Adapter struct {
 	inner *adoptedTaskService

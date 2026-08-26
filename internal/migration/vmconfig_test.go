@@ -245,7 +245,7 @@ func TestFindSandboxPersist_MissingRootReturnsNil(t *testing.T) {
 // adoption hand-off end to end: after RESUME, migration-meta.json written
 // next to the QMP socket must carry the QEMU pid read from the sibling pid
 // file plus HypervisorState/VMConfig/AgentConfig enriched from the node's
-// persist.json — the fields the factory Watcher turns into a GetBaseVM
+// persist.json: the fields the factory Watcher turns into a GetBaseVM
 // offer. Without this enrichment the factory serves adoption-less VMs.
 func TestWriteMigrationMeta_EnrichesFromPersistJSON(t *testing.T) {
 	// Not parallel: swaps kataSBSRoot.

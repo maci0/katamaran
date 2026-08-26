@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   creation, the new leader's recovery loop calls Resume on every
   tick (idempotent: returns `(false, nil)` when the dest Job already
   exists) until the dest is up. Without this branch the migration
-  would have stalled forever — source running, no dest, recovery
+  would have stalled forever: source running, no dest, recovery
   loop spinning until timeout.
 - `orchestrator.SourceJobName(id)` / `DestJobName(id)` helpers
   exposing the `katamaran-{source,dest}-<id>` naming convention so
@@ -40,9 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/dashboard/assets/` and are served same-origin from
   `/assets/` via `go:embed` (immutable, versioned filenames). This
   removes unverified remote script execution from the dashboard
-  origin — a compromised CDN or hostile network path could otherwise
-  run arbitrary script in a page that starts/stops live VM migrations
-  — and makes the UI work on air-gapped or egress-restricted clusters
+  origin (a compromised CDN or hostile network path could otherwise
+  run arbitrary script in a page that starts/stops live VM migrations), and
+  makes the UI work on air-gapped or egress-restricted clusters
   where the CDNs never load. Chart.js bytes were verified against the
   SRI hash that was already pinned in-tree before vendoring. The
   Content-Security-Policy drops both CDN origins (`script-src` /
@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller's RBAC already got. Dashboard's in-process orchestrator
   only needs `jobs create/delete/get/list/watch` + `pods
   get/list/watch` + `pods/log get`. Cluster-scope `pods
-  delete/patch` in the separate ClusterRole stays — those are used
+  delete/patch` in the separate ClusterRole stays, and those are used
   by the v0.3.0 source-pod cleanup feature. Apply the updated
   `deploy/dashboard.yaml` when upgrading.
 - `cmd/katamaran-mgr/main.go` package doc: removed the
@@ -170,7 +170,7 @@ works for manual `deploy/migrate.sh` runs.
 
 - `Request.CNIConvergenceDelaySeconds` /
   `.spec.cniConvergenceDelaySeconds` (and source CLI flag
-  `--cni-convergence-delay`) — per-migration override for how long
+  `--cni-convergence-delay`): a per-migration override for how long
   the source keeps the IP tunnel alive after the cutover so the
   cluster's CNI can propagate the pod's new node binding. Zero
   falls back to the compile-time default (5s). Cilium /
@@ -308,9 +308,9 @@ through QMP, driven from a CRD or a web dashboard.
 
 ### Removed
 
-- `internal/orchestrator/script.go` — the old `migrate.sh` wrapper. The
+- `internal/orchestrator/script.go`: the old `migrate.sh` wrapper. The
   shell script remains in `deploy/` for ad-hoc manual testing only.
-- `deploy/job-source.yaml` / `deploy/job-dest.yaml` — same bytes as the
+- `deploy/job-source.yaml` / `deploy/job-dest.yaml`: same bytes as the
   embedded templates in `internal/orchestrator/templates/`. `migrate.sh`
   now reads the canonical files via a relative path.
 

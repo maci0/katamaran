@@ -3,7 +3,7 @@
 ### TL;DR
 
 ```bash
-./scripts/test.sh                                               # smoke tests — no VMs, no KVM, runs anywhere
+./scripts/test.sh                                               # smoke tests: no VMs, no KVM, runs anywhere
 ./scripts/e2e.sh --provider minikube --cni calico --ping-proof  # two-node + zero-drop proof (Calico)
 ./scripts/e2e.sh --provider minikube --cni ovn --ping-proof     # two-node + zero-drop proof (OVN-Kubernetes)
 ./scripts/e2e.sh --provider minikube --cni cilium --ping-proof  # two-node + zero-drop proof (Cilium)
@@ -28,14 +28,14 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 - [2. Fuzz Tests (Go Native Fuzzing)](#2-fuzz-tests-go-native-fuzzing)
 - [3. Minikube Smoke Test (Single-Node, Real QMP)](#3-minikube-smoke-test-single-node-real-qmp)
 - [4. Two-Node E2E Migration Test](#4-two-node-e2e-migration-test)
-- [5. Zero-Packet-Drop Proof — Full Worked Example](#5-zero-packet-drop-proof--full-worked-example)
+- [5. Zero-Packet-Drop Proof: Full Worked Example](#5-zero-packet-drop-proof-full-worked-example)
 - [6. OVN-Kubernetes E2E Migration Test (Two-Node, Zero-Drop Proof)](#6-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof)
 - [7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)](#7-cilium-e2e-migration-test-two-node-zero-drop-proof)
 - [8. Flannel E2E Migration Test (Two-Node, Zero-Drop Proof)](#8-flannel-e2e-migration-test-two-node-zero-drop-proof)
 - [9. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)](#9-kind--podman-e2e-migration-test-two-node-zero-drop-proof)
 - [10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)](#10-nfs-shared-storage-e2e-migration-test-two-node-zero-drop-proof)
 - [11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)](#11-job-based-orchestration-details-kind--podman-zero-drop-proof)
-- [12. macOS Apple Silicon — TCG (Software Emulation)](#12-macos-apple-silicon--tcg-software-emulation)
+- [12. macOS Apple Silicon: TCG (Software Emulation)](#12-macos-apple-silicon-tcg-software-emulation)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -103,7 +103,7 @@ Go native fuzz tests cover every boundary that consumes untrusted input: the QMP
 
 ### Run Seed Corpus (Unit Test Mode)
 
-The seed corpus runs as standard unit tests — instant, no randomization:
+The seed corpus runs as standard unit tests: instant, no randomization:
 
 ```bash
 make fuzz    # or: go test ./... -run "^Fuzz" -count=1
@@ -135,7 +135,7 @@ go test ./cmd/katamaran-mgr/ -fuzz=FuzzHandleAdmit -fuzztime=30s
 
 | Target | Package | What It Tests |
 |--------|---------|---------------|
-| `FuzzResponseUnmarshal` | `internal/qmp` | QMP JSON response parsing — the primary wire protocol attack surface |
+| `FuzzResponseUnmarshal` | `internal/qmp` | QMP JSON response parsing, the primary wire protocol attack surface |
 | `FuzzBlockJobInfoUnmarshal` | `internal/qmp` | `query-block-jobs` output parsing (storage sync polling) |
 | `FuzzMigrateInfoUnmarshal` | `internal/qmp` | `query-migrate` output parsing (RAM migration polling) |
 | `FuzzErrorFormat` | `internal/qmp` | `Error.Error()` formatting with arbitrary class/desc strings |
@@ -239,7 +239,7 @@ The `--storage` flag controls how the E2E test handles block device migration:
 | **local** | `--storage local` | NBD drive-mirror with local disk images | Storage + RAM + Network |
 | **nfs** | `--storage nfs` | Shared NFS-backed disk with `--shared-storage` | RAM + Network (shared disk verified) |
 
-The `local` mode is the most comprehensive: it adds a 64MB virtio-blk data disk to both
+The `local` mode exercises the most: it adds a 64MB virtio-blk data disk to both
 QEMUs and runs katamaran without `--shared-storage`, exercising the full NBD drive-mirror
 synchronization loop (`waitForStorageSync`, `nbd-server-start/add/stop`, `drive-mirror`,
 `block-job-cancel`).
@@ -328,16 +328,16 @@ kubectl get migration <name> -o yaml | yq .status
 While the harness runs, the controller exposes (on each `katamaran-mgr`
 pod, port 8081):
 
-- `/healthz`, `/readyz` — kubelet probes.
-- `/metrics` — Prometheus text-format counters.
-- `/debug/vars` — same counters as expvar JSON, plus runtime memstats.
+- `/healthz`, `/readyz`: kubelet probes.
+- `/metrics`: Prometheus text-format counters.
+- `/debug/vars`: same counters as expvar JSON, plus runtime memstats.
 
 ```bash
 POD=$(kubectl -n kube-system get pod -l app=katamaran-mgr -o jsonpath='{.items[0].metadata.name}')
 kubectl -n kube-system exec "$POD" -- wget -qO- http://localhost:8081/metrics | grep katamaran_
 ```
 
-## 5. Zero-Packet-Drop Proof — Full Worked Example
+## 5. Zero-Packet-Drop Proof: Full Worked Example
 
 This section documents a complete end-to-end live migration with continuous traffic, proving that **zero packets are dropped** during the VM cutover. Every command, its expected output, and the verification steps are shown.
 
@@ -345,11 +345,11 @@ This section documents a complete end-to-end live migration with continuous traf
 
 ```mermaid
 graph TD
-    subgraph Node1["Node 1 — Source (192.168.1.10)"]
+    subgraph Node1["Node 1: Source (192.168.1.10)"]
         VM1["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
     end
 
-    subgraph Node2["Node 2 — Destination (192.168.1.20)"]
+    subgraph Node2["Node 2: Destination (192.168.1.20)"]
         VM2["Kata VM<br/>10.244.1.5<br/>tap0_kata"]
     end
 
@@ -383,7 +383,7 @@ On each node, find the Kata sandbox's QMP socket:
 node1$ sudo find /run/vc -name "extra-monitor.sock"
 /run/vc/vm/abc123def456/extra-monitor.sock
 
-# Node 2 (destination) — after the destination pod is created
+# Node 2 (destination), after the destination pod is created
 node2$ sudo find /run/vc -name "extra-monitor.sock"
 /run/vc/vm/789xyz000111/extra-monitor.sock
 ```
@@ -423,7 +423,7 @@ This is optional but provides visual proof that packets arriving at the source a
 node1$ sudo tcpdump -i mig-a1b2c3d4e5 -nn -c 50 2>&1 | tee /tmp/tunnel-capture.log &
 ```
 
-Replace `mig-a1b2c3d4e5` with the actual tunnel name from the katamaran source log (the name is generated with `mig-` prefix + random hex suffix). This capture must be started **after** the tunnel is created in Step 5 — you can find the name in the source log line "IP tunnel established."
+Replace `mig-a1b2c3d4e5` with the actual tunnel name from the katamaran source log (the name is generated with `mig-` prefix + random hex suffix). This capture must be started **after** the tunnel is created in Step 5. You can find the name in the source log line "IP tunnel established."
 
 ### Step 3: Start katamaran on the Destination (Node 2)
 
@@ -455,7 +455,7 @@ time=... level=INFO msg="Waiting for QEMU RESUME event"
 |------|---------|--------|
 | 1a | `tc qdisc add dev tap0_kata root plug limit 32768` | Install sch_plug qdisc |
 | 1b | `tc qdisc change dev tap0_kata root plug release_indefinite` | Set to pass-through (traffic flows normally) |
-| 4 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode — all arriving packets are queued |
+| 4 | `tc qdisc change dev tap0_kata root plug block` | Switch to buffering mode: all arriving packets are queued |
 
 At this point, any packets that arrive at the destination's tap interface are **buffered in the kernel**, not dropped and not delivered. The destination is ready.
 
@@ -470,7 +470,7 @@ node1$ sudo katamaran \
   --shared-storage
 ```
 
-Expected output (with `--shared-storage`, phase 1 — storage mirroring — is skipped):
+Expected output (with `--shared-storage`, phase 1 (storage mirroring) is skipped):
 
 ```text
 time=... level=INFO msg="Starting live migration" dest_ip=192.168.1.20
@@ -497,12 +497,12 @@ sequenceDiagram
     participant S as Source Node 1<br/>(192.168.1.10)
     participant D as Dest Node 2<br/>(192.168.1.20)
 
-    Note over S: T=0ms — QEMU emits STOP
+    Note over S: T=0ms: QEMU emits STOP
     Note over S: VM paused. No more replies.
     C->>S: Pings still arrive (stale ARP)
 
     rect rgb(245, 158, 11, 0.1)
-    Note over S,D: T=1–3ms — Tunnel setup
+    Note over S,D: T=1-3ms: Tunnel setup
     S->>S: ip tunnel add mig-<id> mode ipip remote 192.168.1.20
     S->>S: ip link set mig-<id> up
     S->>S: ip route replace 10.244.1.5 dev mig-<id>
@@ -511,20 +511,20 @@ sequenceDiagram
 
     C->>S: Pings arrive at source
     S->>D: Forwarded through IPIP tunnel
-    Note over D: qdisc in "block" mode — packets buffered, not dropped
+    Note over D: qdisc in "block" mode: packets buffered, not dropped
 
     rect rgb(16, 185, 129, 0.1)
-    Note over D: T≈25ms — QEMU emits RESUME
+    Note over D: T≈25ms: QEMU emits RESUME
     Note over D: Destination VM is now running
     D->>D: tc qdisc change ... plug release_indefinite
-    Note over D: FLUSH — all buffered packets delivered in order
+    Note over D: FLUSH: all buffered packets delivered in order
     D->>C: Replies to buffered pings (~24ms RTT)
     end
 
     D->>D: announce-self (GARP × 5 rounds)
     Note over D: Switches learn VM MAC on Node 2
 
-    Note over S: T≈5050ms — CNI converged
+    Note over S: T≈5050ms: CNI converged
     S->>S: ip link del mig-<id>
     C->>D: Traffic flows directly to Node 2
 ```
@@ -582,7 +582,7 @@ The packets with elevated RTT (icmp_seq 309-312 in the example) are the ones tha
 2. Buffered by the `sch_plug` qdisc on Node 2's tap interface
 3. Flushed into the VM when `release_indefinite` was issued after RESUME
 
-They were **not dropped** — they just had higher latency because they spent ~25ms in the buffer.
+They were **not dropped**, they just had higher latency because they spent ~25ms in the buffer.
 
 ### Step 7: Verify the Tunnel Was Used (Optional)
 
@@ -636,7 +636,7 @@ node1$ ip tunnel show
 # (no mig-* entry)
 
 node1$ ip route show 10.244.1.5
-# (no route — tunnel was torn down)
+# (no route, tunnel was torn down)
 
 # Node 2: qdisc should be gone (removed when tap interface goes down,
 # or explicitly by katamaran if the tap stays up)
@@ -651,7 +651,7 @@ The proof rests on three mechanisms working together:
 
 1. **IPIP tunnel (source side)**: After STOP, packets for the VM IP that still arrive at the source node (due to stale ARP/routing) are forwarded through the tunnel to the destination node instead of being dropped by the now-dead local VM.
 
-2. **sch_plug qdisc (destination side)**: The destination tap interface buffers all arriving packets (both direct and tunnel-forwarded) in the kernel while the VM is paused. No packet enters the VM until RESUME, and no packet is dropped — they are held in a 32 KB kernel buffer.
+2. **sch_plug qdisc (destination side)**: The destination tap interface buffers all arriving packets (both direct and tunnel-forwarded) in the kernel while the VM is paused. No packet enters the VM until RESUME, and no packet is dropped: they are held in a 32 KB kernel buffer.
 
 3. **Ordered flush (release_indefinite)**: After RESUME, all buffered packets are delivered to the VM in the exact order they arrived. The VM processes them and replies normally. The elevated RTT on these packets (~24ms) is the time spent in the buffer, not retransmission.
 
@@ -714,16 +714,16 @@ time=... level=INFO msg="GARP announce-self scheduled" rounds=5
 time=... level=INFO msg="Destination setup complete"
 ```
 
-The zero-drop behavior is identical — the tunnel and qdisc protect the network cutover regardless of whether storage was mirrored via NBD or shared.
+The zero-drop behavior is identical: the tunnel and qdisc protect the network cutover regardless of whether storage was mirrored via NBD or shared.
 
 ### Summary of Proof Artifacts
 
 | Artifact | Location | What It Proves |
 |----------|----------|----------------|
-| Ping summary | Client terminal | `0% packet loss` — no drops |
+| Ping summary | Client terminal | `0% packet loss`, no drops |
 | Ping RTT spike | `icmp_seq` 309-312 | Packets were buffered (~24ms), not dropped |
 | tcpdump on mig-\<id\> | `/tmp/tunnel-capture.log` | Packets were forwarded via IPIP tunnel |
-| tc qdisc stats | `tc -s qdisc show` | `dropped 0`, `backlog 0` — buffer worked |
+| tc qdisc stats | `tc -s qdisc show` | `dropped 0`, `backlog 0`, buffer worked |
 | katamaran dest log | `Queue unplugged. Buffered packets delivered.` | Flush succeeded |
 | katamaran source log | `IP tunnel established. Traffic redirected.` | Tunnel was created |
 | Host route cleanup | `ip tunnel show` / `ip route show` | No leaked state |
@@ -1084,16 +1084,16 @@ sequenceDiagram
 
 | Component | Description |
 |-----------|-------------|
-| Dest execution | K8s Job (`internal/orchestrator/templates/job-dest.yaml`) — privileged pod on destination node |
-| Source execution | K8s Job (`internal/orchestrator/templates/job-source.yaml`) — privileged pod on source node |
-| Orchestration | `deploy/migrate.sh` — renders the canonical templates above via `envsubst`, applies jobs, waits for completion |
+| Dest execution | K8s Job (`internal/orchestrator/templates/job-dest.yaml`): privileged pod on destination node |
+| Source execution | K8s Job (`internal/orchestrator/templates/job-source.yaml`): privileged pod on source node |
+| Orchestration | `deploy/migrate.sh`: renders the canonical templates above via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
 | Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
 
-## 12. macOS Apple Silicon — TCG (Software Emulation)
+## 12. macOS Apple Silicon: TCG (Software Emulation)
 
 > [!NOTE]
-> TCG support is **experimental** — a convenience for developers on macOS who
+> TCG support is **experimental**, a convenience for developers on macOS who
 > want to run the e2e suite locally without a Linux box. It is not a
 > production target and is not tested in CI. Bug reports welcome, but
 > KVM-based testing on Linux remains the authoritative path.
@@ -1118,7 +1118,7 @@ enabling local e2e testing on macOS.
 # With NBD storage mirroring
 ./scripts/e2e.sh --tcg --method job --storage local --ping-proof
 
-# Environment only (no migration — useful for manual testing)
+# Environment only (no migration, useful for manual testing)
 ./scripts/e2e.sh --tcg --env-only
 ```
 
@@ -1148,12 +1148,12 @@ PASS: E2E Test Passed!
 
 ### Known Limitations
 
-- **`--method crd` fails** — migration data transfers but the CRD controller
+- **`--method crd` fails**: migration data transfers but the CRD controller
   reports failure because the dest katamaran job sees a QMP disconnect
   post-migration. Use `--method job` instead.
-- **`--storage nfs` unsupported on kind** — the kind container kernel lacks
+- **`--storage nfs` unsupported on kind**: the kind container kernel lacks
   the NFS client module. Not TCG-specific.
-- **x86_64 TCG is impractical** — same-arch software emulation on x86 is
+- **x86_64 TCG is impractical**: same-arch software emulation on x86 is
   ~10x slower than aarch64 on Apple Silicon. VM boot exceeds 10 minutes
   on typical CI runners.
 

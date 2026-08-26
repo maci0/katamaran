@@ -70,7 +70,7 @@ spec:
             cpu: 50m
             memory: 64Mi
           # Limit must cover: the VM's RAM dimm (mem-path=/dev/shm
-          # backed by the 4Gi tmpfs volume below — that allocation is
+          # backed by the 4Gi tmpfs volume below, and that allocation is
           # accounted to this container's cgroup), plus QEMU and
           # virtiofsd overhead. The previous 4Gi limit OOMKilled the
           # container as soon as the migrated VM's pages started

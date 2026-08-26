@@ -10,7 +10,7 @@
 // Activation status (current): the factory binds the configured Unix
 // socket but Kata's vm_cache_endpoint feature requires the
 // `kata-runtime factory init` lifecycle to register the factory with
-// the runtime. With vm_cache_number=0 (the daemonset default — see
+// the runtime. With vm_cache_number=0 (the daemonset default, see
 // the "Point Kata's vm_cache_endpoint at the katamaran factory
 // socket" block in deploy/daemonset.yaml for why), kata-shim never
 // dials this socket on the normal pod-creation path. Setting
@@ -79,7 +79,7 @@ func recoverUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServe
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, `katamaran-factory — gRPC VM cache server for Kata Containers live migration
+	fmt.Fprintf(w, `katamaran-factory: gRPC VM cache server for Kata Containers live migration
 
 Usage:
   katamaran-factory [flags]

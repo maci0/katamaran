@@ -156,7 +156,7 @@ const cleanupJobTimeout = 10 * time.Second
 //
 // The delete deliberately runs on a context that ignores the caller's
 // cancellation (values preserved, deadline fresh): cancellation is itself one
-// of the failures this compensation exists for — a Migration CR deleted while
+// of the failures this compensation exists for: a Migration CR deleted while
 // Apply is waiting for dest scheduling has no status.migrationID yet, so the
 // controller's Stop path cannot reach these Jobs, and issuing the delete with
 // the already-cancelled ctx would fail instantly and orphan the Job in the
@@ -204,7 +204,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if req.ReplayCmdline {
 		// Source captures /proc/<qemu>/cmdline locally so it can compute
 		// the KATAMARAN_CMDLINE_B64 marker on the way out. The dest then
-		// scrapes that marker from the source pod log via apiserver —
+		// scrapes that marker from the source pod log via apiserver:
 		// stageThenStartDest patches `--replay-cmdline-from-pod
 		// <ns>/<podname>` onto the dest job's command once the source pod
 		// is up. No --replay-cmdline file flag here on the dest extra.
@@ -319,8 +319,8 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // stashed on run for the reconciler to attach to PhaseSucceeded.
 //
 // Exit condition: a RESULT marker, a failed/cancelled progress status,
-// or ctx cancel. Plain `status=completed` is NOT terminal here — the
-// RESULT line lands a few ms after — so we keep polling until RESULT
+// or ctx cancel. Plain `status=completed` is NOT terminal here (the
+// RESULT line lands a few ms after), so we keep polling until RESULT
 // arrives or the run is torn down.
 func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer func() {
@@ -622,7 +622,7 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 		}
 		downtimeMS, ramTransferred, ramTotal = parseResultFields(parseProgressFields(line[i+len(marker):]))
 		ok = true
-		// Don't break — take the LAST marker, which is what tailProgress
+		// Don't break: take the LAST marker, which is what tailProgress
 		// would have picked up too.
 	}
 	return downtimeMS, ramTransferred, ramTotal, ok
@@ -935,7 +935,7 @@ func (n *native) Stop(ctx context.Context, id MigrationID) error {
 
 // poll watches BOTH the source and destination Job statuses and emits
 // StatusUpdate events. The migration is reported successful when the dest
-// Job reaches Complete — the dest Job receives RAM, fires QEMU's RESUME
+// Job reaches Complete: the dest Job receives RAM, fires QEMU's RESUME
 // event, and exits 0 only on a complete handover. The source Job's exit
 // code is incidental: kata-shim frequently kills the source QEMU after
 // migration completes (so the source binary's QMP polling errors out and

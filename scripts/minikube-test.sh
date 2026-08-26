@@ -1,5 +1,5 @@
 #!/bin/bash
-# minikube-test.sh — Smoke tests for katamaran on a minikube cluster with Kata Containers.
+# minikube-test.sh: Smoke tests for katamaran on a minikube cluster with Kata Containers.
 #
 # Validates:
 #   1. katamaran binary runs correctly inside a Kubernetes node with Kata

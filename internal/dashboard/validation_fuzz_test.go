@@ -37,7 +37,7 @@ func FuzzSplitTarget(f *testing.F) {
 }
 
 // FuzzValidTargetPort asserts the port validator only accepts canonical decimal
-// strings in the legal 1-65535 range — anything it accepts must round-trip
+// strings in the legal 1-65535 range: anything it accepts must round-trip
 // through strconv with an in-range result.
 func FuzzValidTargetPort(f *testing.F) {
 	for _, s := range []string{"", "0", "1", "80", "65535", "65536", "-1", "+1", "08", "0x10", "99999999999999999999", "8a", " 80"} {

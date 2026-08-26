@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy/migrate.sh — Orchestration wrapper for katamaran Job-based migration.
+# deploy/migrate.sh: Orchestration wrapper for katamaran Job-based migration.
 #
 # Usage:
 #   ./deploy/migrate.sh \

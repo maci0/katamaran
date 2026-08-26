@@ -6,18 +6,18 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 
 ## Features
 
-- **Pod-picker UX** — pick a kata-qemu source pod and destination node from dropdowns; backend resolves sandbox UUID, QEMU PID, pod IP, and node IP automatically. Optional dest-pod picker for symmetric resolution.
-- **Cmdline replay (zero-config dest)** — when `replay_cmdline=true` is set, the dashboard captures the source QEMU command line and replays it on the destination node with `-incoming defer`. The dest sandbox is spawned by katamaran itself.
-- **Advanced override pane** — every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
-- **Migration orchestration** — fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); it no longer shells out to `deploy/migrate.sh`.
-- **RAM transfer progress bar** — live `submitted → dest-starting → src-starting → transferring → cutover → succeeded` widget driven by `KATAMARAN_PROGRESS` markers tailed from the source pod. Shows percent, transferred/total bytes, then collapses to a green "done" bar with the actual VM downtime once the dest job completes.
-- **Auto-downtime** — checkbox in the migration form. When set, the source binary measures network RTT to the destination via ICMP echo and programs the QEMU downtime limit as `rtt × 2 + 25ms`. The chosen limit is logged before the cutover (`>>> transferring: downtime limit 25ms (auto from 0ms RTT)`) and recapped on the success line.
-- **Ping latency chart** — real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
-- **HTTP load generator** — continuous HTTP GET requests to a target, graphed alongside ping data.
-- **Live stats** — packets transmitted, dropped, average latency, max latency (computed from ping data).
-- **Color-coded log viewer** — red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries. Final succeeded line includes wall-clock + setup/xfer breakdown, e.g. `>>> succeeded: 2.25 GB transferred, 27ms downtime, 30s wall (2s setup + 28s xfer)`.
-- **Status badges** — idle (gray), migration running (blue pulse), loadgen active (green pulse).
-- **Dark theme** — navy/slate backgrounds with SVG katamaran boat + animated wave header.
+- **Pod-picker UX**: pick a kata-qemu source pod and destination node from dropdowns; backend resolves sandbox UUID, QEMU PID, pod IP, and node IP automatically. Optional dest-pod picker for symmetric resolution.
+- **Cmdline replay (zero-config dest)**: when `replay_cmdline=true` is set, the dashboard captures the source QEMU command line and replays it on the destination node with `-incoming defer`. The dest sandbox is spawned by katamaran itself.
+- **Advanced override pane**: every auto-derived value (QMP socket paths, tap interface, netns, dest IP, VM IP) is editable. Leave blank for auto, fill in to override.
+- **Migration orchestration**: fill in source/destination details (or pick from dropdowns) and submit. The dashboard runs migrations through the in-cluster Native orchestrator (client-go); it no longer shells out to `deploy/migrate.sh`.
+- **RAM transfer progress bar**: live `submitted → dest-starting → src-starting → transferring → cutover → succeeded` widget driven by `KATAMARAN_PROGRESS` markers tailed from the source pod. Shows percent, transferred/total bytes, then collapses to a green "done" bar with the actual VM downtime once the dest job completes.
+- **Auto-downtime**: checkbox in the migration form. When set, the source binary measures network RTT to the destination via ICMP echo and programs the QEMU downtime limit as `rtt × 2 + 25ms`. The chosen limit is logged before the cutover (`>>> transferring: downtime limit 25ms (auto from 0ms RTT)`) and recapped on the success line.
+- **Ping latency chart**: real-time Chart.js graph showing per-packet latency; buffered packets during cutover appear as RTT spikes.
+- **HTTP load generator**: continuous HTTP GET requests to a target, graphed alongside ping data.
+- **Live stats**: packets transmitted, dropped, average latency, max latency (computed from ping data).
+- **Color-coded log viewer**: red for errors, amber for warnings, green for success, blue for `>>>` markers; auto-scrolls with new entries. Final succeeded line includes wall-clock + setup/xfer breakdown, e.g. `>>> succeeded: 2.25 GB transferred, 27ms downtime, 30s wall (2s setup + 28s xfer)`.
+- **Status badges**: idle (gray), migration running (blue pulse), loadgen active (green pulse).
+- **Dark theme**: navy/slate backgrounds with SVG katamaran boat + animated wave header.
 
 ## Screenshots
 

@@ -1,6 +1,6 @@
 # User Stories
 
-User stories for katamaran — zero-packet-drop live migration for Kata Containers.
+User stories for katamaran: zero-packet-drop live migration for Kata Containers.
 
 ### TL;DR
 

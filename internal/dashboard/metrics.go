@@ -163,7 +163,7 @@ func writePromMapMetric(w io.Writer, name, help, labelName string, m *expvar.Map
 // publishExpvars wires the dashboard's runtime counters into the
 // process-wide expvar registry. Run() can be invoked more than once
 // per process (the test suite does), so we use expvar.Get to detect
-// already-registered names and reuse them — expvar.NewString /
+// already-registered names and reuse them, because expvar.NewString /
 // expvar.Publish panic on duplicate registration.
 //
 // The handler functions captured here are bound to the live App, so

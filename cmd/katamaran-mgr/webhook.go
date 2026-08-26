@@ -32,7 +32,7 @@ import (
 
 // Admission webhook counters surfaced by katamaran-mgr's /metrics endpoint
 // (see debug.go). The webhook runs with failurePolicy=Ignore, so internal
-// errors fall through to "allow" silently — webhookFailOpenTotal is the only
+// errors fall through to "allow" silently: webhookFailOpenTotal is the only
 // signal that race-window protection has stopped working. Alert on it.
 var (
 	webhookAdmissionsTotal = expvar.NewInt("katamaran_webhook_admissions_total")

@@ -56,7 +56,7 @@ var (
 	// dest pod scheduling + image pull + virtiofsd start + QEMU spawn +
 	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s on
 	// a warm cluster, but can stretch to 30-40s when the dest node is
-	// freshly added (cgroup setup, image fetch, kata-deploy wiring) — bumped
+	// freshly added (cgroup setup, image fetch, kata-deploy wiring), bumped
 	// from 25s to 60s to cover that case. Live e2e on a 3-node minikube
 	// after adding a worker showed source's migrate command racing dest
 	// startup at the 25s mark, returning "Connection refused".
@@ -94,7 +94,7 @@ var memPathRegex = regexp.MustCompile(`mem-path=([^,]+)`)
 // node-local file the dest pod can read into the migrated guest's nvdimm,
 // turning the replay channel into an arbitrary-file-read primitive on the
 // dest node. Paths outside these prefixes (or containing ".." traversal) are
-// dropped — the caller falls back to replay without an nvdimm copy.
+// dropped: the caller falls back to replay without an nvdimm copy.
 var nvdimmPathAllowedPrefixes = []string{
 	"/opt/kata/",
 	"/usr/share/kata-containers/",
@@ -236,7 +236,7 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 			// Strip fd= keys from the tap netdev (kata-shim passed those
 			// via SCM_RIGHTS; we cannot replay them). Add script=no/downscript=no
 			// so QEMU doesn't try to run /opt/kata/etc/qemu-ifup. The tap
-			// interface itself must exist beforehand — destspawn creates it.
+			// interface itself must exist beforehand: destspawn creates it.
 			if i+1 < len(args) {
 				next := stripFDKeys(args[i+1])
 				if strings.HasPrefix(next, "tap,") || next == "tap" {
@@ -246,7 +246,7 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 					if !strings.Contains(next, "script=") {
 						next += ",script=no,downscript=no"
 					}
-					// vhost=on without a vhostfd is fine — QEMU opens
+					// vhost=on without a vhostfd is fine: QEMU opens
 					// /dev/vhost-net itself when vhost is requested without
 					// an inherited fd.
 				}
@@ -384,7 +384,7 @@ func captureSourceCmdline(qemuPID int, outPath string) error {
 func findSrcSandboxDir(args []string, sandboxRoot string) (sandboxDir, sandboxID string) {
 	prefix := strings.TrimRight(sandboxRoot, "/") + "/"
 	for _, a := range args {
-		// arg may contain other text before the prefix (e.g. socket=) — find it.
+		// arg may contain other text before the prefix (e.g. socket=), so find it.
 		idx := strings.Index(a, prefix)
 		if idx < 0 {
 			continue
@@ -419,7 +419,7 @@ func findSrcSandboxDir(args []string, sandboxRoot string) (sandboxDir, sandboxID
 //
 // On success cfg.QMPSocket points at a live QMP socket and the caller can
 // proceed with the normal RunDestination flow. The function does not
-// return cleanup handles — virtiofsd and QEMU are left running until they
+// return cleanup handles: virtiofsd and QEMU are left running until they
 // terminate naturally (dest job pod teardown). This matches e2e.sh, which
 // also leaks them and relies on pod GC.
 //
@@ -442,7 +442,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 
 	srcSandboxDir, srcSandboxID := findSrcSandboxDir(args, sandboxRoot)
 	if srcSandboxDir == "" {
-		// Fall back to dst sandbox dir as both src and dst — substitution
+		// Fall back to dst sandbox dir as both src and dst: substitution
 		// becomes a no-op but at least the cmdline is still usable when the
 		// source happened to use the same path layout (rare).
 		slog.Warn("Could not locate source sandbox dir in captured cmdline; skipping path substitution", "sandbox_root", sandboxRoot)
@@ -660,7 +660,7 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 // QEMU and virtiofsd run for the lifetime of the dest pod.
 //
 // We deliberately do not use exec.CommandContext because the context's
-// cancellation should not kill QEMU mid-migration — QEMU exits on its own
+// cancellation should not kill QEMU mid-migration: QEMU exits on its own
 // when migration completes (or when the dest job pod is torn down).
 var spawnDetachedProcess = func(_ context.Context, name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set

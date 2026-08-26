@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-minikube-modules.sh — Build missing kernel modules for minikube kvm2 VMs.
+# build-minikube-modules.sh: Build missing kernel modules for minikube kvm2 VMs.
 #
 # Minikube's kvm2 kernel (Buildroot-based) ships without several modules needed
 # by katamaran: sch_plug (network buffering) and NFS client (shared storage tests).
@@ -16,8 +16,8 @@
 #   ./scripts/build-minikube-modules.sh <minikube-profile> [module-group...]
 #
 #   Module groups:
-#     sch_plug   — tc sch_plug qdisc for zero-drop packet buffering (default)
-#     nfs        — NFS client (sunrpc, lockd, nfs, nfsv3) for --storage nfs
+#     sch_plug: tc sch_plug qdisc for zero-drop packet buffering (default)
+#     nfs: NFS client (sunrpc, lockd, nfs, nfsv3) for --storage nfs
 #
 #   If no module groups are specified, only sch_plug is built.
 #

@@ -1308,7 +1308,7 @@
                 nodeSel.appendChild(nOpt);
             }
             // Repopulate the dest-pod dropdown with kata pods on the chosen node.
-            // Leaving it blank is fine — the resolver only runs server-side when a
+            // Leaving it blank is fine: the resolver only runs server-side when a
             // dest pod is selected, and the orchestrator falls back to its default.
             var destPodSel = document.getElementById('dest_pod_select');
             function refreshDestPods() {

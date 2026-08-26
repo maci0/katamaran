@@ -184,7 +184,7 @@ func TestServerGetBaseVMHonorsDeadline(t *testing.T) {
 }
 
 // TestServerGetBaseVMNonBlockingWhenQueueEmpty locks the contract that
-// GetBaseVM does NOT block when the migration queue is empty — it must
+// GetBaseVM does NOT block when the migration queue is empty: it must
 // return Unavailable so kata-shim falls back to cold VM creation. Live
 // regression test: blocking here breaks every fresh sandbox creation
 // when Kata is configured with vm_cache_number=1 + factory endpoint.

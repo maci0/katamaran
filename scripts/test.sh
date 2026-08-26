@@ -1,5 +1,5 @@
 #!/bin/bash
-# test.sh — Smoke tests for the katamaran project.
+# test.sh: Smoke tests for the katamaran project.
 #
 # Validates:
 #   1. Go source compiles cleanly (go vet + gofmt + go build)
@@ -60,7 +60,7 @@ else
     fail "go vet found issues"
 fi
 
-# gofmt check — all Go source files should already be formatted.
+# gofmt check: all Go source files should already be formatted.
 # Use gofmt directly (from same dir as Go SDK, or system PATH).
 GOFMT_CMD="$(dirname "${GO_CMD}")/gofmt"
 if [[ ! -x "${GOFMT_CMD}" ]]; then

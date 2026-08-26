@@ -112,7 +112,7 @@ spec:
           type: RuntimeDefault
       # Spread the two replicas across nodes when the cluster has more
       # than one. Soft preference (preferredDuringScheduling) so a
-      # single-node cluster still schedules both — they just both run
+      # single-node cluster still schedules both, and they just both run
       # there, lease-elect normally, and only one reconciles.
       affinity:
         podAntiAffinity:
@@ -148,7 +148,7 @@ spec:
             port: debug
           initialDelaySeconds: 2
           periodSeconds: 10
-        # Match the Dockerfile's `USER mgr` (uid 1000) numerically — Kubelet's
+        # Match the Dockerfile's `USER mgr` (uid 1000) numerically: Kubelet's
         # runAsNonRoot check rejects images that declare USER by name.
         securityContext:
           allowPrivilegeEscalation: false
@@ -167,7 +167,7 @@ spec:
 # callbacks (see setLeaderLabel in cmd/katamaran-mgr/main.go).
 # pendingAdoption state lives in the leader's process memory, so
 # routing admission traffic exclusively to the leader is required for
-# correctness — a follower has an empty registry and would silently
+# correctness: a follower has an empty registry and would silently
 # allow RS replacements during the adoption window. Brief gap during
 # leader handoff (~15s lease) is covered by failurePolicy=Ignore on
 # the ValidatingWebhookConfiguration.

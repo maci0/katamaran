@@ -77,8 +77,8 @@ func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 	}
 
 	// Create tunnel with the selected encapsulation mode.
-	// ipip: ipip (v4) / ip6ip6 (v6) — minimal overhead, may be blocked by cloud VPCs.
-	// gre:  gre  (v4) / ip6gre  (v6) — +4 bytes overhead, widely supported by middleboxes.
+	// ipip: ipip (v4) / ip6ip6 (v6): minimal overhead, may be blocked by cloud VPCs.
+	// gre:  gre  (v4) / ip6gre  (v6): +4 bytes overhead, widely supported by middleboxes.
 	var mode string
 	switch {
 	case tunnelMode == TunnelModeGRE && dest.Is6():
@@ -109,7 +109,7 @@ func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode
 		return errors.Join(fmt.Errorf("bringing up tunnel: %w", err), rollbackTunnel(ctx, tunnelName))
 	}
 
-	// Use "replace" instead of "add" for idempotency — the VM IP may already
+	// Use "replace" instead of "add" for idempotency: the VM IP may already
 	// have a route via the local pod network on the source node.
 	if vm.Is6() {
 		err = runCmd(ctx, "ip", "-6", "route", "replace", vmStr, "dev", tunnelName)
