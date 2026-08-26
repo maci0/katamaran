@@ -161,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Certificate validity uses calendar years and timestamps are UTC.
 - Stale shim sockets are cleaned up, and the dest Job is removed when
   re-rendering fails.
+- `go.mod` go directive on 1.26.6, clearing the stdlib advisories
+  govulncheck flagged against 1.26.2 (GO-2026-6218, -6091, -6090, -6089,
+  GO-2026-5972, -5856, GO-2026-5039, -5038).
+- `make lint-shell` passes on the shellcheck build CI runs, which reports
+  a trap-invoked cleanup as SC2317 where newer builds report SC2329.
+
 ## [0.3.0] - 2026-05-07
 
 ### Added

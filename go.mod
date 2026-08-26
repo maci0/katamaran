@@ -1,6 +1,6 @@
 module github.com/maci0/katamaran
 
-go 1.26.2
+go 1.26.6
 
 require (
 	github.com/containerd/containerd/api v1.11.1

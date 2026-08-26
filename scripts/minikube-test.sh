@@ -65,7 +65,9 @@ fail() {
 }
 
 # Invoked via `trap cleanup EXIT` below; shellcheck -x misses that linkage.
-# shellcheck disable=SC2329
+# SC2317 is the same finding on older shellcheck, which flags the body
+# rather than the function.
+# shellcheck disable=SC2329,SC2317
 cleanup() {
     if [[ "${ENV_ONLY}" == "true" ]]; then
         echo ">>> --env-only specified, leaving minikube profile '${PROFILE}' intact"
