@@ -5,4 +5,4 @@ package buildinfo
 // prevent drift during releases. Override at build time via ldflags:
 //
 //	go build -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=v1.0.0"
-var Version = "v0.4.1"
+var Version = "v0.4.2"

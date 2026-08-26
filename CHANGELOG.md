@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-08-26
+## [0.4.2] - 2026-08-26
 
-v0.4.0 was tagged but its release run failed before publishing anything:
-no images, no GitHub Release. Everything below ships under v0.4.1.
+v0.4.0 and v0.4.1 were tagged but their release runs failed before
+publishing anything: no images, no GitHub Release. Everything below
+ships under v0.4.2.
 
 ### Added
 
@@ -167,6 +168,10 @@ no images, no GitHub Release. Everything below ships under v0.4.1.
 - `go.mod` go directive on 1.26.6, clearing the stdlib advisories
   govulncheck flagged against 1.26.2 (GO-2026-6218, -6091, -6090, -6089,
   GO-2026-5972, -5856, GO-2026-5039, -5038).
+- All four Dockerfiles pin the golang builder at go 1.26.7 (previously
+  1.26.2), so the shipped binaries carry the patched stdlib and not just
+  the analysis. The old pin could not build against the raised go
+  directive at all: the image sets `GOTOOLCHAIN=local`.
 - `make lint-shell` passes on the shellcheck build CI runs, which reports
   a trap-invoked cleanup as SC2317 where newer builds report SC2329.
 
@@ -414,8 +419,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.1
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.2
 [0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/maci0/katamaran/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/maci0/katamaran/compare/v0.1.1...v0.1.2
