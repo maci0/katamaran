@@ -48,3 +48,6 @@ sweep-results/
 /containerd-shim-katamaran-adopted-v2
 .playwright-mcp/
 .review-loop.lock
+
+# Scratch work
+.scratch/
