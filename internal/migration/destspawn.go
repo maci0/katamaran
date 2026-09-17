@@ -312,9 +312,7 @@ func stripFDKeys(v string) string {
 }
 
 // readCmdlineFile loads a captured QEMU cmdline file and returns the argv
-// slice (including argv[0]). The file is typically newline-delimited (see
-// captureSourceCmdline) but raw NUL-delimited /proc/<pid>/cmdline content is
-// also accepted; see parseCmdlineBytes for the delimiter rule.
+// slice (including argv[0]).
 func readCmdlineFile(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -326,13 +324,12 @@ func readCmdlineFile(path string) ([]string, error) {
 // parseCmdlineBytes accepts either NUL-delimited (`/proc/<pid>/cmdline` raw)
 // or newline-delimited (post-`tr '\0' '\n'`) cmdline data. NUL takes
 // precedence: if the buffer contains any NUL byte it is split on NUL, else
-// on newline. Empty fields are dropped.
+// on newline.
 func parseCmdlineBytes(data []byte) []string {
-	sep := byte('\n')
 	if bytes.IndexByte(data, 0) >= 0 {
-		sep = 0
+		return strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 	}
-	parts := strings.Split(string(data), string(sep))
+	parts := strings.Split(string(data), "\n")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p == "" {
@@ -344,7 +341,7 @@ func parseCmdlineBytes(data []byte) []string {
 }
 
 // captureSourceCmdline reads /proc/<pid>/cmdline for the source QEMU and
-// writes it (NUL→newline) to outPath. The output directory is created if it
+// writes it to outPath. The output directory is created if it
 // does not exist. The caller (RunSource) emits the
 // KATAMARAN_CMDLINE_AT / KATAMARAN_CMDLINE_B64 markers on success.
 func captureSourceCmdline(qemuPID int, outPath string) error {
@@ -366,8 +363,7 @@ func captureSourceCmdline(qemuPID int, outPath string) error {
 			return fmt.Errorf("create cmdline output dir %s: %w", dir, err)
 		}
 	}
-	body := strings.Join(args, "\n") + "\n"
-	if err := os.WriteFile(outPath, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(outPath, raw, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 	return nil
@@ -405,7 +401,7 @@ func findSrcSandboxDir(args []string, sandboxRoot string) (sandboxDir, sandboxID
 
 // spawnReplayedQEMU performs the full destination cmdline-replay flow:
 //
-//  1. Reads cfg.ReplayCmdlineFile (one QEMU arg per line, plus argv[0]).
+//  1. Reads cfg.ReplayCmdlineFile.
 //  2. Computes path substitutions from the captured cmdline against
 //     cfg.QMPSocket's parent (which is also the synthetic dest sandbox dir).
 //  3. Copies the source nvdimm image to a writable temp file on dest.

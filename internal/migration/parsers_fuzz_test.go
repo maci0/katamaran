@@ -6,8 +6,8 @@ import (
 )
 
 // FuzzParseCmdlineBytes hammers the raw-byte cmdline splitter, which consumes
-// untrusted /proc/<pid>/cmdline content and captured cmdline files. The only
-// contract is "never panic, never emit empty fields"; the delimiter rule (NUL
+// untrusted /proc/<pid>/cmdline content and captured cmdline files. The
+// delimiter rule (NUL
 // wins over newline) is asserted so a regression that picks the wrong
 // separator is caught instead of silently mangling argv.
 func FuzzParseCmdlineBytes(f *testing.F) {
@@ -29,9 +29,15 @@ func FuzzParseCmdlineBytes(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		args := parseCmdlineBytes(data)
-		for _, a := range args {
-			if a == "" {
-				t.Fatalf("parseCmdlineBytes emitted an empty field for %q", data)
+		if strings.ContainsRune(string(data), 0) {
+			if got, want := strings.Join(args, "\x00"), strings.TrimSuffix(string(data), "\x00"); got != want {
+				t.Fatalf("cmdline bytes changed: got %q, want %q", got, want)
+			}
+		} else {
+			for _, a := range args {
+				if a == "" {
+					t.Fatalf("parseCmdlineBytes emitted an empty newline field for %q", data)
+				}
 			}
 		}
 		// Delimiter rule: NUL present => split on NUL only (newlines stay inside

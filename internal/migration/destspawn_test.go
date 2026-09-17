@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -41,6 +42,31 @@ func TestParseCmdlineBytes_DropsEmptyFields(t *testing.T) {
 	want := []string{"/bin/true", "--flag"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseCmdlineBytes drop-empty got %v, want %v", got, want)
+	}
+}
+
+func TestCaptureSourceCmdline_RoundTrip(t *testing.T) {
+	if out := os.Getenv("KATAMARAN_TEST_CMDLINE_OUTPUT"); out != "" {
+		if err := captureSourceCmdline(os.Getpid(), out); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readCmdlineFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got, os.Args) {
+			t.Fatalf("captured argv = %q, want %q", got, os.Args)
+		}
+		return
+	}
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCaptureSourceCmdline_RoundTrip$", "--",
+		"/images/café\n磁盘.img", "/images/cafe\u0301.img", "👩‍💻", "/images/\xff.img", "", "last", "")
+	cmd.Env = append(os.Environ(), "KATAMARAN_TEST_CMDLINE_OUTPUT="+filepath.Join(t.TempDir(), "cmdline"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("cmdline round trip: %v\n%s", err, output)
 	}
 }
 

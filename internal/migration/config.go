@@ -205,7 +205,7 @@ type DestConfig struct {
 	DestPodName      string
 	DestPodNamespace string
 	// ReplayCmdlineFile, when non-empty, points at a file containing the
-	// source QEMU's /proc/<pid>/cmdline (NUL→newline). The destination
+	// source QEMU's /proc/<pid>/cmdline. The destination
 	// binary transforms this cmdline (sandbox-path substitutions, strip
 	// readonly=on on the nvdimm backend, drop existing -daemonize and
 	// -incoming, append -incoming defer), spawns the QEMU itself inside
