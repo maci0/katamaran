@@ -558,8 +558,9 @@ wait_rc=$?
 set -e
 
 # Wait for dest job to complete too (it finishes shortly after source).
+dest_rc=0
 if [[ "$wait_rc" -eq 0 ]]; then
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${DEST_JOB_NAME}" --timeout=60s 2>/dev/null || true
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${DEST_JOB_NAME}" --timeout=60s || dest_rc=$?
 fi
 
 dump_debug
@@ -567,6 +568,10 @@ dump_debug
 if [[ "$wait_rc" -ne 0 ]]; then
     echo "Error: source migration job did not complete successfully." >&2
     exit "$wait_rc"
+fi
+if [[ "$dest_rc" -ne 0 ]]; then
+    echo "Error: destination migration job did not complete successfully." >&2
+    exit "$dest_rc"
 fi
 
 MIG_SUCCESS=true

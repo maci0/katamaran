@@ -367,6 +367,35 @@ if [[ -x "${MIGRATE_SCRIPT}" ]]; then
     else
         fail "migrate.sh should validate --tap format"
     fi
+
+    # A failed destination-job wait after a successful source wait must not
+    # surface exit 0: scripts consuming migrate.sh would see a broken
+    # migration as success and skip their own failure handling.
+    SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/migrate-shim.XXXXXX")"
+    cat > "${SHIM_DIR}/kubectl" <<'EOF'
+#!/bin/bash
+case "$*" in
+    *"--for=condition=complete job/katamaran-dest-"*) exit 1 ;;
+esac
+exit 0
+EOF
+    cat > "${SHIM_DIR}/envsubst" <<'EOF'
+#!/bin/bash
+cat
+EOF
+    chmod +x "${SHIM_DIR}/kubectl" "${SHIM_DIR}/envsubst"
+    DEST_FAIL_LOG="$(mktemp "${TMPDIR:-/tmp}/migrate-destfail.XXXXXX")"
+    DEST_FAIL_RC=0
+    PATH="${SHIM_DIR}:${PATH}" KATAMARAN_KEEP_JOBS=true \
+        "${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 \
+        --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 \
+        --vm-ip 10.244.0.9 --image katamaran:dev > "${DEST_FAIL_LOG}" 2>&1 || DEST_FAIL_RC=$?
+    if [[ ${DEST_FAIL_RC} -ne 0 ]] && ! grep -q "Migration completed successfully" "${DEST_FAIL_LOG}"; then
+        pass "migrate.sh fails when destination job wait fails"
+    else
+        fail "migrate.sh should fail when destination job wait fails"
+    fi
+    rm -rf "${SHIM_DIR}" "${DEST_FAIL_LOG}"
 else
     fail "deploy/migrate.sh not found or not executable"
 fi
