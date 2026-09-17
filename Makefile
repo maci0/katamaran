@@ -51,6 +51,7 @@ lint-shell:
 # Run unit tests with race detector
 test:
 	go test ./... -count=1 -timeout 120s -race
+	node --test internal/dashboard/*.test.cjs
 
 # Run smoke tests (no VMs required)
 smoke:

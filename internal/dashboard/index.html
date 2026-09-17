@@ -872,7 +872,9 @@
         downtimeInput.classList.toggle('opacity-50', disabled);
         downtimeInput.classList.toggle('cursor-not-allowed', disabled);
     }
-    autoDowntimeChk.addEventListener('change', syncDowntimeEnabled);
+    autoDowntimeChk.addEventListener('change', function() {
+        syncDowntimeEnabled();
+    });
     syncDowntimeEnabled();
     ['dest_ip', 'vm_ip'].forEach(function(id) {
         var field = document.getElementById(id);
