@@ -2,13 +2,14 @@
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
+KATAMARAN_BINARY ?= bin/katamaran
 
 # Default target
 all: build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim
 
 # Build the katamaran binary
 build:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran ./cmd/katamaran/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o "$(KATAMARAN_BINARY)" ./cmd/katamaran/
 
 # Build the dashboard binary
 build-dashboard:

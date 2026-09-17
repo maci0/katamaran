@@ -216,7 +216,21 @@ func TestRun_InvalidLogFormat(t *testing.T) {
 	}
 }
 
+func TestRun_RequiresMigrationImage(t *testing.T) {
+	origLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+	t.Setenv("KATAMARAN_MIGRATION_IMAGE", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	code := Run(ctx, []string{"--addr", "127.0.0.1:0"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "KATAMARAN_MIGRATION_IMAGE is required") {
+		t.Fatalf("code = %d, stderr = %q; want missing image configuration error", code, stderr.String())
+	}
+}
+
 func TestRun_CaseInsensitiveLogFlags(t *testing.T) {
+	t.Setenv("KATAMARAN_MIGRATION_IMAGE", "katamaran:dev")
 	// Not parallel: SetupLogger calls slog.SetDefault.
 	origLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(origLogger) })

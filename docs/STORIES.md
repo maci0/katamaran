@@ -259,7 +259,7 @@ User stories for katamaran: zero-packet-drop live migration for Kata Containers.
 > **so that** I can watch and trigger migrations from a browser without kubectl access to the internals.
 
 **Acceptance criteria:**
-- [x] `POST /api/migrate` starts a migration; the `KATAMARAN_MIGRATION_IMAGE` env pins the single allowed image and the server warns when it is unset
+- [x] `POST /api/migrate` starts a migration; the required `KATAMARAN_MIGRATION_IMAGE` env pins the single allowed image and the server refuses to start when it is unset
 - [x] Live progress is derived from structured markers tailed off the source pod log (`KATAMARAN_PROGRESS`, `KATAMARAN_DOWNTIME_LIMIT`)
 - [x] `/api/history` returns the last 100 completed/failed migrations kept in memory
 - [x] The server exposes `/metrics`, `/healthz`, and `/readyz`

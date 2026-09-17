@@ -82,7 +82,7 @@ else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if make -C "${PROJECT_ROOT}" build; then
+if make -C "${PROJECT_ROOT}" build KATAMARAN_BINARY="${BINARY}"; then
     pass "go build succeeds"
 else
     fail "go build failed; binary behavior tests cannot run"

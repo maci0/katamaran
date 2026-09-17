@@ -94,7 +94,7 @@ Exit codes:
   2   Argument or configuration error
 
 Environment variables:
-  KATAMARAN_MIGRATION_IMAGE   Allowlist image for /api/migrate; unset means any image is accepted
+  KATAMARAN_MIGRATION_IMAGE   Required trusted image for /api/migrate; all other images are rejected
 
 Examples:
   # Start on default port
@@ -173,12 +173,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if allowedImage == "" {
-		// /api/migrate has no built-in authentication; without an image
-		// allowlist any caller able to reach it can launch arbitrary
-		// privileged container images on cluster nodes via the rendered
-		// source/dest Jobs. Warn loudly so operators set the allowlist
-		// (or deploy the dashboard behind external auth).
-		slog.Warn("KATAMARAN_MIGRATION_IMAGE is unset: any image submitted to /api/migrate will be accepted; set this env var to pin migrations to a single trusted image")
+		fmt.Fprintln(stderr, "Error: KATAMARAN_MIGRATION_IMAGE is required; set it to a trusted migration image")
+		return 2
 	}
 
 	app := &App{startTime: time.Now(), allowedImage: allowedImage}
