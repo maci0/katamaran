@@ -707,6 +707,44 @@ func TestReconciler_DeletionCallsStopAndRemovesFinalizer(t *testing.T) {
 	}
 }
 
+func TestReconciler_DeletionRetriesStopBeforeRemovingFinalizer(t *testing.T) {
+	cr := newMigrationCR("m-stop-retry", []string{finalizerName, "other/finalizer"}, true, map[string]any{
+		"phase":       "transferring",
+		"migrationID": "id-stop-retry",
+	})
+	orch := &fakeOrch{stopErr: errors.New("temporary delete failure")}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr)
+	ctx := context.Background()
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := rec.reconcileAll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(ctx, cr.GetName(), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasFinalizer(got) {
+			t.Fatal("finalizer removed despite failed Job cleanup")
+		}
+	}
+	orch.mu.Lock()
+	orch.stopErr = nil
+	orch.mu.Unlock()
+	if err := rec.reconcileAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(ctx, cr.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinalizer(got) || len(got.GetFinalizers()) != 1 || got.GetFinalizers()[0] != "other/finalizer" {
+		t.Fatalf("finalizers after cleanup: %v", got.GetFinalizers())
+	}
+	if stops := orch.callsFor("Stop"); len(stops) != 3 {
+		t.Fatalf("Stop calls = %v, want three attempts", stops)
+	}
+}
+
 // blockingApplyOrch blocks inside Apply until its context is cancelled,
 // letting tests hold dispatch mid-submission.
 type blockingApplyOrch struct {

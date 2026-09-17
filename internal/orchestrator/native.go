@@ -914,25 +914,25 @@ func (n *native) Resume(ctx context.Context, id MigrationID, req Request) (bool,
 	return true, nil
 }
 
-// Stop deletes both Jobs (background propagation). The watcher will emit a
-// terminal update when the source Job's controller reports Failed.
 func (n *native) Stop(ctx context.Context, id MigrationID) error {
-	n.mu.Lock()
-	run, ok := n.inflight[id]
-	n.mu.Unlock()
-	if !ok {
+	if id == "" {
 		return ErrUnknownID
+	}
+	n.mu.Lock()
+	run := n.inflight[id]
+	n.mu.Unlock()
+	if run != nil {
+		defer run.cancel()
 	}
 	prop := metav1.DeletePropagationBackground
 	delOpts := metav1.DeleteOptions{PropagationPolicy: &prop}
-	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.srcJob, delOpts); err != nil && !apierrors.IsNotFound(err) {
-		slog.Warn("Stop: source job delete failed; job may leak", "migration_id", id, "job", run.srcJob, "namespace", n.namespace, "error", err)
+	var errs []error
+	for _, name := range []string{SourceJobName(id), DestJobName(id)} {
+		if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, name, delOpts); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("delete job %s: %w", name, err))
+		}
 	}
-	if err := n.client.BatchV1().Jobs(n.namespace).Delete(ctx, run.destJob, delOpts); err != nil && !apierrors.IsNotFound(err) {
-		slog.Warn("Stop: dest job delete failed; job may leak", "migration_id", id, "job", run.destJob, "namespace", n.namespace, "error", err)
-	}
-	run.cancel()
-	return nil
+	return errors.Join(errs...)
 }
 
 // poll watches BOTH the source and destination Job statuses and emits

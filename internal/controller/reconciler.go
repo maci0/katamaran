@@ -789,12 +789,12 @@ func (r *Reconciler) handleDeletion(ctx context.Context, key types.NamespacedNam
 
 	if id != "" {
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		func() {
-			defer cancel()
-			if err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id)); err != nil {
-				slog.Warn("Stop failed; removing finalizer anyway to unblock deletion", "migration", key, "migration_id", id, "error", err)
-			}
-		}()
+		err := r.Orchestrator.Stop(stopCtx, orchestrator.MigrationID(id))
+		cancel()
+		if err != nil {
+			slog.Warn("Stop failed; retaining finalizer for retry", "migration", key, "migration_id", id, "error", err)
+			return
+		}
 	}
 	if err := r.removeFinalizer(ctx, obj); err != nil {
 		slog.Error("remove finalizer failed", "migration", key, "error", err)

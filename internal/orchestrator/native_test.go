@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"strings"
 	"sync"
@@ -708,6 +709,43 @@ func TestNative_Stop_DeletesJobs(t *testing.T) {
 	}
 	if len(jobs.Items) != 0 {
 		t.Fatalf("expected jobs deleted, got %v", jobs.Items)
+	}
+}
+
+func TestNative_Stop_RetryAfterRestart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	id := MigrationID("0123456789abcdef")
+	cs := fake.NewSimpleClientset(
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: SourceJobName(id), Namespace: DefaultJobNamespace}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: DestJobName(id), Namespace: DefaultJobNamespace}},
+	)
+	n := newFromClient(cs)
+	deleteErr := errors.New("temporary delete failure")
+	fail := true
+	cs.PrependReactor("delete", "jobs", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		if fail && a.(clienttesting.DeleteAction).GetName() == DestJobName(id) {
+			return true, nil, deleteErr
+		}
+		return false, nil, nil
+	})
+	if err := n.Stop(ctx, id); !errors.Is(err, deleteErr) {
+		t.Fatalf("first Stop = %v, want delete failure", err)
+	}
+	jobs, err := cs.BatchV1().Jobs(DefaultJobNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil || len(jobs.Items) != 1 || jobs.Items[0].Name != DestJobName(id) {
+		t.Fatalf("partial cleanup: jobs=%v, err=%v", jobs, err)
+	}
+	fail = false
+	for attempt := 0; attempt < 2; attempt++ {
+		n = newFromClient(cs)
+		if err := n.Stop(ctx, id); err != nil {
+			t.Fatalf("retry %d: %v", attempt, err)
+		}
+		jobs, err := cs.BatchV1().Jobs(DefaultJobNamespace).List(ctx, metav1.ListOptions{})
+		if err != nil || len(jobs.Items) != 0 {
+			t.Fatalf("retry %d left jobs: %v, err=%v", attempt, jobs, err)
+		}
 	}
 }
 
