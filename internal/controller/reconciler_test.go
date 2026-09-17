@@ -370,6 +370,48 @@ func newReconcilerWithCR(t *testing.T, orch orchestrator.Orchestrator, cr *unstr
 	return rec, dyn, kube
 }
 
+type deadlineDiscoverer struct {
+	fakeDiscoverer
+	err error
+}
+
+func (d *deadlineDiscoverer) LookupPodNode(ctx context.Context, _, _ string) (string, error) {
+	<-ctx.Done()
+	d.err = ctx.Err()
+	return "", d.err
+}
+
+func TestDispatchDiscoveryStatusTimeout(t *testing.T) {
+	cr := newMigrationCR("discovery-timeout", nil, false, nil)
+	orch := &fakeOrch{}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr)
+	disc := &deadlineDiscoverer{}
+	rec.Discoverer = disc
+	rec.StatusTimeout = time.Nanosecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	rec.dispatch(ctx, types.NamespacedName{Namespace: "default", Name: cr.GetName()}, cr)
+
+	if ctx.Err() != nil {
+		t.Fatal("discovery outlived the migration budget and exhausted the parent deadline")
+	}
+	if disc.err != context.DeadlineExceeded {
+		t.Fatalf("discovery error = %v, want deadline exceeded", disc.err)
+	}
+	if calls := orch.callsFor("Apply"); len(calls) != 0 {
+		t.Fatalf("Apply called after discovery timed out: %v", calls)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(ctx, cr.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	if phase != string(orchestrator.PhaseFailed) {
+		t.Fatalf("phase = %q, want Failed", phase)
+	}
+}
+
 func TestReconciler_AddsFinalizerOnNewCR(t *testing.T) {
 	cr := newMigrationCR("m1", nil, false, nil)
 	orch := &fakeOrch{applyID: "id-m1"}
@@ -605,7 +647,7 @@ func TestResolveSourcePodDiscovery_FailuresAndSelectorMerge(t *testing.T) {
 			}
 
 			req := newReq(t, cr)
-			err := rec.resolveSourcePodDiscovery(context.Background(), key, &req)
+			err := rec.resolveSourcePodDiscovery(context.Background(), context.Background(), key, &req)
 
 			if tt.wantErr == "" {
 				if err != nil {

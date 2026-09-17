@@ -304,13 +304,13 @@ func (r *Reconciler) setTrackCancel(key types.NamespacedName, cancel context.Can
 // dest scheduling constraints in auto-select mode) from the source pod's
 // live state via the Discoverer. Returns an error (already logged + patched
 // to the CR by the caller) when resolution fails.
-func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.NamespacedName, req *orchestrator.Request) error {
+func (r *Reconciler) resolveSourcePodDiscovery(ctx, discoveryCtx context.Context, key types.NamespacedName, req *orchestrator.Request) error {
 	if r.Discoverer == nil {
 		slog.Error("Migration cannot be resolved: discoverer unavailable", "migration", key)
 		r.patchFailedStatus(ctx, key, "", "resolve migration", "discoverer unavailable")
 		return fmt.Errorf("discoverer unavailable")
 	}
-	lookupCtx, lookupCancel := context.WithTimeout(ctx, 30*time.Second)
+	lookupCtx, lookupCancel := context.WithTimeout(discoveryCtx, 30*time.Second)
 	defer lookupCancel()
 	srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
 	if lerr != nil || srcNode == "" {
@@ -396,7 +396,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		return
 	}
 	if req.SourcePod != nil {
-		if err := r.resolveSourcePodDiscovery(ctx, key, &req); err != nil {
+		if err := r.resolveSourcePodDiscovery(ctx, jobCtx, key, &req); err != nil {
 			return
 		}
 	}
