@@ -50,6 +50,10 @@ def main(qmp_socket: str, disk_image: str) -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] in (["--help"], ["-h"]):
+        print(__doc__)
+        sys.exit(0)
     if len(sys.argv) != 3:
-        sys.exit(f"usage: {sys.argv[0]} <qmp-socket> <disk-image>")
+        print(f"usage: {sys.argv[0]} <qmp-socket> <disk-image>", file=sys.stderr)
+        sys.exit(2)
     main(sys.argv[1], sys.argv[2])
