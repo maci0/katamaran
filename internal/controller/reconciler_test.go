@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -378,6 +380,72 @@ func TestReconciler_AddsFinalizerOnNewCR(t *testing.T) {
 	got, _ := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m1", metav1.GetOptions{})
 	if !hasFinalizer(got) {
 		t.Fatalf("finalizer missing: %v", got.GetFinalizers())
+	}
+}
+
+func TestReconciler_DispatchCompletionLog(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		phase   orchestrator.StatusPhase
+		err     error
+		message string
+		level   string
+		wantErr string
+	}{
+		{name: "success", phase: orchestrator.PhaseSucceeded, level: "INFO"},
+		{name: "dependency failure", phase: orchestrator.PhaseFailed, err: errors.New("destination job: BackoffLimitExceeded"), message: "dest job failed", level: "ERROR", wantErr: "destination job: BackoffLimitExceeded"},
+		{name: "failure without error", phase: orchestrator.PhaseFailed, message: "dest job disappeared", level: "ERROR"},
+		{name: "lost watch", phase: orchestrator.PhaseTransferring, level: "ERROR", wantErr: "watch closed without terminal status (last phase transferring)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "dispatch-log")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(file, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			cr := newMigrationCR("m-log", []string{finalizerName}, false, nil)
+			updates := make(chan orchestrator.StatusUpdate, 1)
+			updates <- orchestrator.StatusUpdate{ID: "id-log", Phase: tc.phase, Error: tc.err, Message: tc.message}
+			close(updates)
+			orch := &fakeOrch{applyID: "id-log", updates: updates}
+			rec, _, _ := newReconcilerWithCR(t, orch, cr)
+			rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+			key := types.NamespacedName{Namespace: "default", Name: "m-log"}
+			rec.dispatch(context.Background(), key, cr)
+			data, err := os.ReadFile(file.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var completions []map[string]any
+			for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+				var entry map[string]any
+				if err := json.Unmarshal(line, &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["msg"] == "Migration finished" && entry["migration_id"] == "id-log" {
+					completions = append(completions, entry)
+				}
+			}
+			if len(completions) != 1 {
+				t.Fatalf("completion count = %d, logs: %s", len(completions), data)
+			}
+			entry := completions[0]
+			if entry["level"] != tc.level || entry["migration"] == nil || entry["final_phase"] != string(tc.phase) {
+				t.Errorf("completion context = %v", entry)
+			}
+			if elapsed, ok := entry["elapsed"].(float64); !ok || elapsed <= 0 {
+				t.Errorf("missing positive elapsed duration: %v", entry)
+			}
+			if tc.wantErr != "" && entry["error"] != tc.wantErr {
+				t.Errorf("error = %v, want %q", entry["error"], tc.wantErr)
+			}
+			if tc.message != "" && entry["message"] != tc.message {
+				t.Errorf("message = %v, want %q", entry["message"], tc.message)
+			}
+		})
 	}
 }
 

@@ -367,6 +367,7 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx context.Context, key types.Na
 }
 
 func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj *unstructured.Unstructured) {
+	start := time.Now()
 	mInflight.Add(1)
 	defer mInflight.Add(-1)
 	defer r.untrack(key)
@@ -428,7 +429,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	// path) so the orchestrator's producer can always finish; see
 	// orchestrator.DrainInBackground.
 	defer orchestrator.DrainInBackground(updates)
-	var lastPhase string
+	var lastPhase, lastMessage, lastError string
 	// Coalescing state: during bulk RAM transfer the orchestrator emits a
 	// PhaseTransferring update per progress marker (ram_transferred changes
 	// continuously), and patching each one to the API server produces one
@@ -448,6 +449,8 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			lastPatchAt = time.Now()
 		}
 		lastPhase = string(u.Phase)
+		lastMessage = u.Message
+		lastError = errStr
 		updateProgressMetrics(u)
 	}
 	switch lastPhase {
@@ -462,11 +465,22 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 		if lastPhase != "" {
 			msg += " (last phase " + lastPhase + ")"
 		}
-		slog.Error("Migration watch closed without terminal status", "migration", key, "migration_id", id, "last_phase", lastPhase)
+		lastError = msg
 		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
+	attrs := []any{"migration", key, "migration_id", id, "final_phase", lastPhase, "elapsed", time.Since(start)}
+	if lastMessage != "" {
+		attrs = append(attrs, "message", lastMessage)
+	}
+	if lastError != "" {
+		attrs = append(attrs, "error", lastError)
+	}
+	if lastPhase == string(orchestrator.PhaseSucceeded) {
+		slog.Info("Migration finished", attrs...)
+	} else {
+		slog.Error("Migration finished", attrs...)
+	}
 	r.handleMigrationOutcome(ctx, key, req, id, lastPhase)
-	slog.Info("Migration finished", "migration", key, "migration_id", id, "final_phase", lastPhase)
 }
 
 // handleMigrationOutcome runs the post-terminal actions after the watch
