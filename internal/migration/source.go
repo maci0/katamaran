@@ -674,9 +674,6 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 
 		allReady := true
 		for jobID, js := range state {
-			if js.ready {
-				continue
-			}
 			job := jobsByID[jobID]
 			if job == nil {
 				if js.seen {
@@ -690,10 +687,13 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 			}
 			js.seen = true
 			if job.Ready {
+				if !js.ready {
+					slog.Info("Storage mirror ready", "job_id", jobID)
+				}
 				js.ready = true
-				slog.Info("Storage mirror ready", "job_id", jobID)
 				continue
 			}
+			js.ready = false
 			allReady = false
 			if job.Len > 0 {
 				pct := float64(job.Offset) / float64(job.Len) * 100

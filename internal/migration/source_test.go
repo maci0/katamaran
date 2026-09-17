@@ -232,6 +232,40 @@ func TestWaitForStorageSync_JobFailed(t *testing.T) {
 	}
 }
 
+func TestWaitForStorageSync_ReadyJobDisappears(t *testing.T) {
+	t.Parallel()
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		qmptest.QMPHandshake(conn)
+		qmptest.ConsumeCommand(conn)
+		jobs := []qmp.BlockJobInfo{
+			{Device: "mirror-drive0", Len: 1000, Offset: 1000, Ready: true, Status: "running", Type: "mirror"},
+			{Device: "mirror-drive1", Len: 1000, Offset: 500, Ready: false, Status: "running", Type: "mirror"},
+		}
+		b, _ := json.Marshal(jobs)
+		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
+		qmptest.ConsumeCommand(conn)
+		jobs[1].Ready = true
+		jobs[1].Offset = jobs[1].Len
+		b, _ = json.Marshal(jobs[1:])
+		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
+	})
+
+	ctx := context.Background()
+	client, err := qmp.NewClient(ctx, sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	err = waitForStorageSync(ctx, client, "mirror-drive0", "mirror-drive1")
+	if err == nil {
+		t.Fatal("expected error when a ready job disappears")
+	}
+	if !strings.Contains(err.Error(), "disappeared") {
+		t.Fatalf("expected 'disappeared' in error, got: %v", err)
+	}
+}
+
 func TestWaitForMigrationComplete_Completed(t *testing.T) {
 	t.Parallel()
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
