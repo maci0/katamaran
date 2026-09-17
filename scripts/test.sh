@@ -74,7 +74,7 @@ else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if (cd "${PROJECT_ROOT}" && GOOS=linux "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/); then
+if make -C "${PROJECT_ROOT}" build; then
     pass "go build succeeds"
 else
     fail "go build failed; binary behavior tests cannot run"

@@ -8,29 +8,29 @@ all: build build-dashboard build-orchestrator build-mgr build-factory build-adop
 
 # Build the katamaran binary
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran ./cmd/katamaran/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran ./cmd/katamaran/
 
 # Build the dashboard binary
 build-dashboard:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/katamaran-dashboard/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/katamaran-dashboard/
 
 # Build the orchestrator CLI (JSON-in / NDJSON-out wrapper around the
 # orchestrator package). Used by scripts and local orchestration workflows.
 build-orchestrator:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
 
 # Build the Migration CRD controller binary.
 build-mgr:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-mgr ./cmd/katamaran-mgr/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-mgr ./cmd/katamaran-mgr/
 
 # Build the VM factory server binary.
 build-factory:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/katamaran-factory ./cmd/katamaran-factory/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-factory ./cmd/katamaran-factory/
 
 # Build the containerd v2 adoption shim (Approach E). See
 # cmd/containerd-shim-katamaran-adopted-v2/main.go package doc.
 build-adopted-shim:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
 
 # Run go vet and gofmt checks (-s also enforces gofmt simplifications).
 # gofmt covers every tracked .go file so it stays in sync with `./...`
