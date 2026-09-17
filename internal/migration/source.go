@@ -40,8 +40,6 @@ var (
 var errQueryDecode = errors.New("decode query-migrate response")
 
 // queryMigrateInfo executes query-migrate and decodes the MigrateInfo reply.
-// Shared by the STOP-event poller, the completion poller, and the final
-// metrics capture so the execute+decode pair has one implementation.
 func queryMigrateInfo(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo, error) {
 	raw, err := client.Execute(ctx, "query-migrate", nil)
 	if err != nil {
@@ -421,21 +419,12 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	fmt.Printf("%sphase=cutover\n", PhaseMarker)
 	slog.Info("Waiting for migration to complete")
 
-	migrationErr := waitForMigrationComplete(ctx, client)
+	info, migrationErr := waitForMigrationComplete(ctx, client)
 
-	if migrationErr == nil {
-		// Capture actual migration metrics from QEMU.
-		info, qerr := queryMigrateInfo(ctx, client)
-		if qerr != nil {
-			slog.Warn("Failed to capture migration metrics", "error", qerr)
-		} else {
-			slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
-			// Stable, parser-friendly final-result marker the orchestrator
-			// scrapes from pod logs to populate StatusUpdate.DowntimeMS in
-			// the PhaseSucceeded event.
-			fmt.Printf("%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
-				ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
-		}
+	if migrationErr == nil && info.Status == qmp.MigrateStatusCompleted {
+		slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
+		fmt.Printf("%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+			ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
 	}
 
 	if migrationErr != nil {
@@ -760,7 +749,7 @@ var postActiveStallGrace = 30 * time.Second
 // paused and the tunnel cutover is complete, so the migration is
 // already in flight by the time we enter the loop, so a QMP failure
 // here is a hand-off signal, not an early-stage error.
-func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
+func waitForMigrationComplete(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)
 	defer cancel()
 
@@ -774,7 +763,7 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 	for {
 		if ctx.Err() != nil {
 			slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
-			return fmt.Errorf("migration: %w", ctx.Err())
+			return qmp.MigrateInfo{}, fmt.Errorf("migration: %w", ctx.Err())
 		}
 
 		queryCtx, queryCancel := context.WithTimeout(ctx, queryMigrateTimeout)
@@ -785,11 +774,11 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 				// The socket answered with garbage: a protocol fault, not a
 				// handover stall. Fail loudly instead of waiting out the grace
 				// window on a broken connection.
-				return fmt.Errorf("unmarshaling migration status: %v", err)
+				return qmp.MigrateInfo{}, fmt.Errorf("unmarshaling migration status: %v", err)
 			}
 			if ctx.Err() != nil {
 				slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)
-				return fmt.Errorf("migration: %w", ctx.Err())
+				return qmp.MigrateInfo{}, fmt.Errorf("migration: %w", ctx.Err())
 			}
 			// Per-call timeout or transient QMP error. Treat as
 			// kata-shim tearing down source QEMU after handover; the
@@ -800,7 +789,7 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 			if time.Since(firstStallAt) > postActiveStallGrace {
 				slog.Info("Source QMP stalled past grace window; assuming completed (kata-shim teardown)",
 					"last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
-				return nil
+				return qmp.MigrateInfo{}, nil
 			}
 			slog.Warn("query-migrate stalled (will retry; assume completed if grace exceeded)",
 				"error", err, "last_status", prevStatus, "stall", time.Since(firstStallAt).Round(time.Millisecond))
@@ -817,12 +806,12 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) error {
 				lastLoggedRemaining = info.RAM.Remaining
 			}
 			if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
-				return termErr
+				return info, termErr
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("migration: %w", ctx.Err())
+			return qmp.MigrateInfo{}, fmt.Errorf("migration: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}

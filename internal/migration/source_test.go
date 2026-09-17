@@ -384,7 +384,7 @@ func TestWaitForMigrationComplete_Completed(t *testing.T) {
 	}
 	defer client.Close()
 
-	err = waitForMigrationComplete(ctx, client)
+	_, err = waitForMigrationComplete(ctx, client)
 	if err != nil {
 		t.Fatalf("waitForMigrationComplete: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestWaitForMigrationComplete_Failed(t *testing.T) {
 	}
 	defer client.Close()
 
-	err = waitForMigrationComplete(ctx, client)
+	_, err = waitForMigrationComplete(ctx, client)
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
@@ -435,7 +435,7 @@ func TestWaitForMigrationComplete_Cancelled(t *testing.T) {
 	}
 	defer client.Close()
 
-	err = waitForMigrationComplete(ctx, client)
+	_, err = waitForMigrationComplete(ctx, client)
 	if err == nil {
 		t.Fatal("expected error for cancelled migration")
 	}
@@ -485,8 +485,12 @@ func TestWaitForMigrationComplete_QMPStallTreatedAsSuccess(t *testing.T) {
 	}
 	defer client.Close()
 
-	if err := waitForMigrationComplete(ctx, client); err != nil {
+	info, err := waitForMigrationComplete(ctx, client)
+	if err != nil {
 		t.Fatalf("waitForMigrationComplete should treat sustained QMP stall as success after grace; got %v", err)
+	}
+	if info.Status != "" {
+		t.Fatalf("stalled QMP returned metrics: %+v", info)
 	}
 }
 
@@ -506,7 +510,7 @@ func TestWaitForMigrationComplete_ContextCancelled(t *testing.T) {
 	}
 	defer client.Close()
 
-	err = waitForMigrationComplete(ctx, client)
+	_, err = waitForMigrationComplete(ctx, client)
 	if err == nil {
 		t.Fatal("expected error on context cancellation")
 	}
@@ -527,7 +531,7 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 	}
 	defer client.Close()
 
-	err = waitForMigrationComplete(ctx, client)
+	_, err = waitForMigrationComplete(ctx, client)
 	if err == nil {
 		t.Fatal("expected error for failed migration")
 	}
@@ -537,20 +541,35 @@ func TestWaitForMigrationComplete_FailedNoDesc(t *testing.T) {
 }
 
 func TestRunSource_SharedStorage_HappyPath(t *testing.T) {
-	t.Parallel()
-
-	sock := qmptest.StartScriptedQMP(t, map[string][]string{
-		// After "migrate" command, send response then inject STOP event.
-		`"migrate"`:       {`{"return":{}}`, `{"event":"STOP"}`},
-		`"query-migrate"`: {`{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50}}`},
+	var polls atomic.Int32
+	sock, _ := startRecordingQMP(t, func(_ net.Conn, cmd recordedQMPCommand) string {
+		switch cmd.Execute {
+		case "migrate":
+			return "{\"return\":{}}\n{\"event\":\"STOP\"}"
+		case "query-migrate":
+			polls.Add(1)
+			return `{"return":{"status":"completed","downtime":15,"total-time":1200,"setup-time":50,"ram":{"transferred":1000,"total":1000}}}`
+		default:
+			return `{"return":{}}`
+		}
 	})
 
-	err := RunSource(context.Background(), SourceConfig{
-		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
-		SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out := captureStdout(t, func() {
+		err := RunSource(ctx, SourceConfig{
+			QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP, DriveIDs: []string{"drive-virtio-disk0"},
+			SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+		})
+		if err != nil {
+			t.Fatalf("RunSource shared-storage happy path: %v", err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("RunSource shared-storage happy path: %v", err)
+	if got := polls.Load(); got != 1 {
+		t.Fatalf("migration queries = %d, want 1", got)
+	}
+	if want := ResultMarker + "downtime_ms=15 total_time_ms=1200 ram_transferred=1000 ram_total=1000\n"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want result %q", out, want)
 	}
 }
 
@@ -719,7 +738,6 @@ func TestRunSource_NonShared_CommandArguments(t *testing.T) {
 		"migrate-set-capabilities",
 		"migrate-set-parameters",
 		"migrate",
-		"query-migrate",
 		"query-migrate",
 		"block-job-cancel",
 	})
