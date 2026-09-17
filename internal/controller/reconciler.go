@@ -617,6 +617,8 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 	}
 }
 
+const recoveryStatusPatchTimeout = 30 * time.Second
+
 // recover reattaches to a Migration left in a non-terminal phase by a
 // previous controller incarnation. It polls the source/dest Jobs in
 // kube-system (located by the katamaran.io/migration-id label) and
@@ -652,25 +654,25 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 	// cancel and CR deletion could not stop this loop: recover would keep
 	// polling for up to StatusTimeout and could still run post-success
 	// side effects (adoption pod create) for a Migration the user deleted.
-	// The StatusTimeout budget itself stays on the manual deadline below so
-	// the timed-out path still patches phase=Failed instead of exiting.
-	jobCtx, cancel := context.WithCancel(ctx)
+	jobCtx, cancel := context.WithTimeout(ctx, r.StatusTimeout)
 	r.setTrackCancel(key, cancel)
 	defer cancel()
 
 	selector := orchestrator.MigrationIDLabel + "=" + id
-	deadline := time.Now().Add(r.StatusTimeout)
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-jobCtx.Done():
-			return
 		case <-ticker.C:
 		}
-		if time.Now().After(deadline) {
-			slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
-			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+		if jobCtx.Err() != nil {
+			if jobCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+				slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
+				patchCtx, patchCancel := context.WithTimeout(ctx, recoveryStatusPatchTimeout)
+				defer patchCancel()
+				_ = r.patchStatus(patchCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+			}
 			return
 		}
 		// Watch-cache read: this loop re-lists every PollInterval for the
