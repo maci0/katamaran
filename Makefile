@@ -38,7 +38,9 @@ build-adopted-shim:
 # even when packages live outside cmd/ and internal/.
 vet:
 	go vet ./...
-	@test -z "$$(gofmt -s -l $$(git ls-files '*.go'))" || (echo "gofmt needed on:"; gofmt -s -l $$(git ls-files '*.go'); exit 1)
+	@set -e; files=$$(git ls-files '*.go'); \
+	unformatted=$$(gofmt -s -l $$files); \
+	test -z "$$unformatted" || { printf 'gofmt needed on:\n%s\n' "$$unformatted"; exit 1; }
 
 # Lint every tracked shell script. git ls-files keeps this in sync with the
 # tree (same rationale as the gofmt check above) so a script added outside
