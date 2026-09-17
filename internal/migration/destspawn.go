@@ -200,7 +200,6 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 	binary = args[0]
 
 	out := make([]string, 0, len(args)-1)
-	skipNext := false
 	// Pre-compose the sandbox-id replacement keys once; transformCmdline runs
 	// against potentially hundreds of argv entries.
 	var srcSandboxKey, dstSandboxKey string
@@ -210,16 +209,12 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
-		if skipNext {
-			skipNext = false
-			continue
-		}
 		switch a {
 		case "-daemonize":
 			continue
 		case "-incoming":
 			// -incoming takes one positional argument (e.g. tcp:[::]:4444).
-			skipNext = true
+			i++
 			continue
 		case "-qmp":
 			// -qmp may be specified multiple times. The kata-shim passes its
@@ -228,7 +223,7 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 			// chain doesn't carry that fd. The "extra" socket bound to
 			// path=... is the one we want to keep.
 			if i+1 < len(args) && strings.Contains(args[i+1], "fd=") {
-				skipNext = true
+				i++
 				continue
 			}
 			out = append(out, a)
@@ -256,7 +251,7 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 				}
 				out = append(out, a, next)
 			}
-			skipNext = true
+			i++
 			continue
 		case "-device":
 			// vhost-vsock-pci passes vhostfd=N from kata-shim; drop the key
@@ -265,7 +260,7 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 				next := stripFDKeys(args[i+1])
 				out = append(out, a, next)
 			}
-			skipNext = true
+			i++
 			continue
 		}
 
