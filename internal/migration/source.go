@@ -687,6 +687,9 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 				continue
 			}
 			js.seen = true
+			if job.Status == qmp.BlockJobStatusConcluded || job.Status == qmp.BlockJobStatusNull {
+				return fmt.Errorf("block mirror job %q failed (status=%s)", jobID, job.Status)
+			}
 			if job.Ready {
 				if !js.ready {
 					slog.Info("Storage mirror ready", "job_id", jobID)
@@ -712,9 +715,6 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 					js.lastOffset = job.Offset
 					js.lastLogTime = time.Now()
 				}
-			}
-			if job.Status == qmp.BlockJobStatusConcluded || job.Status == qmp.BlockJobStatusNull {
-				return fmt.Errorf("block mirror job %q failed (status=%s)", jobID, job.Status)
 			}
 		}
 		if allReady {

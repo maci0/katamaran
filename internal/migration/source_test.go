@@ -232,6 +232,42 @@ func TestWaitForStorageSync_JobFailed(t *testing.T) {
 	}
 }
 
+func TestWaitForStorageSync_ReadyTerminalJob(t *testing.T) {
+	t.Parallel()
+	for _, status := range []qmp.BlockJobStatus{qmp.BlockJobStatusConcluded, qmp.BlockJobStatusNull} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			jobs := []qmp.BlockJobInfo{{
+				Device: "mirror-drive0",
+				Len:    1000,
+				Offset: 1000,
+				Ready:  true,
+				Status: status,
+				Type:   "mirror",
+			}}
+			response, err := json.Marshal(jobs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sock := qmptest.StartScriptedQMP(t, map[string][]string{
+				`"query-block-jobs"`: {`{"return":` + string(response) + `}`},
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			client, err := qmp.NewClient(ctx, sock)
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			defer client.Close()
+
+			want := fmt.Sprintf("block mirror job %q failed (status=%s)", jobs[0].Device, status)
+			if err := waitForStorageSync(ctx, client, jobs[0].Device); err == nil || err.Error() != want {
+				t.Fatalf("waitForStorageSync = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestWaitForStorageSync_FailureOrder(t *testing.T) {
 	t.Parallel()
 	orders := [][]string{
