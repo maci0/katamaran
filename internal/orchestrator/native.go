@@ -695,30 +695,38 @@ func logTransientJobStatusError(message string, id MigrationID, jobName, namespa
 // to its EXTRA_ARGS. The only synchronisation between source-job
 // creation and dest-job creation is "wait for the source pod to exist".
 func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *nativeRun, destJob *batchv1.Job) {
+	fail := func(err error) {
+		defer run.cancel()
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		propagation := metav1.DeletePropagationBackground
+		if cleanupErr := n.client.BatchV1().Jobs(n.namespace).Delete(cctx, run.srcJob, metav1.DeleteOptions{PropagationPolicy: &propagation}); cleanupErr != nil && !apierrors.IsNotFound(cleanupErr) {
+			slog.Error("Failed to clean up source job after dest staging failure", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", cleanupErr)
+			err = errors.Join(err, fmt.Errorf("clean up source job %s: %w", run.srcJob, cleanupErr))
+		}
+		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: err})
+	}
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("stageThenStartDest panic", "migration_id", id, "panic", rec, "stack", string(debug.Stack()))
-			run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("dest staging panic: %v", rec)})
+			fail(fmt.Errorf("dest staging panic: %v", rec))
 		}
 	}()
 	srcPod, err := n.firstSourcePod(ctx, run.srcJob, run.podWaitTimeoutSeconds)
 	if err != nil {
 		slog.Error("Cmdline replay failed: source pod not found", "migration_id", id, "source_job", run.srcJob, "namespace", n.namespace, "error", err)
-		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("locate source pod: %w", err)})
-		run.cancel()
+		fail(fmt.Errorf("locate source pod: %w", err))
 		return
 	}
 	patched, err := injectReplayFromPod(destJob, n.namespace, srcPod)
 	if err != nil {
 		slog.Error("Cmdline replay failed: patching dest job command", "migration_id", id, "dest_job", destJob.Name, "error", err)
-		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("inject --replay-cmdline-from-pod: %w", err)})
-		run.cancel()
+		fail(fmt.Errorf("inject --replay-cmdline-from-pod: %w", err))
 		return
 	}
 	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, patched, metav1.CreateOptions{}); err != nil {
 		slog.Error("Cmdline replay destination job create failed", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace, "error", err)
-		run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: fmt.Errorf("create dest job: %w", err)})
-		run.cancel()
+		fail(fmt.Errorf("create dest job: %w", err))
 		return
 	}
 	run.send(StatusUpdate{ID: id, Phase: PhaseDestStarting, When: time.Now()})

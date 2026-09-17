@@ -265,6 +265,67 @@ func TestNative_Apply_ReplayCmdlineStagesDestAfterSourcePodAppears(t *testing.T)
 	}
 }
 
+func TestNative_StageThenStartDest_CleansSourceOnFailure(t *testing.T) {
+	for _, failure := range []string{"source lookup", "invalid dest", "dest create", "panic"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			src := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: DefaultJobNamespace}}
+			cs := fake.NewSimpleClientset(src, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "source-pod", Namespace: DefaultJobNamespace,
+				Labels: map[string]string{"batch.kubernetes.io/job-name": src.Name},
+			}})
+			n := newFromClient(cs)
+			dest, err := renderDestJob(validRequest(), MigrationID("test"), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New("destination create unavailable")
+			switch failure {
+			case "source lookup":
+				cancel()
+				cs.PrependReactor("list", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+					return true, nil, context.Canceled
+				})
+			case "invalid dest":
+				dest.Spec.Template.Spec.Containers = nil
+			case "dest create", "panic":
+				cs.PrependReactor("create", "jobs", func(clienttesting.Action) (bool, runtime.Object, error) {
+					if failure == "panic" {
+						panic(cause)
+					}
+					return true, nil, cause
+				})
+			}
+			run := &nativeRun{srcJob: src.Name, destJob: dest.Name, cancel: cancel,
+				updates: make(chan StatusUpdate, 8), finished: make(chan struct{})}
+			n.stageThenStartDest(ctx, MigrationID("test"), run, dest)
+			select {
+			case u := <-run.updates:
+				if u.Phase != PhaseFailed || u.Error == nil {
+					t.Fatalf("update = %+v, want failure", u)
+				}
+				if failure == "dest create" && !errors.Is(u.Error, cause) {
+					t.Fatalf("lost create cause: %v", u.Error)
+				}
+			default:
+				t.Fatal("missing failure update")
+			}
+			jobs, err := cs.BatchV1().Jobs(DefaultJobNamespace).List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(jobs.Items) != 0 {
+				t.Fatalf("staging failure left Jobs running: %v", jobs.Items)
+			}
+			if ctx.Err() == nil {
+				t.Fatal("staging failure did not cancel workers")
+			}
+		})
+	}
+}
+
 func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewSimpleClientset(&corev1.Node{
