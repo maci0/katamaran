@@ -37,7 +37,7 @@ build-adopted-shim:
 # gofmt covers every tracked .go file so it stays in sync with `./...`
 # even when packages live outside cmd/ and internal/.
 vet:
-	go vet ./...
+	go vet -composites.whitelist=false ./...
 	@set -e; files=$$(git ls-files '*.go'); \
 	unformatted=$$(gofmt -s -l $$files); \
 	test -z "$$unformatted" || { printf 'gofmt needed on:\n%s\n' "$$unformatted"; exit 1; }
