@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -70,6 +73,47 @@ func TestNative_Apply_LegacyModeSourceCarriesVMIP(t *testing.T) {
 	destCmd := jobCommand(t, dest)
 	if strings.Contains(destCmd, "--vm-ip") {
 		t.Fatalf("dest command must not carry --vm-ip: %s", destCmd)
+	}
+}
+
+func TestNative_Apply_WorkerReplacesShell(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := newFromClient(cs)
+	req := validRequest()
+	req.DestQMP = filepath.Join(t.TempDir(), "vm", "qmp.sock")
+	if _, err := n.Apply(t.Context(), req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("expected two jobs, got %d", len(jobs.Items))
+	}
+	for _, job := range jobs.Items {
+		t.Run(job.Labels["app.kubernetes.io/component"], func(t *testing.T) {
+			command := job.Spec.Template.Spec.Containers[0].Command
+			if len(command) != 3 || command[0] != "/bin/sh" || command[1] != "-c" {
+				t.Fatalf("unexpected entrypoint: %q", command)
+			}
+			script := strings.Replace(command[2], "/usr/local/bin/katamaran", `/bin/sh -c 'printf "%s\n" "$$"' worker`, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, command[0], command[1], "trap ':' EXIT\n"+script)
+			output, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("run entrypoint: %v", err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+			if err != nil {
+				t.Fatalf("parse worker PID %q: %v", output, err)
+			}
+			if pid != cmd.Process.Pid {
+				t.Fatalf("worker PID = %d, entrypoint PID = %d; shell did not exec worker", pid, cmd.Process.Pid)
+			}
+		})
 	}
 }
 

@@ -742,6 +742,64 @@ func TestReconciler_DispatchCoalescesProgressUpdates(t *testing.T) {
 	}
 }
 
+func TestReconciler_DispatchRetriesFailedStatusWrites(t *testing.T) {
+	savedBackoff := statusPatchBackoff
+	statusPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { statusPatchBackoff = savedBackoff })
+
+	cr := newMigrationCR("m-write-retry", nil, false, nil)
+	when := time.Date(2026, time.September, 18, 1, 2, 3, 0, time.UTC)
+	updates := make(chan orchestrator.StatusUpdate, 3)
+	updates <- orchestrator.StatusUpdate{ID: "id-write", Phase: orchestrator.PhaseTransferring, RAMTransferred: 100, RAMTotal: 800}
+	updates <- orchestrator.StatusUpdate{ID: "id-write", Phase: orchestrator.PhaseTransferring, RAMTransferred: 200, RAMTotal: 800}
+	updates <- orchestrator.StatusUpdate{ID: "id-write", Phase: orchestrator.PhaseSucceeded, When: when, RAMTransferred: 800, RAMTotal: 800, DowntimeMS: 12}
+	close(updates)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{applyID: "id-write", updates: updates}, cr)
+	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+	attempts := map[string]int{}
+	var terminalPatches [][]byte
+	dyn.PrependReactor("patch", "migrations", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		patch := action.(clienttesting.PatchAction).GetPatch()
+		var obj map[string]any
+		if err := json.Unmarshal(patch, &obj); err != nil {
+			t.Fatal(err)
+		}
+		phase, _, _ := unstructured.NestedString(obj, "status", "phase")
+		attempts[phase]++
+		if phase == string(orchestrator.PhaseSucceeded) {
+			terminalPatches = append(terminalPatches, bytes.Clone(patch))
+		}
+		if phase != string(orchestrator.PhaseSubmitted) && attempts[phase] == 1 {
+			return true, nil, errors.New("temporary status write failure")
+		}
+		return false, nil, nil
+	})
+
+	rec.dispatch(context.Background(), types.NamespacedName{Namespace: "default", Name: cr.GetName()}, cr)
+
+	for _, phase := range []orchestrator.StatusPhase{orchestrator.PhaseTransferring, orchestrator.PhaseSucceeded} {
+		if attempts[string(phase)] != 2 {
+			t.Errorf("%s patch attempts = %d, want 2", phase, attempts[string(phase)])
+		}
+	}
+	if len(terminalPatches) != 2 || !bytes.Equal(terminalPatches[0], terminalPatches[1]) {
+		t.Fatalf("terminal retries changed the status payload: %q", terminalPatches)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), cr.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	downtime, _, _ := unstructured.NestedInt64(got.Object, "status", "actualDowntimeMS")
+	completedAt, _, _ := unstructured.NestedString(got.Object, "status", "completedAt")
+	if phase != string(orchestrator.PhaseSucceeded) || downtime != 12 || completedAt != when.Format(time.RFC3339) {
+		t.Fatalf("persisted terminal status = %v", got.Object["status"])
+	}
+}
+
 func TestShouldPatchStatusUpdate(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
@@ -1756,20 +1814,96 @@ func TestPatchStatusRetry_ExhaustsBudget(t *testing.T) {
 	cr := newMigrationCR("m-retry2", nil, false, nil)
 	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
 
-	savedBackoff := submittedPatchBackoff
-	submittedPatchBackoff = func(int) time.Duration { return time.Millisecond }
-	t.Cleanup(func() { submittedPatchBackoff = savedBackoff })
+	savedBackoff := statusPatchBackoff
+	statusPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { statusPatchBackoff = savedBackoff })
 
 	attempts := 0
 	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
 		attempts++
 		return true, nil, errors.New("synthetic patch failure")
 	})
-	if err := rec.patchStatusRetry(context.Background(), key, "id-y", string(orchestrator.PhaseSubmitted), "msg", ""); err == nil {
+	if err := rec.patchStatusRetry(context.Background(), key, "id-y", string(orchestrator.PhaseFailed), "msg", ""); err == nil {
 		t.Fatal("patchStatusRetry = nil, want error after exhausting the retry budget")
 	}
-	if attempts != submittedPatchAttempts {
-		t.Fatalf("attempts = %d, want %d", attempts, submittedPatchAttempts)
+	if attempts != statusPatchAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, statusPatchAttempts)
+	}
+}
+
+func TestPatchFailedStatus_RetriesTransientFailures(t *testing.T) {
+	key := types.NamespacedName{Namespace: "default", Name: "m-failretry"}
+	cr := newMigrationCR("m-failretry", nil, false, nil)
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+
+	savedBackoff := statusPatchBackoff
+	statusPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { statusPatchBackoff = savedBackoff })
+
+	attempts := 0
+	dyn.PrependReactor("*", "*", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		attempts++
+		if attempts < 3 {
+			return true, nil, errors.New("synthetic patch failure")
+		}
+		return false, nil, nil // let the real client handle it
+	})
+
+	rec.patchFailedStatus(context.Background(), key, "id-fr", "dest job failed", "BackoffLimitExceeded")
+
+	if attempts != 3 {
+		t.Fatalf("patch attempts = %d, want 3", attempts)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-failretry", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	if phase != string(orchestrator.PhaseFailed) {
+		t.Fatalf("status.phase = %q, want %q (the failed outcome must be persisted, not only logged)", phase, orchestrator.PhaseFailed)
+	}
+}
+
+func TestRecover_StatusPatchRetriedUntilPersisted(t *testing.T) {
+	jobID := "id-recov"
+	cr := newMigrationCR("m-recov", []string{finalizerName}, false, map[string]any{
+		"phase":       "transferring",
+		"migrationID": jobID,
+	})
+	orch := &fakeOrch{}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr, completedDestJob(jobID))
+	rec.PollInterval = time.Millisecond
+	rec.StatusTimeout = 30 * time.Second
+
+	savedBackoff := statusPatchBackoff
+	statusPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { statusPatchBackoff = savedBackoff })
+
+	failed := 0
+	dyn.PrependReactor("patch", "migrations", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		a, ok := action.(clienttesting.PatchAction)
+		if !ok || a.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		failed++
+		if failed < 3 {
+			return true, nil, errors.New("synthetic patch failure")
+		}
+		return false, nil, nil
+	})
+
+	rec.recover(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-recov"}, cr)
+
+	if failed < 3 {
+		t.Fatalf("status patch attempts = %d, want at least 3 (the first two must be retried)", failed)
+	}
+	got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), "m-recov", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	if phase != string(orchestrator.PhaseSucceeded) {
+		t.Fatalf("status.phase = %q, want %q (recovered success must be persisted despite transient patch failures)", phase, orchestrator.PhaseSucceeded)
 	}
 }
 

@@ -444,9 +444,16 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			errStr = u.Error.Error()
 		}
 		if shouldPatchStatusUpdate(u, lastPatched, lastPatchAt) {
-			_ = r.patchStatusUpdate(ctx, key, u, errStr)
-			lastPatched = u.Phase
-			lastPatchAt = time.Now()
+			var patchErr error
+			if u.Phase.IsTerminal() {
+				patchErr = r.patchStatusUpdateRetry(ctx, key, u, errStr)
+			} else {
+				patchErr = r.patchStatusUpdate(ctx, key, u, errStr)
+			}
+			if patchErr == nil {
+				lastPatched = u.Phase
+				lastPatchAt = time.Now()
+			}
 		}
 		lastPhase = string(u.Phase)
 		lastMessage = u.Message
@@ -466,7 +473,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			msg += " (last phase " + lastPhase + ")"
 		}
 		lastError = msg
-		_ = r.patchStatus(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
+		_ = r.patchStatusRetry(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
 	attrs := []any{"migration", key, "migration_id", id, "final_phase", lastPhase, "elapsed", time.Since(start)}
 	if lastMessage != "" {
@@ -617,7 +624,7 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 	}
 }
 
-const recoveryStatusPatchTimeout = 30 * time.Second
+const statusPatchTimeout = 30 * time.Second
 
 // recover reattaches to a Migration left in a non-terminal phase by a
 // previous controller incarnation. It polls the source/dest Jobs in
@@ -640,12 +647,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 
 	if r.Kube == nil {
 		slog.Warn("Recovery skipped: no Kube clientset wired", "migration", key)
-		_ = r.patchStatus(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
+		_ = r.patchStatusRetry(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
 		return
 	}
 	if id == "" {
 		slog.Error("Recovery failed: no migration ID on status", "migration", key)
-		_ = r.patchStatus(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
+		_ = r.patchStatusRetry(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
 		return
 	}
 
@@ -669,9 +676,9 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		if jobCtx.Err() != nil {
 			if jobCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 				slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
-				patchCtx, patchCancel := context.WithTimeout(ctx, recoveryStatusPatchTimeout)
+				patchCtx, patchCancel := context.WithTimeout(ctx, statusPatchTimeout)
 				defer patchCancel()
-				_ = r.patchStatus(patchCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+				_ = r.patchStatusRetry(patchCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			}
 			return
 		}
@@ -702,7 +709,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		if dest != nil {
 			if cond := orchestrator.TerminalJobCondition(dest); cond == batchv1.JobComplete {
 				slog.Info("Recovery completed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
-				_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
+				_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				// Run the documented post-success side effects
 				// (sourceCleanup, adoptVM) exactly like the dispatch
 				// path: a controller restart mid-migration must not
@@ -718,7 +725,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				detail, attrs := jobFailureDetails(dest)
 				attrs = append([]any{"migration", key, "migration_id", id, "dest_job", dest.Name}, attrs...)
 				slog.Error("Recovery failed from destination job", attrs...)
-				_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
+				_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
 				return
 			}
 		}
@@ -726,7 +733,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			detail, attrs := jobFailureDetails(src)
 			attrs = append([]any{"migration", key, "migration_id", id, "source_job", src.Name}, attrs...)
 			slog.Error("Recovery failed from source job before destination started", attrs...)
-			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
+			_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
 			return
 		}
 		// Source still running but dest never got created: the orchestrator
@@ -758,7 +765,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		}
 		if dest == nil && src == nil {
 			slog.Error("Recovery failed: source and destination jobs disappeared", "migration", key, "migration_id", id)
-			_ = r.patchStatus(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
+			_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
 			return
 		}
 	}
@@ -938,13 +945,12 @@ func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, 
 	return r.patchStatusUpdate(ctx, key, u, errStr)
 }
 
-// submittedPatchAttempts bounds the retry budget for the Submitted status
-// anchor. Backoff doubles from 500ms; the total wait is ~31s, long enough to
-// ride out an apiserver blip but short against the 4h dispatch budget.
-const submittedPatchAttempts = 6
+// statusPatchAttempts bounds the retry budget for status writes.
+// Backoff doubles from 500ms; the total wait is 15.5s.
+const statusPatchAttempts = 6
 
-// submittedPatchBackoff is a var so tests can shrink the waits.
-var submittedPatchBackoff = func(attempt int) time.Duration {
+// statusPatchBackoff is a var so tests can shrink the waits.
+var statusPatchBackoff = func(attempt int) time.Duration {
 	d := 500 * time.Millisecond << uint(attempt)
 	if d > 16*time.Second {
 		d = 16 * time.Second
@@ -957,26 +963,39 @@ var submittedPatchBackoff = func(attempt int) time.Duration {
 // persisted status is the only record of a side effect (Job creation) that
 // must survive a controller restart. Returns the last error, nil on success.
 func (r *Reconciler) patchStatusRetry(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
+	return r.patchStatusUpdateRetry(ctx, key, orchestrator.StatusUpdate{
+		ID:      orchestrator.MigrationID(migrationID),
+		Phase:   orchestrator.StatusPhase(phase),
+		Message: message,
+	}, errStr)
+}
+
+func (r *Reconciler) patchStatusUpdateRetry(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {
+	ctx, cancel := context.WithTimeout(ctx, statusPatchTimeout)
+	defer cancel()
+	if u.When.IsZero() {
+		u.When = time.Now()
+	}
 	var err error
-	for attempt := 0; attempt < submittedPatchAttempts; attempt++ {
+	for attempt := 0; attempt < statusPatchAttempts; attempt++ {
 		if attempt > 0 {
-			timer := time.NewTimer(submittedPatchBackoff(attempt - 1))
+			timer := time.NewTimer(statusPatchBackoff(attempt - 1))
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return fmt.Errorf("patch status %s for %s interrupted: %w", phase, key, ctx.Err())
+				return fmt.Errorf("patch status %s for %s interrupted: %w", u.Phase, key, ctx.Err())
 			case <-timer.C:
 			}
 		}
-		if err = r.patchStatus(ctx, key, migrationID, phase, message, errStr); err == nil {
+		if err = r.patchStatusUpdate(ctx, key, u, errStr); err == nil {
 			return nil
 		}
 	}
-	return fmt.Errorf("patch status %s for %s failed after %d attempts: %w", phase, key, submittedPatchAttempts, err)
+	return fmt.Errorf("patch status %s for %s failed after %d attempts: %w", u.Phase, key, statusPatchAttempts, err)
 }
 
 func (r *Reconciler) patchFailedStatus(ctx context.Context, key types.NamespacedName, migrationID, message, errStr string) {
-	if err := r.patchStatus(ctx, key, migrationID, string(orchestrator.PhaseFailed), message, errStr); err == nil {
+	if err := r.patchStatusRetry(ctx, key, migrationID, string(orchestrator.PhaseFailed), message, errStr); err == nil {
 		mFailed.Add(1)
 	}
 }
