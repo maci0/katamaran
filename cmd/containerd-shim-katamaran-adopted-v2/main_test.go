@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -109,48 +111,86 @@ func TestRemoveShimSocket(t *testing.T) {
 	}
 }
 
-// TestRotateShimLogIfLarge pins the node-wide shim.log growth bound: a log
-// past the cap is moved to <path>.old (replacing any previous generation) so
-// the starting shim appends to a fresh file, while an absent or small log is
-// left untouched.
-func TestRotateShimLogIfLarge(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "shim.log")
+func TestWriteShimLogBound(t *testing.T) {
+	const maxBytes = 32
+	path := filepath.Join(t.TempDir(), "shim.log")
+	openLog := func() *os.File {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+	writers := []*os.File{openLog(), openLog()}
+	if err := syscall.Flock(int(writers[0].Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	err := writeShimLog(writers[1], maxBytes, []byte("contended\n"))
+	if unlockErr := syscall.Flock(int(writers[0].Fd()), syscall.LOCK_UN); unlockErr != nil {
+		t.Fatal(unlockErr)
+	}
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("contended write error = %v, want EWOULDBLOCK", err)
+	}
+	for i, data := range [][]byte{
+		[]byte("first record\n"),
+		[]byte("second record\n"),
+		[]byte("third record\n"),
+		bytes.Repeat([]byte("x"), maxBytes*2),
+		[]byte("last record\n"),
+	} {
+		if err := writeShimLog(writers[i%len(writers)], maxBytes, data); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := data
+		if len(want) > maxBytes {
+			want = want[len(want)-maxBytes:]
+		}
+		if len(got) > maxBytes || !bytes.HasSuffix(got, want) {
+			t.Fatalf("write %d: log = %q, want at most %d bytes ending in %q", i, got, maxBytes, want)
+		}
+	}
+	for _, f := range writers {
+		info, err := f.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(info, current) {
+			t.Fatal("writer retains a rotated inode")
+		}
+	}
+}
 
-	// Absent file: no-op.
-	rotateShimLogIfLarge(logPath, 10)
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Fatalf("rotation created %s for an absent log (err=%v)", logPath, err)
+func TestWriteShimLogExistingOversizedFile(t *testing.T) {
+	const maxBytes = 32
+	path := filepath.Join(t.TempDir(), "shim.log")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxBytes*2), 0o644); err != nil {
+		t.Fatal(err)
 	}
-
-	// Small file: untouched.
-	if err := os.WriteFile(logPath, []byte("tiny"), 0o644); err != nil {
-		t.Fatalf("seed small log: %v", err)
-	}
-	rotateShimLogIfLarge(logPath, 10)
-	if _, err := os.Stat(logPath); err != nil {
-		t.Fatalf("small log was rotated away: %v", err)
-	}
-	if _, err := os.Stat(logPath + ".old"); !os.IsNotExist(err) {
-		t.Fatalf("small log produced an .old generation (err=%v)", err)
-	}
-
-	// Oversized file: rotated aside; previous .old replaced.
-	if err := os.WriteFile(logPath+".old", []byte("previous-generation"), 0o644); err != nil {
-		t.Fatalf("seed old generation: %v", err)
-	}
-	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), 64), 0o644); err != nil {
-		t.Fatalf("seed oversized log: %v", err)
-	}
-	rotateShimLogIfLarge(logPath, 32)
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Fatalf("oversized log not rotated (err=%v)", err)
-	}
-	oldData, err := os.ReadFile(logPath + ".old")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		t.Fatalf("read rotated generation: %v", err)
+		t.Fatal(err)
 	}
-	if len(oldData) != 64 {
-		t.Fatalf(".old holds %d bytes; want the oversized content (64)", len(oldData))
+	defer f.Close()
+	want := []byte("new record\n")
+	if err := writeShimLog(f, maxBytes, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("log = %q, want %q", got, want)
 	}
 }
