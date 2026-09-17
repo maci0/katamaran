@@ -12,51 +12,37 @@ import (
 
 func TestRun_Help(t *testing.T) {
 	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--help"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
-	}
-	// "Usage:" distinguishes the help banner from the version line, which also
-	// contains "katamaran".
-	if !strings.Contains(stdout.String(), "Usage:") {
-		t.Fatalf("expected usage output containing 'Usage:', got: %s", stdout.String())
-	}
-}
-
-func TestRun_HelpShort(t *testing.T) {
-	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"-h"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Usage:") {
-		t.Fatalf("expected usage output containing 'Usage:', got: %s", stdout.String())
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := katamaran.Run(context.Background(), []string{flag}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
+			}
+			// "Usage:" distinguishes the help banner from the version line, which also
+			// contains "katamaran".
+			if !strings.Contains(stdout.String(), "Usage:") {
+				t.Fatalf("expected usage output containing 'Usage:', got: %s", stdout.String())
+			}
+		})
 	}
 }
 
 func TestRun_Version(t *testing.T) {
 	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--version"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), buildinfo.Version) {
-		t.Fatalf("expected version %q in output, got: %s", buildinfo.Version, stdout.String())
-	}
-}
-
-func TestRun_VersionShort(t *testing.T) {
-	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"-v"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), buildinfo.Version) {
-		t.Fatalf("expected version %q in output, got: %s", buildinfo.Version, stdout.String())
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := katamaran.Run(context.Background(), []string{flag}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), buildinfo.Version) {
+				t.Fatalf("expected version %q in output, got: %s", buildinfo.Version, stdout.String())
+			}
+		})
 	}
 }
 
