@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maci0/katamaran/internal/migration"
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -519,7 +520,11 @@ func (a *App) setMigrationResult(result, errMsg string) {
 // appendLog adds a new log line to the migration output buffer, discarding the oldest if full.
 func (a *App) appendLog(msg string) {
 	if len(msg) > maxLogLineSize {
-		msg = msg[:maxLogLineSize] + " ... [truncated]"
+		cut := maxLogLineSize
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + " ... [truncated]"
 	}
 	wrapped := false
 	wrappedMigrationID := ""

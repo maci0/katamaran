@@ -1332,6 +1332,32 @@ func TestAppendLog_TruncatesLongLines(t *testing.T) {
 	}
 }
 
+func TestAppendLog_TruncatesAtUTF8Boundary(t *testing.T) {
+	t.Parallel()
+	for _, text := range []string{"\u00e9", "\u754c", "\U0001f600"} {
+		for remaining := 1; remaining < len(text); remaining++ {
+			prefix := strings.Repeat("x", maxLogLineSize-remaining)
+			app := &App{}
+			app.appendLog(prefix + text + "tail")
+			if got, want := app.migrationOutput[0], prefix+" ... [truncated]"; got != want {
+				t.Errorf("rune %q with %d bytes remaining: suffix = %q, want truncation marker", text, remaining, got[len(prefix):])
+			}
+		}
+	}
+	prefix := strings.Repeat("x", maxLogLineSize-len("\u00e9")) + "\u00e9"
+	for _, tail := range []string{"", "tail"} {
+		app := &App{}
+		app.appendLog(prefix + tail)
+		want := prefix
+		if tail != "" {
+			want += " ... [truncated]"
+		}
+		if got := app.migrationOutput[0]; got != want {
+			t.Errorf("complete rune at boundary with tail %q was not preserved", tail)
+		}
+	}
+}
+
 func TestAddPing_Overflow(t *testing.T) {
 	t.Parallel()
 	app := &App{}

@@ -31,12 +31,6 @@ func NewDiscoverer(kubeconfig string) (Discoverer, error) {
 	return &nativeDiscoverer{client: cs}, nil
 }
 
-// newDiscovererFromClient is the test-friendly constructor: pass any
-// kubernetes.Interface (e.g. fake.NewSimpleClientset).
-func newDiscovererFromClient(c kubernetes.Interface) Discoverer {
-	return &nativeDiscoverer{client: c}
-}
-
 func (d *nativeDiscoverer) ListKataPods(ctx context.Context) ([]PodInfo, error) {
 	// Serve from the apiserver watch cache: a quorum read would hit etcd for
 	// every pod in the cluster each time the dashboard's pod picker opens.
