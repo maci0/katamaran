@@ -87,7 +87,7 @@ func TestRunDestination_ReplayFromPod_RemovesTempCmdlineFile(t *testing.T) {
 	})
 
 	prevSpawn, prevWait, prevTap := spawnDetachedProcess, waitForSocket, setupTapIface
-	spawnDetachedProcess = func(_ context.Context, _ string, _ []string) error { return nil }
+	spawnDetachedProcess = func(_ string, _ []string) error { return nil }
 	setupTapIface = func(ctx context.Context, name string) error { return nil }
 	waitForSocket = func(ctx context.Context, path string, total time.Duration) error {
 		if !strings.HasSuffix(path, extraMonitorSocketName) {

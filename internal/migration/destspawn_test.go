@@ -450,7 +450,7 @@ func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	}
 	var spawned []spawnRec
 	prevSpawn := spawnDetachedProcess
-	spawnDetachedProcess = func(_ context.Context, name string, args []string) error {
+	spawnDetachedProcess = func(name string, args []string) error {
 		spawned = append(spawned, spawnRec{name: name, args: append([]string(nil), args...)})
 		switch {
 		case strings.Contains(name, "virtiofsd"):

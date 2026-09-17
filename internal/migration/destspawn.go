@@ -542,7 +542,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 		"dst_sandbox_dir", dstSandboxDir,
 		"qmp_socket", dstSocket,
 	)
-	if err := spawnDetachedProcess(ctx, binary, qemuArgs); err != nil {
+	if err := spawnDetachedProcess(binary, qemuArgs); err != nil {
 		return fmt.Errorf("spawn dest QEMU: %w", err)
 	}
 	qemuSpawned = true
@@ -617,7 +617,7 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 		"--sandbox=none",
 		"--migration-on-error=guest-error",
 	}
-	if err := spawnDetachedProcess(ctx, destReplayVirtiofsd, args); err != nil {
+	if err := spawnDetachedProcess(destReplayVirtiofsd, args); err != nil {
 		return err
 	}
 	if err := waitForSocket(ctx, socketPath, destReplayVirtiofsdSettleDelay+3*time.Second); err != nil {
@@ -662,7 +662,7 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 // We deliberately do not use exec.CommandContext because the context's
 // cancellation should not kill QEMU mid-migration: QEMU exits on its own
 // when migration completes (or when the dest job pod is torn down).
-var spawnDetachedProcess = func(_ context.Context, name string, args []string) error {
+var spawnDetachedProcess = func(name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set
 	cmd.Stdout = logWriter{name, "stdout"}
 	cmd.Stderr = logWriter{name, "stderr"}
