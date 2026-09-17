@@ -28,9 +28,10 @@ to this repo.
 
 ## Gate
 
-`make vet test smoke fuzz lint-shell` must pass before a change is done. CI runs
-the same targets on amd64 and arm64 plus `govulncheck` and multi-arch image
-builds.
+`make vet test smoke fuzz lint-shell` must pass before a change is done. Fix
+failures without weakening the gate. CI runs vet, unit tests, and fuzz seeds on
+amd64 and arm64; smoke, shell lint, and `govulncheck` run on amd64. Image builds
+target both architectures.
 
 ## Constraints
 
