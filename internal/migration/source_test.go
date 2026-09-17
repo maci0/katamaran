@@ -1053,6 +1053,55 @@ func TestRunSource_SharedStorage_SkipsDriveIDValidation(t *testing.T) {
 	}
 }
 
+func TestRunSource_AutoDowntime_FractionalRTT(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		rtt     time.Duration
+		floorMS int
+		wantMS  int64
+	}{
+		{name: "zero", wantMS: 25},
+		{name: "sub millisecond", rtt: 500 * time.Microsecond, wantMS: 26},
+		{name: "whole millisecond", rtt: time.Millisecond, wantMS: 27},
+		{name: "fractional millisecond", rtt: 1500 * time.Microsecond, wantMS: 28},
+		{name: "round budget up", rtt: 1500*time.Microsecond + time.Nanosecond, wantMS: 29},
+		{name: "custom floor", rtt: 1500 * time.Microsecond, floorMS: 40, wantMS: 43},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			origMeasureRTT := measureRTTFunc
+			measureRTTFunc = func(netip.Addr) (time.Duration, error) {
+				return tt.rtt, nil
+			}
+			t.Cleanup(func() { measureRTTFunc = origMeasureRTT })
+
+			sock, rec := startRecordingQMP(t, func(conn net.Conn, cmd recordedQMPCommand) string {
+				switch cmd.Execute {
+				case "migrate":
+					return `{"return":{}}` + "\n" + `{"event":"STOP"}`
+				case "query-migrate":
+					return `{"return":{"status":"completed"}}`
+				default:
+					return `{"return":{}}`
+				}
+			})
+
+			err := RunSource(context.Background(), SourceConfig{
+				QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP,
+				SharedStorage: true, TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+				AutoDowntime: true, AutoDowntimeFloorMS: tt.floorMS,
+			})
+			if err != nil {
+				t.Fatalf("RunSource: %v", err)
+			}
+			var params qmp.MigrateSetParametersArgs
+			decodeRecordedArgs(t, findRecordedCommand(t, rec.Commands(), "migrate-set-parameters"), &params)
+			if params.DowntimeLimit != tt.wantMS {
+				t.Fatalf("downtime limit = %dms, want %dms", params.DowntimeLimit, tt.wantMS)
+			}
+		})
+	}
+}
+
 func TestRunSource_AutoDowntime_Fallback(t *testing.T) {
 	var rttCalls atomic.Int32
 	origMeasureRTT := measureRTTFunc
