@@ -1115,6 +1115,44 @@ func TestMux_ServesHome(t *testing.T) {
 	}
 }
 
+func TestMux_ServesChartLicense(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	mux := app.newMux(false)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/assets/chart-4.5.1.LICENSE.txt", nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %v", w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+			}
+			if method == http.MethodHead {
+				if w.Body.Len() != 0 {
+					t.Error("HEAD response contains a body")
+				}
+				return
+			}
+			for _, notice := range []string{
+				"Chart.js v4.5.1",
+				"Copyright (c) 2014-2024 Chart.js Contributors",
+				"@kurkle/color v0.3.2",
+				"Copyright (c) 2018-2021 Jukka Kurkela",
+				"Permission is hereby granted, free of charge",
+				"The above copyright notice and this permission notice shall be included",
+				"THE SOFTWARE IS PROVIDED \"AS IS\"",
+			} {
+				if !strings.Contains(w.Body.String(), notice) {
+					t.Errorf("license response missing %q", notice)
+				}
+			}
+		})
+	}
+}
+
 func TestMux_ServesVendoredAssets(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1138,6 +1176,21 @@ func TestMux_ServesVendoredAssets(t *testing.T) {
 			}
 			if w.Body.Len() == 0 {
 				t.Error("asset body is empty")
+			}
+			licensePath := strings.TrimSuffix(strings.TrimSuffix(path, ".js"), ".min") + ".LICENSE.txt"
+			if link := w.Header().Get("Link"); link != "<"+licensePath+">; rel=\"license\"" {
+				t.Errorf("Link = %q, want license reference to %s", link, licensePath)
+			}
+			licenseResponse := httptest.NewRecorder()
+			mux.ServeHTTP(licenseResponse, httptest.NewRequest(http.MethodGet, licensePath, nil))
+			if licenseResponse.Code != http.StatusOK {
+				t.Fatalf("license status = %d, want 200", licenseResponse.Code)
+			}
+			if ct := licenseResponse.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("license Content-Type = %q", ct)
+			}
+			if !strings.Contains(licenseResponse.Body.String(), "Permission is hereby granted, free of charge") {
+				t.Error("license response lacks permission notice")
 			}
 		})
 	}

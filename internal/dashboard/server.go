@@ -246,7 +246,9 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux.HandleFunc("GET /metrics", serveDashboardMetrics)
 	mux.HandleFunc("GET /{$}", a.serveHome)
 	mux.HandleFunc("GET /assets/tailwind-3.4.17.js", serveAsset("tailwind-3.4.17.js"))
+	mux.HandleFunc("GET /assets/tailwind-3.4.17.LICENSE.txt", serveAsset("tailwind-3.4.17.LICENSE.txt"))
 	mux.HandleFunc("GET /assets/chart-4.5.1.min.js", serveAsset("chart-4.5.1.min.js"))
+	mux.HandleFunc("GET /assets/chart-4.5.1.LICENSE.txt", serveAsset("chart-4.5.1.LICENSE.txt"))
 	mux.HandleFunc("/api", handleAPIFallback)
 	mux.HandleFunc("/api/", handleAPIFallback)
 	mux.HandleFunc("POST /api/migrate", a.handleMigrate)
@@ -352,8 +354,18 @@ func serveAsset(name string) http.HandlerFunc {
 		// startup) rather than 500-ing every request later.
 		panic("dashboard: missing embedded asset " + name + ": " + err.Error())
 	}
+	contentType := "text/javascript; charset=utf-8"
+	license := ""
+	if strings.HasSuffix(name, ".LICENSE.txt") {
+		contentType = "text/plain; charset=utf-8"
+	} else {
+		license = strings.TrimSuffix(strings.TrimSuffix(name, ".js"), ".min") + ".LICENSE.txt"
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Content-Type", contentType)
+		if license != "" {
+			w.Header().Set("Link", "</assets/"+license+">; rel=\"license\"")
+		}
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(body))
 	}
