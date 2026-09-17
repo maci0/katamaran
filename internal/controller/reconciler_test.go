@@ -3,8 +3,13 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +25,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	fakedyn "k8s.io/client-go/dynamic/fake"
 	fakekube "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -1654,4 +1660,83 @@ func TestReconciler_RecoverFromDestComplete_RunsSourceCleanup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("recovery deleted pods %v, want [default/kata-demo]", disc.deletedPodsSnapshot())
+}
+
+func TestReconcileAll_FollowsListPagination(t *testing.T) {
+	const perPage = 2
+	names := []string{"m-a", "m-b", "m-c", "m-d", "m-e"}
+
+	orch := &fakeOrch{}
+	var seenContinues []string
+	var seenLimits []int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPatch {
+			_ = json.NewEncoder(w).Encode(newMigrationCR("deleted", nil, true, nil))
+			return
+		}
+		if r.URL.Path != "/apis/katamaran.io/v1alpha1/migrations" {
+			http.NotFound(w, r)
+			return
+		}
+		var list unstructured.UnstructuredList
+		list.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "katamaran.io", Version: "v1alpha1", Kind: "MigrationList",
+		})
+		if rv := r.URL.Query().Get("resourceVersion"); rv != "" {
+			t.Errorf("resourceVersion = %q, want empty for paginated lists", rv)
+		}
+		start := 0
+		if c := r.URL.Query().Get("continue"); c != "" {
+			var err error
+			start, err = strconv.Atoi(c)
+			if err != nil || start < 0 || start > len(names) {
+				http.Error(w, "invalid continuation token", http.StatusBadRequest)
+				return
+			}
+			seenContinues = append(seenContinues, c)
+		}
+		if l := r.URL.Query().Get("limit"); l != "" {
+			n, _ := strconv.ParseInt(l, 10, 64)
+			seenLimits = append(seenLimits, n)
+		}
+		end := min(start+perPage, len(names))
+		for _, name := range names[start:end] {
+			list.Items = append(list.Items, *newMigrationCR(name, []string{finalizerName}, true, map[string]any{"phase": "succeeded", "migrationID": name}))
+		}
+		if end < len(names) {
+			list.SetContinue(strconv.Itoa(end))
+		}
+		_ = json.NewEncoder(w).Encode(&list)
+	}))
+	t.Cleanup(srv.Close)
+
+	dyn, err := dynamic.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatalf("dynamic client: %v", err)
+	}
+	rec := NewReconciler(dyn, nil, orch, nil)
+	if err := rec.reconcileAll(context.Background()); err != nil {
+		t.Fatalf("reconcileAll: %v", err)
+	}
+	srv.Close()
+	var stopped []string
+	for _, call := range orch.callsFor("Stop") {
+		stopped = append(stopped, call.id)
+	}
+	if !slices.Equal(stopped, names) {
+		t.Errorf("stopped = %v, want %v", stopped, names)
+	}
+
+	if len(seenLimits) != 3 {
+		t.Fatalf("requests carrying a Limit = %d, want 3", len(seenLimits))
+	}
+	for _, l := range seenLimits {
+		if l != reconcilePageSize {
+			t.Errorf("list Limit = %d, want %d", l, reconcilePageSize)
+		}
+	}
+	if len(seenContinues) != 2 {
+		t.Errorf("continue tokens threaded across pages = %d (%v), want 2", len(seenContinues), seenContinues)
+	}
 }

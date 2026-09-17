@@ -207,58 +207,62 @@ func (r *Reconciler) tickOnce(ctx context.Context) {
 	}
 }
 
+const reconcilePageSize int64 = 500
+
 func (r *Reconciler) reconcileAll(ctx context.Context) error {
-	// Watch-cache read: this loop re-lists every PollInterval for the
-	// controller's lifetime. Quorum reads would sustain one etcd
-	// round-trip per tick forever; a tick of staleness only delays
-	// dispatch/recovery by one interval (same rationale as recover's
-	// job list below).
-	list, err := r.Dynamic.Resource(MigrationGVR).List(ctx, metav1.ListOptions{
-		ResourceVersion: "0",
-	})
-	if err != nil {
-		return fmt.Errorf("list Migrations: %w", err)
+	opts := metav1.ListOptions{Limit: reconcilePageSize}
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("list Migrations: %w", err)
+		}
+		list, err := r.Dynamic.Resource(MigrationGVR).List(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("list Migrations: %w", err)
+		}
+		for i := range list.Items {
+			obj := &list.Items[i]
+			key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
+
+			// Deletion path first: runs even when phase is set.
+			if obj.GetDeletionTimestamp() != nil {
+				r.handleDeletion(ctx, key, obj)
+				continue
+			}
+
+			// Ensure the finalizer is present before we touch any state, so
+			// a race between submit and delete cannot orphan jobs.
+			if !hasFinalizer(obj) {
+				if err := r.addFinalizer(ctx, obj); err != nil {
+					slog.Error("add finalizer failed", "migration", key, "error", err)
+					continue
+				}
+			}
+
+			phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+			switch {
+			case phase == "":
+				// Brand-new migration, dispatch.
+				if !r.markTracking(key) {
+					continue
+				}
+				go r.dispatch(ctx, key, obj)
+			case !orchestrator.StatusPhase(phase).IsTerminal():
+				// In-flight from a previous controller incarnation. Recover
+				// by inspecting Job state directly.
+				if r.isTracked(key) {
+					continue
+				}
+				if !r.markTracking(key) {
+					continue
+				}
+				go r.recover(ctx, key, obj)
+			}
+		}
+		opts.Continue = list.GetContinue()
+		if opts.Continue == "" {
+			return nil
+		}
 	}
-	for i := range list.Items {
-		obj := &list.Items[i]
-		key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
-
-		// Deletion path first: runs even when phase is set.
-		if obj.GetDeletionTimestamp() != nil {
-			r.handleDeletion(ctx, key, obj)
-			continue
-		}
-
-		// Ensure the finalizer is present before we touch any state, so
-		// a race between submit and delete cannot orphan jobs.
-		if !hasFinalizer(obj) {
-			if err := r.addFinalizer(ctx, obj); err != nil {
-				slog.Error("add finalizer failed", "migration", key, "error", err)
-				continue
-			}
-		}
-
-		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
-		switch {
-		case phase == "":
-			// Brand-new migration, dispatch.
-			if !r.markTracking(key) {
-				continue
-			}
-			go r.dispatch(ctx, key, obj)
-		case !orchestrator.StatusPhase(phase).IsTerminal():
-			// In-flight from a previous controller incarnation. Recover
-			// by inspecting Job state directly.
-			if r.isTracked(key) {
-				continue
-			}
-			if !r.markTracking(key) {
-				continue
-			}
-			go r.recover(ctx, key, obj)
-		}
-	}
-	return nil
 }
 
 // markTracking returns true if the caller is the first to claim key.
