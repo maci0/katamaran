@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   40s terminationGracePeriodSeconds to match. Prometheus scrape targets
   for mgr and dashboard counters are declared in deploy/dashboard.yaml
   (metrics Services + ServiceMonitors).
+- `go.mod` on k8s.io v0.37.0, golang.org/x/net v0.59.0,
+  golang.org/x/sys v0.48.0, and google.golang.org/grpc v1.83.2.
+- All four Dockerfiles pin the golang builder at 1.27-alpine and the
+  runtime at alpine 3.24.
+- GitHub Actions: checkout v7.0.1, setup-go v7.0.0, cache v6.1.0,
+  docker setup/build/login v4, and softprops/action-gh-release v3.0.2.
 
 ## [0.4.2] - 2026-08-26
 
