@@ -5,9 +5,12 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/maci0/katamaran/internal/controller"
@@ -87,15 +90,19 @@ func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "%s %s\n", kv.Key, raw)
 	})
 
-	snap := controller.MigrationProgressSnapshot()
+	writeProgressMetrics(w, controller.MigrationProgressSnapshot())
+}
+
+func writeProgressMetrics(w io.Writer, snap map[string]controller.MigrationProgressEntry) {
 	if len(snap) == 0 {
 		return
 	}
+	ids := slices.Sorted(maps.Keys(snap))
 	emitIntGauge := func(name, help string, get func(controller.MigrationProgressEntry) int64) {
 		fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 		fmt.Fprintf(w, "# TYPE %s gauge\n", name)
-		for id, e := range snap {
-			fmt.Fprintf(w, "%s{migration_id=%q} %d\n", name, id, get(e))
+		for _, id := range ids {
+			fmt.Fprintf(w, "%s{migration_id=%q} %d\n", name, id, get(snap[id]))
 		}
 	}
 	emitIntGauge("katamaran_migration_ram_transferred_bytes", "RAM bytes transferred so far.",
@@ -104,8 +111,8 @@ func servePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
 		func(e controller.MigrationProgressEntry) int64 { return e.RAMTotal })
 	fmt.Fprintf(w, "# HELP katamaran_migration_phase Current migration phase.\n")
 	fmt.Fprintf(w, "# TYPE katamaran_migration_phase gauge\n")
-	for id, e := range snap {
-		fmt.Fprintf(w, "katamaran_migration_phase{migration_id=%q,phase=%q} 1\n", id, e.Phase)
+	for _, id := range ids {
+		fmt.Fprintf(w, "katamaran_migration_phase{migration_id=%q,phase=%q} 1\n", id, snap[id].Phase)
 	}
 	emitIntGauge("katamaran_migration_downtime_ms", "Actual VM pause duration in milliseconds.",
 		func(e controller.MigrationProgressEntry) int64 { return e.DowntimeMS })
