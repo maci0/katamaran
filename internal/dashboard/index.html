@@ -9,7 +9,6 @@
     <title>Katamaran Dashboard</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20viewBox='0%200%2040%2040'%20xmlns='http://www.w3.org/2000/svg'%3E%3Cpolygon%20points='15,10%2025,10%2022,22%2018,22'%20fill='%232b8eff'/%3E%3Cpolygon%20points='20,6%2021,10%2019,10'%20fill='%238ecdff'/%3E%3Cpath%20d='M5%2024Q12%2018%2020%2022Q28%2026%2035%2020'%20stroke='%232b8eff'%20stroke-width='2.5'%20fill='none'/%3E%3C/svg%3E">
     <script src="/assets/tailwind-3.4.17.js"></script>
-    <script src="/assets/chart-4.5.1.min.js"></script>
     <script>
     tailwind.config = {
         theme: {
@@ -310,6 +309,41 @@
     <script>
     var migrationForm = document.getElementById('migration-form');
     var latencyChart = null;
+    var chartLoadState = 'idle';
+    var chartLoadTimeoutMs = 10000;
+    function ensureChart() {
+        if (chartLoadState !== 'idle') return;
+        chartLoadState = 'loading';
+        var placeholder = document.getElementById('chart-empty');
+        placeholder.textContent = 'Loading latency chart…';
+        placeholder.style.display = '';
+        var script = document.createElement('script');
+        script.src = '/assets/chart-4.5.1.min.js';
+        script.async = true;
+        var timer = setTimeout(failed, chartLoadTimeoutMs);
+        function failed() {
+            clearTimeout(timer);
+            script.onload = script.onerror = null;
+            script.remove();
+            chartLoadState = 'failed';
+            placeholder.textContent = 'Latency chart unavailable. Reload to retry. Statistics remain available.';
+            placeholder.style.display = '';
+        }
+        script.onerror = failed;
+        script.onload = function() {
+            clearTimeout(timer);
+            script.onload = script.onerror = null;
+            initializeChart();
+            if (!latencyChart) {
+                failed();
+                return;
+            }
+            chartLoadState = 'ready';
+            refreshStatus();
+        };
+        document.head.appendChild(script);
+    }
+    function initializeChart() {
     try {
         var chartCtx = document.getElementById('latencyChart').getContext('2d');
         var grad = chartCtx.createLinearGradient(0, 0, 0, 280);
@@ -361,6 +395,7 @@
     } catch(e) {
         console.warn('Chart.js initialization failed:', e);
         document.getElementById('chart-empty').textContent = 'Latency chart unavailable (Chart.js failed to load)';
+    }
     }
 
     function showToast(message, type) {
@@ -1079,7 +1114,8 @@
             }
 
             if (hasPings) {
-                chartEmpty.style.display = 'none';
+                ensureChart();
+                chartEmpty.style.display = latencyChart ? 'none' : '';
                 var pings = pingSamples;
                 var latencies = pings.filter(function(p) { return !p.error; }).map(function(p) { return p.latency; });
                 var errors = pings.filter(function(p) { return p.error; }).length;

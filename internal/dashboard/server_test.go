@@ -1306,14 +1306,21 @@ func TestMux_ServesVendoredAssets(t *testing.T) {
 // TestIndexHTML_VendoredAssetsOnly pins the dependency-vendoring contract of
 // the dashboard UI: every external script must be served same-origin from the
 // embedded assets directory, never fetched from a public CDN at page load.
+// Chart.js is loaded on demand (first latency sample), so its URL lives in the
+// ensureChart loader; tailwind's runtime stays a static script tag.
 func TestIndexHTML_VendoredAssetsOnly(t *testing.T) {
 	t.Parallel()
 	if bytes.Contains(indexHTML, []byte("https://cdn.")) {
 		t.Error("index.html references a CDN URL; all third-party assets must be vendored under assets/")
 	}
-	n := bytes.Count(indexHTML, []byte(`src="/assets/`))
-	if n != 2 {
-		t.Errorf("index.html has %d /assets/ script tags, want 2", n)
+	if n := bytes.Count(indexHTML, []byte(`src="/assets/`)); n != 1 {
+		t.Errorf("index.html has %d static /assets/ script tags, want 1 (tailwind)", n)
+	}
+	if !bytes.Contains(indexHTML, []byte("'/assets/chart-4.5.1.min.js'")) {
+		t.Error("index.html does not reference the vendored Chart.js in ensureChart")
+	}
+	if !bytes.Contains(indexHTML, []byte("/assets/tailwind-3.4.17.js")) {
+		t.Error("index.html does not reference the vendored Tailwind runtime")
 	}
 }
 
