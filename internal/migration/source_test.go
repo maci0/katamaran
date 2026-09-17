@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1257,21 +1258,41 @@ func TestRunSource_EmitCmdline_RemovesFileAtExit(t *testing.T) {
 	origSleep := destReplaySleep
 	destReplaySleep = 10 * time.Millisecond
 	t.Cleanup(func() { destReplaySleep = origSleep })
-	// The run fails at the first QMP dial (nonexistent socket), after the
-	// capture, which is the point: removal must happen on failure paths too.
-	err := RunSource(context.Background(), SourceConfig{
+	wantCmdline, err := os.ReadFile("/proc/self/cmdline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := make(chan []byte, 1)
+	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		captured, readErr := os.ReadFile(cmdlinePath)
+		if readErr != nil {
+			t.Errorf("read captured cmdline before QMP failure: %v", readErr)
+		}
+		observed <- captured
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = RunSource(ctx, SourceConfig{
 		PodName:         "vm-a",
 		PodNamespace:    "default",
 		DestIP:          testDestIP,
-		QMPSocket:       "/nonexistent/qmp.sock",
+		QMPSocket:       sock,
 		DriveIDs:        []string{"drive-virtio-disk0"},
 		SharedStorage:   true,
 		TunnelMode:      TunnelModeNone,
 		DowntimeLimitMS: 25,
 		EmitCmdlineTo:   cmdlinePath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "QMP") {
-		t.Fatalf("expected QMP dial error after capture, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "connecting to source QMP") || !errors.Is(err, io.EOF) {
+		t.Fatalf("expected QMP greeting EOF after capture, got: %v", err)
+	}
+	select {
+	case captured := <-observed:
+		if len(captured) == 0 || !bytes.Equal(captured, wantCmdline) {
+			t.Fatal("captured file must contain the source cmdline before QMP failure")
+		}
+	default:
+		t.Fatal("source never connected to QMP after capturing cmdline")
 	}
 	if _, statErr := os.Stat(cmdlinePath); !os.IsNotExist(statErr) {
 		t.Fatalf("captured cmdline file %s still exists after RunSource returned (leaks one file per migration on the shared hostPath)", cmdlinePath)
