@@ -114,29 +114,20 @@ func TestRunSource_ConfigValidation(t *testing.T) {
 
 func TestWaitForStorageSync_JobReady(t *testing.T) {
 	t.Parallel()
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		// First poll: job running at 50%.
-		qmptest.ConsumeCommand(conn)
-		jobs := []qmp.BlockJobInfo{{
-			Device: "mirror-drive0",
-			Len:    1000,
-			Offset: 500,
-			Ready:  false,
-			Status: "running",
-			Type:   "mirror",
-		}}
-		b, _ := json.Marshal(jobs)
-		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
-		// Second poll: job ready.
-		qmptest.ConsumeCommand(conn)
-		jobs[0].Ready = true
-		jobs[0].Offset = 1000
-		b, _ = json.Marshal(jobs)
-		conn.Write([]byte(`{"return":` + string(b) + "}\n"))
+	var polls atomic.Int32
+	sock, rec := startRecordingQMP(t, func(_ net.Conn, cmd recordedQMPCommand) string {
+		if cmd.Execute != "query-block-jobs" {
+			t.Errorf("execute = %q, want query-block-jobs", cmd.Execute)
+			return `{"error":{"class":"CommandNotFound","desc":"unexpected command"}}`
+		}
+		if polls.Add(1) == 1 {
+			return `{"return":[{"device":"mirror-drive0","len":1000,"offset":500,"ready":false,"status":"running","type":"mirror"}]}`
+		}
+		return `{"return":[{"device":"mirror-drive0","len":1000,"offset":1000,"ready":true,"status":"running","type":"mirror"}]}`
 	})
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	client, err := qmp.NewClient(ctx, sock)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -146,6 +137,9 @@ func TestWaitForStorageSync_JobReady(t *testing.T) {
 	err = waitForStorageSync(ctx, client, "mirror-drive0")
 	if err != nil {
 		t.Fatalf("waitForStorageSync: %v", err)
+	}
+	if got := len(rec.Commands()); got != 2 {
+		t.Fatalf("block job queries = %d, want 2 (running then ready)", got)
 	}
 }
 
@@ -182,27 +176,51 @@ func TestWaitForStorageSync_JobDisappears(t *testing.T) {
 func TestWaitForStorageSync_JobNeverAppears(t *testing.T) {
 	t.Parallel()
 
-	// Override jobAppearTimeout for faster test. We can't do that without
-	// changing the constant, so just verify context cancellation works.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var polls atomic.Int32
+	done := make(chan struct{})
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
+		defer close(done)
 		qmptest.QMPHandshake(conn)
+		decoder := json.NewDecoder(conn)
 		for {
-			qmptest.ConsumeCommand(conn)
-			conn.Write([]byte(`{"return":[]}` + "\n"))
+			var cmd recordedQMPCommand
+			if err := decoder.Decode(&cmd); err != nil {
+				return
+			}
+			if cmd.Execute != "query-block-jobs" {
+				t.Errorf("execute = %q, want query-block-jobs", cmd.Execute)
+				return
+			}
+			if polls.Add(1) == 2 {
+				cancel()
+			}
+			if _, err := conn.Write([]byte(`{"return":[]}` + "\n")); err != nil {
+				return
+			}
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	client, err := qmp.NewClient(ctx, sock)
+	client, err := qmp.NewClient(context.Background(), sock)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		client.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("QMP server did not exit after client closed")
+		}
+	}()
 
 	err = waitForStorageSync(ctx, client, "mirror-drive0")
-	if err == nil {
-		t.Fatal("expected error when context is cancelled")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForStorageSync error = %v, want context canceled", err)
+	}
+	if got := polls.Load(); got != 2 {
+		t.Fatalf("block job queries = %d, want 2 before cancellation", got)
 	}
 }
 
@@ -345,17 +363,20 @@ func TestWaitForStorageSync_ReadyJobDisappears(t *testing.T) {
 
 func TestWaitForMigrationComplete_Completed(t *testing.T) {
 	t.Parallel()
-	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
-		qmptest.QMPHandshake(conn)
-		// First poll: active.
-		qmptest.ConsumeCommand(conn)
-		conn.Write([]byte(`{"return":{"status":"active","ram":{"total":1000,"transferred":500,"remaining":500}}}` + "\n"))
-		// Second poll: completed.
-		qmptest.ConsumeCommand(conn)
-		conn.Write([]byte(`{"return":{"status":"completed"}}` + "\n"))
+	var polls atomic.Int32
+	sock, rec := startRecordingQMP(t, func(_ net.Conn, cmd recordedQMPCommand) string {
+		if cmd.Execute != "query-migrate" {
+			t.Errorf("execute = %q, want query-migrate", cmd.Execute)
+			return `{"error":{"class":"CommandNotFound","desc":"unexpected command"}}`
+		}
+		if polls.Add(1) == 1 {
+			return `{"return":{"status":"active","ram":{"total":1000,"transferred":500,"remaining":500}}}`
+		}
+		return `{"return":{"status":"completed"}}`
 	})
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	client, err := qmp.NewClient(ctx, sock)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -365,6 +386,9 @@ func TestWaitForMigrationComplete_Completed(t *testing.T) {
 	err = waitForMigrationComplete(ctx, client)
 	if err != nil {
 		t.Fatalf("waitForMigrationComplete: %v", err)
+	}
+	if got := len(rec.Commands()); got != 2 {
+		t.Fatalf("migration queries = %d, want 2 (active then completed)", got)
 	}
 }
 
