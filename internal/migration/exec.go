@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const maxCommandOutputBytes = 64 * 1024
@@ -34,6 +35,13 @@ func (o *cappedCommandOutput) Write(p []byte) (int, error) {
 func (o *cappedCommandOutput) String() string {
 	s := o.b.String()
 	if o.truncated {
+		start := len(s) - 1
+		for start > 0 && len(s)-start < utf8.UTFMax && !utf8.RuneStart(s[start]) {
+			start--
+		}
+		if start >= 0 && !utf8.FullRuneInString(s[start:]) {
+			s = s[:start]
+		}
 		if s != "" && !strings.HasSuffix(s, "\n") {
 			s += "\n"
 		}

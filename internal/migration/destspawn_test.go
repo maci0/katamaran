@@ -1,8 +1,11 @@
 package migration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +17,37 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLogWriterTruncatesAtUTF8Boundary(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	for _, suffix := range []string{"é", "磁", "\U0001f600"} {
+		for kept := 0; kept <= len(suffix); kept++ {
+			prefix := strings.Repeat("x", maxChildProcessLogLine-kept)
+			input := prefix + suffix + "tail\n"
+			want := prefix
+			if kept == len(suffix) {
+				want += suffix
+			}
+			var logs bytes.Buffer
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			n, err := (logWriter{"qemu", "stderr"}).Write([]byte(input))
+			if n != len(input) || err != nil {
+				t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(input))
+			}
+			var record struct {
+				Output    string `json:"output"`
+				Truncated bool   `json:"truncated"`
+			}
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Output != want || !record.Truncated {
+				t.Fatalf("suffix %q, kept %d: output = %q, truncated = %v", suffix, kept, record.Output, record.Truncated)
+			}
+		}
+	}
+}
 
 func TestParseCmdlineBytes_NULDelimited(t *testing.T) {
 	t.Parallel()

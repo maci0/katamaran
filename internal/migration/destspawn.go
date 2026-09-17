@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maci0/katamaran/internal/adopt"
 )
@@ -641,7 +642,11 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 		}
 		truncated := false
 		if len(line) > maxChildProcessLogLine {
-			line = line[:maxChildProcessLogLine]
+			cut := maxChildProcessLogLine
+			for cut > 0 && !utf8.RuneStart(line[cut]) {
+				cut--
+			}
+			line = line[:cut]
 			truncated = true
 		}
 		slog.Log(context.Background(), level, "child process output", "process", w.process, "stream", w.stream, "output", line, "truncated", truncated)

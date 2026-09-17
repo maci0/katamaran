@@ -8,6 +8,41 @@ import (
 	"time"
 )
 
+func TestCappedCommandOutputUTF8(t *testing.T) {
+	t.Parallel()
+	for _, char := range []string{"é", "磁", "\U0001f600"} {
+		for kept := 0; kept <= len(char); kept++ {
+			prefix := strings.Repeat("x", maxCommandOutputBytes-kept)
+			input := prefix + char + "tail"
+			want := prefix
+			if kept == len(char) {
+				want += char
+			}
+			want += "\n... [truncated]"
+			for split := len(prefix); split <= len(prefix)+len(char); split++ {
+				var out cappedCommandOutput
+				for _, chunk := range []string{input[:split], input[split:]} {
+					if n, err := out.Write([]byte(chunk)); n != len(chunk) || err != nil {
+						t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(chunk))
+					}
+				}
+				if got := out.String(); got != want {
+					t.Fatalf("char %q, kept %d, split %d: output differs at byte limit", char, kept, split)
+				}
+			}
+		}
+	}
+	for _, input := range []string{"", "cafe\u0301", "\xff", strings.Repeat("x", maxCommandOutputBytes-2) + "é"} {
+		var out cappedCommandOutput
+		for i := range len(input) {
+			_, _ = out.Write([]byte(input[i : i+1]))
+		}
+		if got := out.String(); got != input {
+			t.Fatal("untruncated output changed")
+		}
+	}
+}
+
 func TestRunCmd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("requires linux")
