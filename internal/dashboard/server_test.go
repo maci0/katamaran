@@ -1787,6 +1787,46 @@ func TestHandlePingStart_RejectsUnknownFormField(t *testing.T) {
 	}
 }
 
+func TestRejectUnknownPostFormFields_DeterministicResponse(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"migrate", app.handleMigrate},
+		{"ping", app.handlePingStart},
+		{"http", app.handleHTTPStart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, body := range []string{
+				"target=192.0.2.1&zzz=1&aaa=2",
+				"aaa=2&zzz=1&target=192.0.2.1",
+				"zzz=1&target=192.0.2.1&aaa=2",
+				"zzz=1&=2&aaa=3",
+				"aaa=3&=2&zzz=1",
+			} {
+				for range 32 {
+					req := httptest.NewRequest(http.MethodPost, "/api/"+tc.name, strings.NewReader(body))
+					req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+					w := httptest.NewRecorder()
+					tc.handler(w, req)
+					if w.Code != http.StatusBadRequest {
+						t.Fatalf("body %q: status = %d, want 400", body, w.Code)
+					}
+					want := "{\"error\":\"Unknown form field: aaa\"}\n"
+					if strings.Contains(body, "&=") {
+						want = "{\"error\":\"Unknown form field: \"}\n"
+					}
+					if got := w.Body.String(); got != want {
+						t.Fatalf("body %q: response = %q, want %q", body, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHandleMigrate_IgnoresQueryParams(t *testing.T) {
 	t.Parallel()
 	app := &App{}

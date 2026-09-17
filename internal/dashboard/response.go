@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"mime"
 	"net/http"
+	"slices"
 )
 
 // writeJSON sends a JSON response with the given status code. Sets
@@ -69,7 +71,7 @@ func formFieldSet(keys ...string) map[string]struct{} {
 }
 
 func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
-	for key := range r.PostForm {
+	for _, key := range slices.Sorted(maps.Keys(r.PostForm)) {
 		if _, ok := allowed[key]; ok {
 			continue
 		}
