@@ -234,6 +234,21 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	downtimeLimitMS := cfg.DowntimeLimitMS
 
 	if !cfg.SharedStorage {
+		defer func() {
+			if len(mirrorJobIDs) > 0 {
+				cctx, ccancel := cleanupCtx(ctx)
+				defer ccancel()
+				for _, jid := range mirrorJobIDs {
+					if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
+						Device: jid,
+						Force:  true,
+					}); cancelErr != nil {
+						slog.Warn("Deferred block job cancel failed", "job_id", jid, "error", cancelErr)
+					}
+				}
+			}
+		}()
+
 		for _, driveID := range cfg.DriveIDs {
 			jobID := "mirror-" + driveID
 			targetNBD := fmt.Sprintf("nbd:%s:%s:exportname=%s", formatQEMUHost(cfg.DestIP), nbdPort, driveID)
@@ -250,21 +265,6 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			}
 			mirrorJobIDs = append(mirrorJobIDs, jobID)
 		}
-
-		defer func() {
-			if len(mirrorJobIDs) > 0 {
-				cctx, ccancel := cleanupCtx(ctx)
-				defer ccancel()
-				for _, jid := range mirrorJobIDs {
-					if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
-						Device: jid,
-						Force:  true,
-					}); cancelErr != nil {
-						slog.Warn("Deferred block job cancel failed", "job_id", jid, "error", cancelErr)
-					}
-				}
-			}
-		}()
 
 		slog.Info("Waiting for storage mirrors to synchronize", "drives", len(mirrorJobIDs))
 		storageSyncStart := time.Now()

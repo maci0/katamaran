@@ -786,6 +786,47 @@ func TestRunSource_DriveMirrorFailure(t *testing.T) {
 	}
 }
 
+func TestRunSource_PartialDriveMirrorFailureCleansUp(t *testing.T) {
+	t.Parallel()
+
+	sock, rec := startRecordingQMP(t, func(_ net.Conn, cmd recordedQMPCommand) string {
+		if cmd.Execute == "drive-mirror" && strings.Contains(string(cmd.Arguments), "disk2") {
+			return `{"error":{"class":"GenericError","desc":"device not found"}}`
+		}
+		return `{"return":{}}`
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := RunSource(ctx, SourceConfig{
+		QMPSocket: sock, DestIP: testDestIP, VMIP: testVMIP,
+		DriveIDs:   []string{"disk0", "disk1", "disk2"},
+		TunnelMode: TunnelModeNone, DowntimeLimitMS: 25,
+	})
+	var qmpErr *qmp.Error
+	if !errors.As(err, &qmpErr) || qmpErr.Desc != "device not found" {
+		t.Fatalf("expected original drive-mirror error, got: %v", err)
+	}
+	commands := rec.Commands()
+	var cancelled []string
+	for _, cmd := range commands {
+		if cmd.Execute == "block-job-cancel" {
+			var args qmp.BlockJobCancelArgs
+			decodeRecordedArgs(t, cmd, &args)
+			if !args.Force {
+				t.Error("cleanup must force block job cancellation")
+			}
+			cancelled = append(cancelled, args.Device)
+		}
+		if cmd.Execute == "query-block-jobs" || cmd.Execute == "migrate" {
+			t.Errorf("unexpected command after partial mirror failure: %s", cmd.Execute)
+		}
+	}
+	if strings.Join(cancelled, ",") != "mirror-disk0,mirror-disk1" {
+		t.Fatalf("cancelled jobs = %v, want both successfully started mirrors", cancelled)
+	}
+}
+
 func TestRunSource_SetCapabilitiesFailure(t *testing.T) {
 	t.Parallel()
 
