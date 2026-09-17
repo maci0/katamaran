@@ -54,7 +54,7 @@ echo ""
 # Go commands must run from the module root (PROJECT_ROOT).
 echo "--- Go source ---"
 
-if (cd "${PROJECT_ROOT}" && "${GO_CMD}" vet ./...) 2>/dev/null; then
+if (cd "${PROJECT_ROOT}" && "${GO_CMD}" vet ./...); then
     pass "go vet reports no issues"
 else
     fail "go vet found issues"
@@ -74,10 +74,11 @@ else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if (cd "${PROJECT_ROOT}" && GOOS=linux "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/) 2>/dev/null; then
+if (cd "${PROJECT_ROOT}" && GOOS=linux "${GO_CMD}" build -o "${BINARY}" ./cmd/katamaran/); then
     pass "go build succeeds"
 else
-    fail "go build failed"
+    fail "go build failed; binary behavior tests cannot run"
+    exit 1
 fi
 
 # --- 2. Binary behavior ---
