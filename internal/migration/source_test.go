@@ -445,7 +445,7 @@ func TestWaitForMigrationComplete_Cancelled(t *testing.T) {
 
 // postActiveStallGraceForTest overrides postActiveStallGrace for the
 // caller test and returns a restore func suitable for t.Cleanup.
-func postActiveStallGraceForTest(_ *testing.T, d time.Duration) func() {
+func postActiveStallGraceForTest(d time.Duration) func() {
 	prev := postActiveStallGrace
 	postActiveStallGrace = d
 	return func() { postActiveStallGrace = prev }
@@ -462,8 +462,7 @@ func TestWaitForMigrationComplete_QMPStallTreatedAsSuccess(t *testing.T) {
 	// Not parallel: shrinks the package-level postActiveStallGrace while
 	// running, and sibling parallel tests call waitForMigrationComplete,
 	// which reads it.
-	prevGrace := postActiveStallGraceForTest(t, 200*time.Millisecond)
-	t.Cleanup(prevGrace)
+	t.Cleanup(postActiveStallGraceForTest(200 * time.Millisecond))
 
 	sock := qmptest.StartFakeQMP(t, func(conn net.Conn) {
 		qmptest.QMPHandshake(conn)

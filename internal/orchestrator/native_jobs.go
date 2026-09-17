@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"bytes"
 	"cmp"
 	_ "embed"
 	"fmt"
@@ -90,7 +89,7 @@ func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job,
 func renderJob(tmpl []byte, vars map[string]string) (*batchv1.Job, error) {
 	expanded := expandShellVars(string(tmpl), vars)
 	var job batchv1.Job
-	if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader([]byte(expanded)), 4096).Decode(&job); err != nil {
+	if err := yaml.NewYAMLOrJSONDecoder(strings.NewReader(expanded), 4096).Decode(&job); err != nil {
 		return nil, fmt.Errorf("decode rendered job: %w", err)
 	}
 	return &job, nil
