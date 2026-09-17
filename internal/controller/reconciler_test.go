@@ -1505,6 +1505,49 @@ func TestReconciler_AdoptVM_MissingSourcePodSkipsPendingMark(t *testing.T) {
 	}
 }
 
+func TestCreateAdoptionPod_PreservesWorkloadLabels(t *testing.T) {
+	for _, captured := range []bool{false, true} {
+		t.Run(strconv.FormatBool(captured), func(t *testing.T) {
+			src := sourcePodOwnedBy("ReplicaSet", "rs-labels")
+			src.Labels = map[string]string{
+				"app.kubernetes.io/name":      "nginx",
+				"app.kubernetes.io/component": "web",
+				"katamaran.io/source-pod":     "original-pod",
+				"pod-template-hash":           "abc123",
+			}
+			dyn := fakedyn.NewSimpleDynamicClient(runtime.NewScheme())
+			r := NewReconciler(dyn, fakekube.NewSimpleClientset(src), &fakeOrch{}, nil)
+			r.pending.Mark("rs-labels", "migration-labels")
+			req := orchestrator.Request{SourcePod: &orchestrator.PodRef{Namespace: src.Namespace, Name: src.Name}}
+			var labels map[string]string
+			var refs []metav1.OwnerReference
+			if captured {
+				labels, refs = src.Labels, src.OwnerReferences
+			}
+			if err := r.createAdoptionPod(context.Background(), req, "adopted-labels", "worker-b", labels, refs); err != nil {
+				t.Fatal(err)
+			}
+			podGVR := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+			created, err := dyn.Resource(podGVR).Namespace(src.Namespace).Get(context.Background(), "adopted-labels", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range src.Labels {
+				if got := created.GetLabels()[key]; got != want {
+					t.Errorf("label %s = %q, want %q", key, got, want)
+				}
+			}
+			var pod corev1.Pod
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(created.Object, &pod); err != nil {
+				t.Fatal(err)
+			}
+			if reason := r.ShouldDenyPodCreate(&pod); reason != "" {
+				t.Errorf("adoption pod denied: %s", reason)
+			}
+		})
+	}
+}
+
 // sourceCleanup=delete deletes the source pod before createAdoptionPod
 // runs, so the adoption pod's label/owner inheritance must come from the
 // pre-cleanup lookup in handleMigrationOutcome. Regression: inheritance

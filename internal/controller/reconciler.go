@@ -1113,9 +1113,6 @@ func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Req
 	var ownerRefs []metav1.OwnerReference
 	if len(srcLabels) > 0 || len(srcOwnerRefs) > 0 {
 		for k, v := range srcLabels {
-			if _, taken := labels[k]; taken {
-				continue
-			}
 			labels[k] = v
 		}
 		ownerRefs = srcOwnerRefs
@@ -1124,9 +1121,6 @@ func (r *Reconciler) createAdoptionPod(ctx context.Context, req orchestrator.Req
 		switch {
 		case err == nil:
 			for k, v := range src.Labels {
-				if _, taken := labels[k]; taken {
-					continue
-				}
 				labels[k] = v
 			}
 			ownerRefs = src.OwnerReferences

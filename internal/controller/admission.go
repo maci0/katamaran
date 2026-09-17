@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maci0/katamaran/internal/adopt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -113,7 +115,9 @@ func (r *Reconciler) ShouldDenyPodCreate(pod *corev1.Pod) string {
 	if r == nil || r.pending == nil || pod == nil {
 		return ""
 	}
-	if pod.Labels["app.kubernetes.io/component"] == "adopted-vm" {
+	if pod.Labels["app.kubernetes.io/component"] == "adopted-vm" ||
+		(pod.Spec.RuntimeClassName != nil && *pod.Spec.RuntimeClassName == "katamaran-adopted" &&
+			pod.Annotations[adopt.SandboxIDAnnotation] != "") {
 		return ""
 	}
 	for _, owner := range pod.OwnerReferences {
