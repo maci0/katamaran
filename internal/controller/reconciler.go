@@ -143,6 +143,7 @@ type Reconciler struct {
 	Discoverer    orchestrator.Discoverer // resolves source node + dest IP from the spec
 	PollInterval  time.Duration
 	StatusTimeout time.Duration
+	AllowedImage  string
 
 	mu       sync.Mutex
 	tracking map[types.NamespacedName]*track // migrations currently being watched
@@ -393,6 +394,11 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	if err != nil {
 		slog.Warn("Migration spec invalid", "migration", key, "error", err)
 		r.patchFailedStatus(ctx, key, "", "invalid spec", err.Error())
+		return
+	}
+	if err := r.authorizeImage(req.Image); err != nil {
+		slog.Warn("Migration image rejected", "migration", key, "error", err)
+		r.patchFailedStatus(ctx, key, "", "image not allowed", err.Error())
 		return
 	}
 	if req.SourcePod != nil {
@@ -754,6 +760,11 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				slog.Warn("recover: specToRequest failed; cannot resume", "migration", key, "error", sErr)
 				continue
 			}
+			if err := r.authorizeImage(req.Image); err != nil {
+				slog.Warn("Recovery image rejected", "migration", key, "error", err)
+				r.patchFailedStatus(jobCtx, key, id, "image not allowed", err.Error())
+				return
+			}
 			created, rErr := r.Orchestrator.Resume(jobCtx, orchestrator.MigrationID(id), req)
 			switch {
 			case rErr != nil:
@@ -867,6 +878,16 @@ func (r *Reconciler) removeFinalizer(ctx context.Context, obj *unstructured.Unst
 		}
 	}
 	return r.patchFinalizers(ctx, obj, out)
+}
+
+func (r *Reconciler) authorizeImage(image string) error {
+	if r.AllowedImage == "" {
+		return fmt.Errorf("trusted migration image is not configured")
+	}
+	if image != r.AllowedImage {
+		return fmt.Errorf("spec.image is not allowed")
+	}
+	return nil
 }
 
 // specToRequest extracts the .spec fields into an orchestrator.Request.

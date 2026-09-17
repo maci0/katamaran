@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -365,6 +366,7 @@ func newReconcilerWithCR(t *testing.T, orch orchestrator.Orchestrator, cr *unstr
 	}
 	kube := fakekube.NewSimpleClientset(kubeObjs...)
 	rec := NewReconciler(dyn, kube, orch, nil)
+	rec.AllowedImage = "localhost/katamaran:dev"
 	rec.PollInterval = 10 * time.Millisecond
 	rec.StatusTimeout = 1 * time.Second
 	return rec, dyn, kube
@@ -379,6 +381,77 @@ func (d *deadlineDiscoverer) LookupPodNode(ctx context.Context, _, _ string) (st
 	<-ctx.Done()
 	d.err = ctx.Err()
 	return "", d.err
+}
+
+func TestReconcilerRejectsUntrustedImage(t *testing.T) {
+	for _, allowed := range []string{"", "localhost/katamaran:trusted"} {
+		for _, recovery := range []bool{false, true} {
+			t.Run(fmt.Sprintf("allowed=%s/recovery=%t", allowed, recovery), func(t *testing.T) {
+				cr := newMigrationCR("image-policy", []string{finalizerName}, false, map[string]any{
+					"phase": "Submitted", "migrationID": "image-policy",
+				})
+				src := batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+					Name: "katamaran-source-image-policy", Namespace: orchestrator.DefaultJobNamespace,
+					Labels: map[string]string{orchestrator.MigrationIDLabel: "image-policy", "app.kubernetes.io/component": "source"},
+				}}
+				orch := &fakeOrch{}
+				rec, dyn, _ := newReconcilerWithCR(t, orch, cr, src)
+				rec.AllowedImage = allowed
+				rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
+				rec.StatusTimeout = 50 * time.Millisecond
+				key := types.NamespacedName{Namespace: cr.GetNamespace(), Name: cr.GetName()}
+				if recovery {
+					rec.recover(context.Background(), key, cr)
+				} else {
+					rec.dispatch(context.Background(), key, cr)
+				}
+				for _, op := range []string{"Apply", "Resume"} {
+					if calls := orch.callsFor(op); len(calls) != 0 {
+						t.Errorf("untrusted image reached %s: %v", op, calls)
+					}
+				}
+				got, err := dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+				detail, _, _ := unstructured.NestedString(got.Object, "status", "error")
+				if phase != string(orchestrator.PhaseFailed) || !strings.Contains(detail, "image") {
+					t.Fatalf("status = %v, want image policy failure", got.Object["status"])
+				}
+			})
+		}
+	}
+}
+
+func TestReconcilerImageRevocationPreservesCleanup(t *testing.T) {
+	cr := newMigrationCR("revoked-image", []string{finalizerName}, false, map[string]any{
+		"phase": "transferring", "migrationID": "revoked-image",
+	})
+	orch := &fakeOrch{}
+	rec, dyn, _ := newReconcilerWithCR(t, orch, cr, completedDestJob("revoked-image"))
+	rec.AllowedImage = "localhost/katamaran:replacement"
+	key := types.NamespacedName{Namespace: cr.GetNamespace(), Name: cr.GetName()}
+	rec.recover(context.Background(), key, cr)
+	got, err := dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+	if phase != string(orchestrator.PhaseSucceeded) {
+		t.Fatalf("phase = %q, want succeeded", phase)
+	}
+	rec.handleDeletion(context.Background(), key, got)
+	if calls := orch.callsFor("Stop"); len(calls) != 1 || calls[0].id != "revoked-image" {
+		t.Fatalf("Stop calls = %v, want revoked-image", calls)
+	}
+	got, err = dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinalizer(got) {
+		t.Fatal("image revocation prevented finalizer removal")
+	}
 }
 
 func TestDispatchDiscoveryStatusTimeout(t *testing.T) {
@@ -1533,6 +1606,7 @@ func newAdoptReconciler(t *testing.T, orch orchestrator.Orchestrator, cr *unstru
 	}, cr)
 	kube := fakekube.NewSimpleClientset(pod)
 	rec := NewReconciler(dyn, kube, orch, nil)
+	rec.AllowedImage = "localhost/katamaran:dev"
 	rec.PollInterval = 10 * time.Millisecond
 	rec.StatusTimeout = 1 * time.Second
 	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
@@ -1662,6 +1736,7 @@ func TestReconciler_AdoptVM_MissingSourcePodSkipsPendingMark(t *testing.T) {
 	// No pod seeded: the source-pod Get in handleMigrationOutcome fails.
 	kube := fakekube.NewSimpleClientset()
 	rec := NewReconciler(dyn, kube, orch, nil)
+	rec.AllowedImage = "localhost/katamaran:dev"
 	rec.PollInterval = 10 * time.Millisecond
 	rec.StatusTimeout = 1 * time.Second
 	rec.Discoverer = &fakeDiscoverer{podNode: "worker-a", nodeIP: "10.0.0.20"}
@@ -1746,6 +1821,7 @@ func TestReconciler_AdoptVM_DeleteCleanupInheritsLabels(t *testing.T) {
 	}, cr)
 	kube := fakekube.NewSimpleClientset(pod)
 	rec := NewReconciler(dyn, kube, orch, disc)
+	rec.AllowedImage = "localhost/katamaran:dev"
 	rec.PollInterval = 10 * time.Millisecond
 	rec.StatusTimeout = 1 * time.Second
 

@@ -127,6 +127,9 @@ spec:
         image: localhost/katamaran-mgr:dev
         imagePullPolicy: IfNotPresent
         args: []
+        env:
+        - name: KATAMARAN_MIGRATION_IMAGE
+          value: localhost/katamaran:dev
         ports:
         - name: debug
           containerPort: 8081

@@ -717,6 +717,8 @@ kubectl get migration -w
 # demo-1   kata-demo   kata-worker-b  succeeded    38s
 ```
 
+The manager requires `KATAMARAN_MIGRATION_IMAGE` to name the administrator-approved image for privileged migration Jobs. Every CR's `spec.image` must match it exactly, including when resuming after a restart. `deploy/manager.yaml` uses `localhost/katamaran:dev`; replace it with your trusted image (prefer a digest) before deployment. Image rejection does not prevent deleting existing migrations or observing completed Jobs.
+
 The CR's `.status` carries the same `migrationID`, `phase`, `startedAt`, `completedAt`, and `error` fields that the dashboard surfaces, so external systems can wait on a Migration the same way they wait on a Job.
 
 ---

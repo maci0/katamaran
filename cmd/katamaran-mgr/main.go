@@ -78,6 +78,7 @@ Exit codes:
   2   Argument or configuration error
 
 Environment variables:
+  KATAMARAN_MIGRATION_IMAGE    Required trusted image for migration Jobs; spec.image must match exactly
   KATAMARAN_POD_WAIT_TIMEOUT   Overrides the --pod-wait-timeout default; an explicitly set
                                flag wins (Go duration; per-CR spec.podWaitTimeoutSeconds
                                wins over both)
@@ -168,6 +169,16 @@ func main() {
 		os.Exit(2)
 	}
 
+	allowedImage := os.Getenv("KATAMARAN_MIGRATION_IMAGE")
+	if allowedImage == "" {
+		fmt.Fprintln(os.Stderr, "Error: KATAMARAN_MIGRATION_IMAGE is required; set it to a trusted migration image")
+		os.Exit(2)
+	}
+	if err := orchestrator.ValidateSafeArgValue("KATAMARAN_MIGRATION_IMAGE", allowedImage); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
+
 	cfg, err := orchestrator.LoadRESTConfig(*kubeconfig)
 	if err != nil {
 		fail(err)
@@ -221,6 +232,7 @@ func main() {
 	}
 
 	rec := controller.NewReconciler(dyn, kube, orch, disc)
+	rec.AllowedImage = allowedImage
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

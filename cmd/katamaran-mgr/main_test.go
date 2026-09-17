@@ -2,11 +2,41 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maci0/katamaran/internal/controller"
 )
+
+func TestMigrationImageStartupValidation(t *testing.T) {
+	if os.Getenv("KATAMARAN_TEST_IMAGE_STARTUP") == "1" {
+		os.Args = []string{"katamaran-mgr"}
+		main()
+		return
+	}
+	for _, image := range []string{"", "invalid image"} {
+		t.Run(image, func(t *testing.T) {
+			t.Setenv("KATAMARAN_TEST_IMAGE_STARTUP", "1")
+			t.Setenv("KATAMARAN_MIGRATION_IMAGE", image)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMigrationImageStartupValidation$")
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("exit = %v, want 2; output: %s", err, output)
+			}
+			if !strings.Contains(string(output), "KATAMARAN_MIGRATION_IMAGE") {
+				t.Fatalf("missing image configuration error: %s", output)
+			}
+		})
+	}
+}
 
 func TestValidListenAddr(t *testing.T) {
 	t.Parallel()
