@@ -241,11 +241,14 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 			if i+1 < len(args) {
 				next := stripFDKeys(args[i+1])
 				if strings.HasPrefix(next, "tap,") || next == "tap" {
-					if rw.tapIface != "" && !strings.Contains(next, "ifname=") {
+					if rw.tapIface != "" && !strings.Contains(next, ",ifname=") {
 						next += ",ifname=" + rw.tapIface
 					}
-					if !strings.Contains(next, "script=") {
-						next += ",script=no,downscript=no"
+					if !strings.Contains(next, ",script=") {
+						next += ",script=no"
+					}
+					if !strings.Contains(next, ",downscript=") {
+						next += ",downscript=no"
 					}
 					// vhost=on without a vhostfd is fine: QEMU opens
 					// /dev/vhost-net itself when vhost is requested without

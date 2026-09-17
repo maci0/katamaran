@@ -358,6 +358,64 @@ func TestTransformCmdline_StripsInheritedFDs(t *testing.T) {
 	}
 }
 
+func TestTransformCmdline_TapScriptDefaults(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		arg  string
+		want string
+	}{
+		{
+			name: "neither script configured",
+			arg:  "tap,id=net0,fd=4",
+			want: "tap,id=net0,ifname=tap0_kata,script=no,downscript=no",
+		},
+		{
+			name: "only downscript configured",
+			arg:  "tap,id=net0,downscript=no",
+			want: "tap,id=net0,downscript=no,ifname=tap0_kata,script=no",
+		},
+		{
+			name: "only script configured",
+			arg:  "tap,id=net0,script=no",
+			want: "tap,id=net0,script=no,ifname=tap0_kata,downscript=no",
+		},
+		{
+			name: "both scripts configured",
+			arg:  "tap,id=net0,script=/opt/kata/ifup,downscript=/opt/kata/ifdown",
+			want: "tap,id=net0,script=/opt/kata/ifup,downscript=/opt/kata/ifdown,ifname=tap0_kata",
+		},
+		{
+			name: "script text in unrelated value",
+			arg:  "tap,id=net-script=custom,ifname=tap1",
+			want: "tap,id=net-script=custom,ifname=tap1,script=no,downscript=no",
+		},
+		{
+			name: "interface text in unrelated value",
+			arg:  "tap,id=net-ifname=custom",
+			want: "tap,id=net-ifname=custom,ifname=tap0_kata,script=no,downscript=no",
+		},
+		{
+			name: "non tap backend unchanged",
+			arg:  "user,id=net0",
+			want: "user,id=net0",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args := []string{"qemu", "-netdev", tt.arg}
+			_, got, err := transformCmdline(args, cmdlineRewrite{tapIface: DefaultTapIface})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"-netdev", tt.want, "-incoming", "defer"}
+			if !slices.Equal(got, want) {
+				t.Fatalf("transformed args = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestReadCmdlineFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
