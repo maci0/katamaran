@@ -673,7 +673,8 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 		}
 
 		allReady := true
-		for jobID, js := range state {
+		for _, jobID := range jobIDs {
+			js := state[jobID]
 			job := jobsByID[jobID]
 			if job == nil {
 				if js.seen {
