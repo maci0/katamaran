@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0a1f3f">
     <meta name="color-scheme" content="dark">
-    <meta name="description" content="Web dashboard for Kata Containers live VM migration with zero packet drop">
+    <meta name="description" content="Kata Containers live VM migration, latency measurements, and packet-loss monitoring">
     <title>Katamaran Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolygon points='15,10 25,10 22,22 18,22' fill='%232b8eff'/%3E%3Cpolygon points='20,6 21,10 19,10' fill='%238ecdff'/%3E%3Cpath d='M5 24Q12 18 20 22Q28 26 35 20' stroke='%232b8eff' stroke-width='2.5' fill='none'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20viewBox='0%200%2040%2040'%20xmlns='http://www.w3.org/2000/svg'%3E%3Cpolygon%20points='15,10%2025,10%2022,22%2018,22'%20fill='%232b8eff'/%3E%3Cpolygon%20points='20,6%2021,10%2019,10'%20fill='%238ecdff'/%3E%3Cpath%20d='M5%2024Q12%2018%2020%2022Q28%2026%2035%2020'%20stroke='%232b8eff'%20stroke-width='2.5'%20fill='none'/%3E%3C/svg%3E">
     <script src="/assets/tailwind-3.4.17.js"></script>
     <script src="/assets/chart-4.5.1.min.js"></script>
     <script>
@@ -63,7 +63,7 @@
 
     <noscript><div class="bg-red-900 text-white text-center py-4 px-6 text-sm">JavaScript is required for the Katamaran Dashboard. Enable it, or use the <code class="font-mono">katamaran</code> CLI to run migrations from a terminal.</div></noscript>
 
-    <div id="toast-container" aria-live="polite" aria-atomic="false" aria-relevant="additions" aria-label="Notifications" class="fixed top-4 left-4 right-4 sm:left-auto sm:w-96 z-50 flex flex-col gap-2 pointer-events-none"></div>
+    <div id="toast-container" role="region" aria-live="polite" aria-atomic="false" aria-relevant="additions" aria-label="Notifications" class="fixed top-4 left-4 right-4 sm:left-auto sm:w-96 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <div id="confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-desc confirm-shortcut">
         <div class="bg-slate-800 border border-slate-600/50 rounded-xl shadow-2xl max-w-sm w-full mx-4 p-6">
@@ -140,7 +140,7 @@
                         </div>
                         <div>
                             <label for="image" class="block text-xs text-slate-400 mb-1">Image <span class="text-red-400" aria-hidden="true">*</span></label>
-                            <input type="text" name="image" id="image" required aria-required="true" placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
+                            <input type="text" name="image" id="image" required placeholder="registry.example.com/katamaran:tag" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off" class="w-full bg-slate-900/80 border border-slate-600/50 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono placeholder:text-slate-400">
                         </div>
                         <div>
                             <label for="downtime" class="block text-xs text-slate-400 mb-1">Downtime Limit (ms)</label>
@@ -211,8 +211,8 @@
                     <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4" id="loadgen-heading">Load Generator</h2>
                     <p class="text-xs text-slate-400 mb-4">Start traffic before cutover so you can see latency spikes or failed requests in real time.</p>
                     <div class="space-y-2" role="group" aria-labelledby="loadgen-heading">
-                        <button type="button" id="btn-ping" aria-label="ICMP Ping" class="w-full bg-emerald-600/80 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9673; ICMP Ping</button>
-                        <button type="button" id="btn-http" aria-label="HTTP Load" class="w-full bg-violet-600/80 hover:bg-violet-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#8645; HTTP Load</button>
+                        <button type="button" id="btn-ping" aria-label="ICMP Ping" class="w-full bg-hull-800 hover:bg-hull-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9673; ICMP Ping</button>
+                        <button type="button" id="btn-http" aria-label="HTTP Load" class="w-full bg-hull-800 hover:bg-hull-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#8645; HTTP Load</button>
                         <button type="button" id="btn-stop-load" disabled aria-label="Stop load generator" class="w-full bg-slate-700 hover:bg-red-600/80 text-slate-300 hover:text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed">&#9632; Stop Load</button>
                     </div>
                 </div>
@@ -222,28 +222,28 @@
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-4" role="region" aria-label="Load generator statistics">
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p id="stat-sent-label" class="text-xs text-slate-400 uppercase tracking-wider">Packets Sent</p>
-                        <p id="stat-sent" aria-labelledby="stat-sent-label" class="text-2xl font-bold text-white mt-1 tabular-nums">0</p>
+                        <p id="stat-sent" role="group" aria-labelledby="stat-sent-label" class="text-2xl font-bold text-white mt-1 tabular-nums">0</p>
                     </div>
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p id="stat-lost-label" class="text-xs text-slate-400 uppercase tracking-wider">Dropped</p>
-                        <p id="stat-lost" aria-labelledby="stat-lost-label" class="text-2xl font-bold text-white mt-1 tabular-nums">
+                        <p id="stat-lost" role="group" aria-labelledby="stat-lost-label" class="text-2xl font-bold text-white mt-1 tabular-nums">
                             <span class="sr-only" id="stat-lost-sr">0 dropped packets</span>
                             <span aria-hidden="true">0</span>
                         </p>
                     </div>
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p id="stat-avg-label" class="text-xs text-slate-400 uppercase tracking-wider">Avg Latency</p>
-                        <p id="stat-avg" aria-labelledby="stat-avg-label" class="text-2xl font-bold text-white mt-1 tabular-nums">&mdash;</p>
+                        <p id="stat-avg" role="group" aria-labelledby="stat-avg-label" class="text-2xl font-bold text-white mt-1 tabular-nums">&mdash;</p>
                     </div>
                     <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-4">
                         <p id="stat-max-label" class="text-xs text-slate-400 uppercase tracking-wider">Max Latency</p>
-                        <p id="stat-max" aria-labelledby="stat-max-label" class="text-2xl font-bold text-white mt-1 tabular-nums">&mdash;</p>
+                        <p id="stat-max" role="group" aria-labelledby="stat-max-label" class="text-2xl font-bold text-white mt-1 tabular-nums">&mdash;</p>
                     </div>
                 </div>
 
                 <div class="bg-slate-800/60 rounded-xl border border-slate-700/50 p-5">
                     <div class="flex items-center justify-between mb-3">
-                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &mdash; Zero-Drop Proof</h2>
+                        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Latency &amp; Packet Loss</h2>
                         <span id="loadgen-indicator" class="text-xs text-slate-400"></span>
                     </div>
                     <div style="height:280px;position:relative" role="img" aria-label="Latency chart. Start ICMP Ping or HTTP Load to see latency and failure data.">
