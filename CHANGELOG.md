@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Deployment shutdown wiring for katamaran-mgr: the debug and webhook
+  HTTP servers now keep serving until in-flight requests finish, main
+  waits for both before exiting, and /readyz returns 503 once
+  termination starts. deploy/manager.yaml adds a 5s preStop sleep and a
+  40s terminationGracePeriodSeconds to match. Prometheus scrape targets
+  for mgr and dashboard counters are declared in deploy/dashboard.yaml
+  (metrics Services + ServiceMonitors).
+
 ## [0.4.2] - 2026-08-26
 
 v0.4.0 and v0.4.1 were tagged but their release runs failed before

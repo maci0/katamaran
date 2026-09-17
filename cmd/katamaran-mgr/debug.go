@@ -6,7 +6,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -19,6 +18,20 @@ import (
 // serveDebug exposes /healthz, /readyz, /metrics, and /debug/vars (expvar).
 // Failure to listen is fatal because Kubernetes uses these probes for liveness.
 func serveDebug(ctx context.Context, addr string) {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           debugMux(ctx),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := serveHTTP(ctx, srv, srv.ListenAndServe); err != nil {
+		fail(fmt.Errorf("debug server: %w", err))
+	}
+}
+
+func debugMux(ctx context.Context) *http.ServeMux {
 	mux := http.NewServeMux()
 	plainOK := func(body string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
@@ -29,29 +42,40 @@ func serveDebug(ctx context.Context, addr string) {
 		}
 	}
 	mux.HandleFunc("GET /healthz", plainOK("ok"))
-	mux.HandleFunc("GET /readyz", plainOK("ready"))
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if ctx.Err() != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		plainOK("ready")(w, r)
+	})
 	mux.Handle("GET /debug/vars", expvar.Handler())
 	mux.HandleFunc("GET /metrics", servePrometheusMetrics)
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	return mux
+}
+
+const httpShutdownTimeout = 15 * time.Second
+
+func serveHTTP(ctx context.Context, srv *http.Server, serve func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- serve() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
 	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("Debug HTTP server shutdown error", "error", err)
-		}
-	}()
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fail(fmt.Errorf("debug server: %w", err))
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	defer cancel()
+	err := srv.Shutdown(shutdownCtx)
+	if err != nil {
+		err = errors.Join(err, srv.Close())
 	}
+	if serveErr := <-done; !errors.Is(serveErr, http.ErrServerClosed) {
+		err = errors.Join(err, serveErr)
+	}
+	return err
 }
 
 // servePrometheusMetrics writes controller expvar counters in Prometheus

@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -242,7 +243,12 @@ func main() {
 		stop() // A second signal will now force exit.
 	}()
 
-	go serveDebug(ctx, *addr)
+	var servers sync.WaitGroup
+	defer func() {
+		stop()
+		servers.Wait()
+	}()
+	servers.Go(func() { serveDebug(ctx, *addr) })
 	// Cert is generated per-process. The serving cert is used by
 	// serveWebhook below; the matching CA bundle is patched onto
 	// the ValidatingWebhookConfiguration only by the leader (see
@@ -257,11 +263,11 @@ func main() {
 			fail(fmt.Errorf("generate webhook cert: %w", err))
 		}
 		webhookCABundle = caBundle
-		go func() {
+		servers.Go(func() {
 			if err := serveWebhook(ctx, *webhookAddr, cert, rec); err != nil {
 				slog.Error("Webhook server exited with error", "error", err)
 			}
-		}()
+		})
 	}
 
 	slog.Info("katamaran-mgr starting", "version", buildinfo.Version, "poll_interval", rec.PollInterval, "addr", *addr, "webhook_addr", *webhookAddr, "leader_election", !*skipLeaderElect)

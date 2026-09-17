@@ -127,7 +127,8 @@ spec:
         - name: KATAMARAN_MIGRATION_IMAGE
           value: localhost/katamaran:dev
         ports:
-        - containerPort: 8080
+        - name: http
+          containerPort: 8080
         resources:
           requests:
             cpu: 10m
@@ -182,7 +183,75 @@ spec:
   ports:
   - name: http
     port: 8080
-    targetPort: 8080
+    targetPort: http
     protocol: TCP
   selector:
     app: katamaran-dashboard
+---
+# Scrape target for both workloads' Prometheus text endpoints: mgr exposes
+# controller + admission counters on :8081/metrics, the dashboard exposes
+# HTTP and migration counters on :8080/metrics. Without these objects the
+# metrics exist in the apps but no scraper ever collects them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-mgr-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-mgr
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8081
+    targetPort: debug
+    protocol: TCP
+  selector:
+    app: katamaran-mgr
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-dashboard-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-dashboard
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: katamaran-dashboard
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: katamaran-mgr
+  namespace: kube-system
+  labels:
+    app: katamaran-mgr
+spec:
+  selector:
+    matchLabels:
+      app: katamaran-mgr
+  endpoints:
+  - port: metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: katamaran-dashboard
+  namespace: kube-system
+  labels:
+    app: katamaran-dashboard
+spec:
+  selector:
+    matchLabels:
+      app: katamaran-dashboard
+  endpoints:
+  - port: metrics
+    interval: 30s

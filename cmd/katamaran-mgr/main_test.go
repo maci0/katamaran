@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -35,6 +39,101 @@ func TestMigrationImageStartupValidation(t *testing.T) {
 				t.Fatalf("missing image configuration error: %s", output)
 			}
 		})
+	}
+}
+
+func TestDebugReadinessDuringShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := debugMux(ctx)
+	for _, draining := range []bool{false, true} {
+		if draining {
+			cancel()
+		}
+		for _, path := range []string{"/healthz", "/readyz"} {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			want := http.StatusOK
+			if draining && path == "/readyz" {
+				want = http.StatusServiceUnavailable
+			}
+			if w.Code != want {
+				t.Fatalf("%s draining=%v: status=%d, want %d", path, draining, w.Code, want)
+			}
+		}
+	}
+}
+
+func TestServeHTTPDrainsRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		_, _ = io.WriteString(w, "drained")
+	})}
+	defer srv.Close()
+	done := make(chan error, 1)
+	go func() { done <- serveHTTP(ctx, srv, func() error { return srv.Serve(listener) }) }()
+	response := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: time.Second * 5}
+		resp, err := client.Get("http://" + listener.Addr().String())
+		if err == nil {
+			defer resp.Body.Close()
+			var body []byte
+			body, err = io.ReadAll(resp.Body)
+			if err == nil && string(body) != "drained" {
+				err = errors.New("response was not drained")
+			}
+		}
+		response <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("server returned before request completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case err := <-response:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not drain")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop")
+	}
+}
+
+func TestServeHTTPListenFailure(t *testing.T) {
+	want := errors.New("listen failed")
+	if err := serveHTTP(context.Background(), &http.Server{}, func() error { return want }); !errors.Is(err, want) {
+		t.Fatalf("error=%v, want %v", err, want)
 	}
 }
 

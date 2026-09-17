@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"expvar"
 	"fmt"
 	"io"
@@ -158,16 +157,8 @@ func serveWebhook(ctx context.Context, addr string, cert tls.Certificate, rec *c
 			MinVersion:   tls.VersionTLS12,
 		},
 	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("Webhook server shutdown error", "error", err)
-		}
-	}()
 	slog.Info("Admission webhook listening", "addr", addr)
-	if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serveHTTP(ctx, srv, func() error { return srv.ListenAndServeTLS("", "") }); err != nil {
 		return fmt.Errorf("webhook server: %w", err)
 	}
 	return nil

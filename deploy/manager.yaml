@@ -104,6 +104,7 @@ spec:
       labels: { app: katamaran-mgr }
     spec:
       serviceAccountName: katamaran-mgr
+      terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -151,6 +152,15 @@ spec:
             port: debug
           initialDelaySeconds: 2
           periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        lifecycle:
+          # Stay up for the apiserver's endpoint propagation window so
+          # in-flight admission and scrape requests drain instead of
+          # 502-ing on rollout.
+          preStop:
+            exec:
+              command: ["/bin/sleep", "5"]
         # Match the Dockerfile's `USER mgr` (uid 1000) numerically: Kubelet's
         # runAsNonRoot check rejects images that declare USER by name.
         securityContext:
