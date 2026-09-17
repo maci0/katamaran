@@ -109,7 +109,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Source mode missing flags → error should mention --dest-ip and --vm-ip
     SOURCE_ERR=$("${BINARY}" --mode source 2>&1 || true)
-    if echo "${SOURCE_ERR}" | grep -q -- "--dest-ip" && echo "${SOURCE_ERR}" | grep -q -- "--vm-ip"; then
+    if grep -q -- "--dest-ip" <<< "${SOURCE_ERR}" && grep -q -- "--vm-ip" <<< "${SOURCE_ERR}"; then
         pass "source mode error mentions --dest-ip and --vm-ip"
     else
         fail "source mode error should mention --dest-ip and --vm-ip"
@@ -124,7 +124,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Dest mode QMP error → should mention the socket path in stderr
     DEST_ERR=$("${BINARY}" --mode dest --qmp /nonexistent/qmp.sock 2>&1 || true)
-    if echo "${DEST_ERR}" | grep -q "/nonexistent/qmp.sock"; then
+    if grep -q "/nonexistent/qmp.sock" <<< "${DEST_ERR}"; then
         pass "dest mode QMP error mentions socket path"
     else
         fail "dest mode QMP error should mention socket path"
@@ -160,7 +160,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Invalid mode → should mention the invalid value in stderr
     INVALID_ERR=$("${BINARY}" --mode bogus 2>&1 || true)
-    if echo "${INVALID_ERR}" | grep -q "invalid --mode"; then
+    if grep -q "invalid --mode" <<< "${INVALID_ERR}"; then
         pass "invalid mode error message includes 'invalid mode'"
     else
         fail "invalid mode error message should include 'invalid mode'"
@@ -168,7 +168,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Empty mode → should print "Usage" in stderr
     EMPTY_ERR=$("${BINARY}" 2>&1 || true)
-    if echo "${EMPTY_ERR}" | grep -q "Usage"; then
+    if grep -q "Usage" <<< "${EMPTY_ERR}"; then
         pass "empty mode prints Usage message"
     else
         fail "empty mode should print Usage message"
@@ -182,14 +182,14 @@ if [[ -x "${BINARY}" ]]; then
     fi
 
     HELP_OUT=$("${BINARY}" --help 2>&1)
-    if echo "${HELP_OUT}" | grep -q -- "--mode"; then
+    if grep -q -- "--mode" <<< "${HELP_OUT}"; then
         pass "--help output includes --mode flag description"
     else
         fail "--help output should include --mode flag description"
     fi
 
     for flag_name in dest-ip vm-ip pod-name pod-namespace qmp tap tap-netns dest-pod-name dest-pod-namespace drive-id shared-storage tunnel-mode downtime auto-downtime auto-downtime-floor-ms emit-cmdline-to replay-cmdline multifd-channels log-format log-level; do
-        if echo "${HELP_OUT}" | grep -q -- "--${flag_name}"; then
+        if grep -q -- "--${flag_name}" <<< "${HELP_OUT}"; then
             pass "--help output includes --${flag_name} flag"
         else
             fail "--help output should include --${flag_name} flag"
@@ -204,7 +204,7 @@ if [[ -x "${BINARY}" ]]; then
     fi
 
     DESTIP_ERR=$("${BINARY}" --mode source --dest-ip "not-an-ip" --vm-ip 10.0.0.1 2>&1 || true)
-    if echo "${DESTIP_ERR}" | grep -q "invalid --dest-ip"; then
+    if grep -q "invalid --dest-ip" <<< "${DESTIP_ERR}"; then
         pass "invalid --dest-ip error mentions the flag name"
     else
         fail "invalid --dest-ip error should mention the flag name"
@@ -218,7 +218,7 @@ if [[ -x "${BINARY}" ]]; then
     fi
 
     VMIP_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip "bogus" 2>&1 || true)
-    if echo "${VMIP_ERR}" | grep -q "invalid --vm-ip"; then
+    if grep -q "invalid --vm-ip" <<< "${VMIP_ERR}"; then
         pass "invalid --vm-ip error mentions the flag name"
     else
         fail "invalid --vm-ip error should mention the flag name"
@@ -226,7 +226,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Valid IPs should pass validation (fail later at QMP connect, not at validation)
     VALID_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip 10.244.1.15 2>&1 || true)
-    if echo "${VALID_ERR}" | grep -q "invalid"; then
+    if grep -q "invalid" <<< "${VALID_ERR}"; then
         fail "valid IPs should not trigger validation errors"
     else
         pass "valid IPs pass validation (fails at QMP connect as expected)"
@@ -248,7 +248,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Valid IPv6 addresses should pass validation (fail later at QMP connect)
     VALID6_ERR=$("${BINARY}" --mode source --dest-ip fd00::1 --vm-ip fd00::2 2>&1 || true)
-    if echo "${VALID6_ERR}" | grep -q "invalid"; then
+    if grep -q "invalid" <<< "${VALID6_ERR}"; then
         fail "valid IPv6 addresses should not trigger validation errors"
     else
         pass "valid IPv6 addresses pass validation"
@@ -270,7 +270,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # --tunnel-mode ipip → should pass validation (fail later at QMP connect)
     TUNIPIP_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip 10.244.1.15 --tunnel-mode ipip 2>&1 || true)
-    if echo "${TUNIPIP_ERR}" | grep -q "invalid --tunnel-mode"; then
+    if grep -q "invalid --tunnel-mode" <<< "${TUNIPIP_ERR}"; then
         fail "--tunnel-mode ipip should be accepted"
     else
         pass "--tunnel-mode ipip passes validation"
@@ -278,7 +278,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # --tunnel-mode gre → should pass validation (fail later at QMP connect)
     TUNGRE_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip 10.244.1.15 --tunnel-mode gre 2>&1 || true)
-    if echo "${TUNGRE_ERR}" | grep -q "invalid --tunnel-mode"; then
+    if grep -q "invalid --tunnel-mode" <<< "${TUNGRE_ERR}"; then
         fail "--tunnel-mode gre should be accepted"
     else
         pass "--tunnel-mode gre passes validation"
@@ -293,7 +293,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Invalid --tunnel-mode → error should mention the flag name
     TUNBAD_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip 10.244.1.15 --tunnel-mode bogus 2>&1 || true)
-    if echo "${TUNBAD_ERR}" | grep -q "invalid --tunnel-mode"; then
+    if grep -q "invalid --tunnel-mode" <<< "${TUNBAD_ERR}"; then
         pass "invalid --tunnel-mode error mentions the flag name"
     else
         fail "invalid --tunnel-mode error should mention the flag name"
@@ -329,7 +329,7 @@ if [[ -x "${BINARY}" ]]; then
 
     # Cross-family error → should mention "address family"
     XFAM_ERR=$("${BINARY}" --mode source --dest-ip 10.0.0.1 --vm-ip fd00::1 2>&1 || true)
-    if echo "${XFAM_ERR}" | grep -q "address family"; then
+    if grep -q "address family" <<< "${XFAM_ERR}"; then
         pass "cross-family error mentions 'address family'"
     else
         fail "cross-family error should mention 'address family'"
@@ -338,7 +338,7 @@ if [[ -x "${BINARY}" ]]; then
     # IPv4-mapped IPv6 address (::ffff:10.0.0.1) should be treated as IPv4
     # and pass validation when paired with a plain IPv4 address.
     V4MAP_ERR=$("${BINARY}" --mode source --dest-ip "::ffff:10.0.0.1" --vm-ip 10.244.1.15 2>&1 || true)
-    if echo "${V4MAP_ERR}" | grep -q "address family"; then
+    if grep -q "address family" <<< "${V4MAP_ERR}"; then
         fail "IPv4-mapped ::ffff:10.0.0.1 should be treated as IPv4 (not rejected as cross-family)"
     else
         pass "IPv4-mapped ::ffff:10.0.0.1 is normalized to IPv4"
@@ -384,21 +384,21 @@ if [[ -x "${MIGRATE_SCRIPT}" ]]; then
     fi
 
     MISSING_ERR=$("${MIGRATE_SCRIPT}" 2>&1 || true)
-    if echo "${MISSING_ERR}" | grep -q "missing required flag"; then
+    if grep -q "missing required flag" <<< "${MISSING_ERR}"; then
         pass "migrate.sh rejects missing required arguments"
     else
         fail "migrate.sh should reject missing required arguments"
     fi
 
     BAD_TUN_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev --tunnel-mode bogus 2>&1 || true)
-    if echo "${BAD_TUN_ERR}" | grep -q -- "invalid --tunnel-mode"; then
+    if grep -q -- "invalid --tunnel-mode" <<< "${BAD_TUN_ERR}"; then
         pass "migrate.sh rejects invalid --tunnel-mode"
     else
         fail "migrate.sh should reject invalid --tunnel-mode"
     fi
 
     BAD_TAP_ERR=$("${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap "tap 0" --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 --vm-ip 10.244.0.9 --image katamaran:dev 2>&1 || true)
-    if echo "${BAD_TAP_ERR}" | grep -q -- "--tap must be a single interface name"; then
+    if grep -q -- "--tap must be a single interface name" <<< "${BAD_TAP_ERR}"; then
         pass "migrate.sh validates --tap format"
     else
         fail "migrate.sh should validate --tap format"
