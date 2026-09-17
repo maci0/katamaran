@@ -600,11 +600,12 @@
             clearFieldState(vmIpField);
         }
         var dtField = document.getElementById('downtime');
-        var dtVal = parseInt(dtField.value, 10);
-        if (dtField.value !== '' && (isNaN(dtVal) || dtVal < 1 || dtVal > 60000)) {
-            markFieldInvalid(dtField, 'Must be between 1 and 60,000 ms');
+        var dtVal = Number(dtField.value);
+        var invalidDowntime = dtField.validity.badInput || (dtField.value !== '' && (!/^\d+$/.test(dtField.value) || dtVal < 1 || dtVal > 60000));
+        if (!getField('auto_downtime').checked && invalidDowntime) {
+            markFieldInvalid(dtField, 'Enter a whole number between 1 and 60,000 ms');
             dtField.focus();
-            showToast('Downtime must be between 1 and 60,000 ms', 'error');
+            showToast('Downtime must be a whole number between 1 and 60,000 ms', 'error');
             return;
         } else {
             clearFieldState(dtField);
@@ -874,6 +875,7 @@
     }
     autoDowntimeChk.addEventListener('change', function() {
         syncDowntimeEnabled();
+        if (autoDowntimeChk.checked) clearFieldState(downtimeInput);
     });
     syncDowntimeEnabled();
     ['dest_ip', 'vm_ip'].forEach(function(id) {
@@ -1104,6 +1106,8 @@
                     document.getElementById('stat-max').textContent = maxVal.toFixed(2) + ' ms';
                     chartBox.setAttribute('aria-label', 'Latency chart: ' + pings.length + ' samples, avg ' + avg.toFixed(2) + 'ms, max ' + maxVal.toFixed(2) + 'ms, ' + errors + ' dropped');
                 } else {
+                    document.getElementById('stat-avg').textContent = '\u2014';
+                    document.getElementById('stat-max').textContent = '\u2014';
                     chartBox.setAttribute('aria-label', 'Latency chart: ' + pings.length + ' samples, all timed out');
                 }
 
