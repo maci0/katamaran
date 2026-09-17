@@ -10,13 +10,13 @@ COPY cmd/katamaran-factory/ cmd/katamaran-factory/
 COPY cmd/containerd-shim-katamaran-adopted-v2/ cmd/containerd-shim-katamaran-adopted-v2/
 COPY internal/ internal/
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -mod=readonly \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /katamaran ./cmd/katamaran/ && \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -mod=readonly \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /katamaran-factory ./cmd/katamaran-factory/ && \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -mod=readonly \
     -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
     -o /containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
 
