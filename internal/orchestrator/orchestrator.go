@@ -87,10 +87,7 @@ func LatestTerminalJobCondition(job *batchv1.Job) (batchv1.JobCondition, bool) {
 			found = true
 		}
 	}
-	if !found {
-		return batchv1.JobCondition{}, false
-	}
-	return latest, true
+	return latest, found
 }
 
 // DefaultJobNamespace is the namespace where the native orchestrator creates Jobs.
