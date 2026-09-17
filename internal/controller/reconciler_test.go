@@ -1120,6 +1120,68 @@ func TestUpdateProgressMetricsAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestPatchStatusUpdate_PreservesEventTime(t *testing.T) {
+	for _, tc := range []struct {
+		phase orchestrator.StatusPhase
+		field string
+	}{
+		{orchestrator.PhaseSubmitted, "startedAt"},
+		{orchestrator.PhaseSucceeded, "completedAt"},
+		{orchestrator.PhaseFailed, "completedAt"},
+	} {
+		t.Run(string(tc.phase), func(t *testing.T) {
+			cr := newMigrationCR("event-time", []string{finalizerName}, false, nil)
+			rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+			when := time.Date(2024, time.February, 29, 23, 59, 59, 0, time.FixedZone("UTC-05", -5*60*60))
+			key := types.NamespacedName{Namespace: "default", Name: "event-time"}
+			if err := rec.patchStatusUpdate(context.Background(), key, orchestrator.StatusUpdate{
+				ID: "id-event-time", Phase: tc.phase, When: when,
+			}, ""); err != nil {
+				t.Fatal(err)
+			}
+			got, err := dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stamp, _, _ := unstructured.NestedString(got.Object, "status", tc.field)
+			if want := "2024-03-01T04:59:59Z"; stamp != want {
+				t.Fatalf("%s = %q, want event time %q", tc.field, stamp, want)
+			}
+		})
+	}
+}
+
+func TestPatchStatusUpdate_MissingEventTime(t *testing.T) {
+	for _, tc := range []struct {
+		phase orchestrator.StatusPhase
+		field string
+	}{
+		{orchestrator.PhaseSubmitted, "startedAt"},
+		{orchestrator.PhaseSucceeded, "completedAt"},
+		{orchestrator.PhaseFailed, "completedAt"},
+	} {
+		t.Run(string(tc.phase), func(t *testing.T) {
+			cr := newMigrationCR("event-time", []string{finalizerName}, false, nil)
+			rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+			key := types.NamespacedName{Namespace: "default", Name: "event-time"}
+			before := time.Now().UTC().Truncate(time.Second)
+			if err := rec.patchStatus(context.Background(), key, "id-event-time", string(tc.phase), "", ""); err != nil {
+				t.Fatal(err)
+			}
+			after := time.Now().UTC()
+			got, err := dyn.Resource(MigrationGVR).Namespace(key.Namespace).Get(context.Background(), key.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stamp, _, _ := unstructured.NestedString(got.Object, "status", tc.field)
+			when, err := time.Parse(time.RFC3339, stamp)
+			if err != nil || when.Before(before) || when.After(after) {
+				t.Fatalf("%s = %q, want current time between %v and %v (parse error: %v)", tc.field, stamp, before, after, err)
+			}
+		})
+	}
+}
+
 func TestPatchStatusUpdate_PersistsProgressAndClearsStaleFields(t *testing.T) {
 	cr := newMigrationCR("m5", []string{finalizerName}, false, map[string]any{
 		"phase":   "submitted",

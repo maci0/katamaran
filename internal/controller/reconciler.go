@@ -1016,10 +1016,18 @@ func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.Namespaced
 		status["autoDowntime"] = true
 	}
 	if u.Phase == orchestrator.PhaseSubmitted {
-		status["startedAt"] = time.Now().UTC().Format(time.RFC3339)
+		startedAt := u.When
+		if startedAt.IsZero() {
+			startedAt = time.Now()
+		}
+		status["startedAt"] = startedAt.UTC().Format(time.RFC3339)
 	}
 	if u.Phase == orchestrator.PhaseSucceeded || u.Phase == orchestrator.PhaseFailed {
-		status["completedAt"] = time.Now().UTC().Format(time.RFC3339)
+		completedAt := u.When
+		if completedAt.IsZero() {
+			completedAt = time.Now()
+		}
+		status["completedAt"] = completedAt.UTC().Format(time.RFC3339)
 	}
 	patch := map[string]any{"status": status}
 	patchBytes, err := json.Marshal(patch)
