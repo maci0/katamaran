@@ -3,10 +3,12 @@ package dashboard
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime/debug"
@@ -169,6 +171,16 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 			slog.Error("Failed to start ping process", "target", pingTarget, "error", err, "request_id", reqID)
 			return
 		}
+		defer func() {
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				slog.Warn("Failed to terminate ping process", "target", pingTarget, "error", err, "request_id", reqID)
+			}
+			if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+				slog.Warn("Ping command finished with error", "target", pingTarget, "error", err, "request_id", reqID)
+			} else {
+				slog.Info("Ping load generator stopped", "target", pingTarget, "request_id", reqID)
+			}
+		}()
 
 		scanner := bufio.NewScanner(stdout)
 		buf := make([]byte, 0, scannerInitBuf)
@@ -190,11 +202,6 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
 			slog.Warn("Ping output scanner error", "target", pingTarget, "error", scanErr, "request_id", reqID)
-		}
-		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			slog.Warn("Ping command finished with error", "target", pingTarget, "error", err, "request_id", reqID)
-		} else {
-			slog.Info("Ping load generator stopped", "target", pingTarget, "request_id", reqID)
 		}
 	}()
 

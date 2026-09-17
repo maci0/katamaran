@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -624,6 +626,55 @@ func TestHandlePingStart_MissingTarget(t *testing.T) {
 	app.handlePingStart(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing target, got %v", w.Code)
+	}
+}
+
+func TestHandlePingStart_ReapsAfterOutputEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "EOF", output: "exec 1>&-\n"},
+		{name: "scanner limit", output: "printf '%s' '" + strings.Repeat("x", scannerMaxSize) + "'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := "#!/bin/sh\n" + tc.output + "exec sleep 30\n"
+			if err := os.WriteFile(filepath.Join(dir, "ping"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			app := &App{}
+			waitDone := func(timeout time.Duration) bool {
+				deadline := time.Now().Add(timeout)
+				for time.Now().Before(deadline) {
+					app.loadgenMutex.Lock()
+					running := app.loadgenRunning
+					app.loadgenMutex.Unlock()
+					if !running {
+						return true
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				return false
+			}
+			t.Cleanup(func() {
+				app.stopLoadgen()
+				if !waitDone(5 * time.Second) {
+					t.Error("ping worker did not exit after cancellation")
+				}
+			})
+			r := httptest.NewRequest(http.MethodPost, "/api/ping", strings.NewReader("target=10.0.0.1"))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			app.handlePingStart(w, r)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			if !waitDone(2 * time.Second) {
+				t.Fatal("ping worker retained its child after output ended")
+			}
+		})
 	}
 }
 

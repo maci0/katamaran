@@ -145,7 +145,7 @@ function statusHarness() {
         },
         URLSearchParams,
         fetch: async () => ({ ok: true, json: async () => response }),
-        renderProgress() {}, syncDowntimeEnabled() {}, showToast() {},
+        ensureChart() {}, renderProgress() {}, syncDowntimeEnabled() {}, showToast() {},
         console: { error(message, err) { throw err; } }
     };
     runInNewContext(html.slice(start, end), context, { timeout: 1000 });
