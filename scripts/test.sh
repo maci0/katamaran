@@ -32,6 +32,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_ROOT
 cd "${SCRIPT_DIR}"
 
+if [[ "$(uname -s)" != Linux ]]; then
+    echo "Error: smoke tests require Linux. On macOS, run them inside a Linux VM."
+    exit 1
+fi
+
 if command -v go &>/dev/null; then
     GO_CMD="go"
 else
@@ -42,7 +47,10 @@ readonly GO_CMD
 
 PASS=0
 FAIL=0
-readonly BINARY="${PROJECT_ROOT}/bin/katamaran"
+TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/katamaran-smoke.XXXXXX")"
+readonly TEST_DIR
+trap 'rm -rf "${TEST_DIR}"' EXIT
+readonly BINARY="${TEST_DIR}/katamaran"
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }

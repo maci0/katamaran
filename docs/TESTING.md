@@ -3,7 +3,7 @@
 ### TL;DR
 
 ```bash
-./scripts/test.sh                                               # smoke tests: no VMs, no KVM, runs anywhere
+./scripts/test.sh                                               # Linux smoke tests: no VMs, no KVM
 ./scripts/e2e.sh --provider minikube --cni calico --ping-proof  # two-node + zero-drop proof (Calico)
 ./scripts/e2e.sh --provider minikube --cni ovn --ping-proof     # two-node + zero-drop proof (OVN-Kubernetes)
 ./scripts/e2e.sh --provider minikube --cni cilium --ping-proof  # two-node + zero-drop proof (Cilium)
@@ -13,7 +13,10 @@
 ./scripts/e2e.sh --provider minikube --cni calico --storage nfs --ping-proof    # NFS shared storage
 ```
 
-All E2E tests need a Linux host with KVM and nested virtualization. Smoke tests run anywhere with Go 1.26+.
+The local build, unit-test, and smoke-test loop requires Linux: katamaran
+uses Linux-only syscalls such as `setns`. On macOS, run this loop inside a
+Linux VM. E2E tests normally need KVM and nested virtualization; see
+[macOS TCG](#12-macos-apple-silicon-tcg-software-emulation) for the experimental exception.
 
 > **Note:** E2E tests build the katamaran container image from source and deploy the binary to nodes via a DaemonSet. A pre-built local `bin/katamaran` is not required for E2E tests.
 
