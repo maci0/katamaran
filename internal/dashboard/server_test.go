@@ -35,6 +35,89 @@ func waitMigrationDone(t *testing.T, app *App, timeout time.Duration) {
 	t.Fatal("migration did not complete within timeout")
 }
 
+func TestServeDrainsRequests(t *testing.T) {
+	t.Parallel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := &App{orch: &fakeOrchestrator{}}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	mux := app.newMux(false)
+	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+		_, _ = w.Write([]byte("finished"))
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	defer srv.Close()
+	done := make(chan error, 1)
+	go func() { done <- app.serve(ctx, srv, listener) }()
+	response := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get("http://" + listener.Addr().String() + "/slow")
+		if err == nil {
+			defer resp.Body.Close()
+			var body bytes.Buffer
+			_, err = body.ReadFrom(resp.Body)
+			if err == nil && body.String() != "finished" {
+				err = fmt.Errorf("response body = %q", body.String())
+			}
+		}
+		response <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not start")
+	}
+	cancel()
+	deadline := time.After(5 * time.Second)
+	for !app.draining.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("server did not enter draining state")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness during shutdown = %d", w.Code)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("server returned before request finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case err := <-response:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not finish")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not finish shutdown")
+	}
+}
+
 func TestRun_Help(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer

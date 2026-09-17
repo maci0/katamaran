@@ -112,6 +112,7 @@ spec:
         app: katamaran-dashboard
     spec:
       serviceAccountName: katamaran-dashboard
+      terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -144,6 +145,10 @@ spec:
             drop: ["ALL"]
           seccompProfile:
             type: RuntimeDefault
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sleep", "5"]
         livenessProbe:
           httpGet:
             path: /healthz

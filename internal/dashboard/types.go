@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -61,6 +62,7 @@ type StatusResponse struct {
 
 type App struct {
 	allowedImage string
+	draining     atomic.Bool
 
 	// orch is the orchestrator handleMigrate submits to. Set by the
 	// production main() to New() (or kubeconfig fallback). Tests

@@ -44,7 +44,7 @@ const (
 	httpReadTimeout       = 10 * time.Second
 	httpWriteTimeout      = 30 * time.Second
 	httpIdleTimeout       = 60 * time.Second
-	shutdownTimeout       = 5 * time.Second
+	shutdownTimeout       = 30 * time.Second
 
 	// maxBodySize is the maximum request body size (1 MB), used by
 	// MaxBytesReader on form POSTs.
@@ -217,24 +217,40 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
-	go func() {
-		<-ctx.Done()
-		slog.Info("Shutting down", "addr", *addr)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("HTTP server shutdown error", "error", err)
-		} else {
-			slog.Info("HTTP server stopped gracefully")
-		}
-	}()
-
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		slog.Error("HTTP listen error", "error", err)
+		return 1
+	}
 	slog.Info("Katamaran Dashboard listening", "version", buildinfo.Version, "addr", *addr, "pid", os.Getpid())
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := app.serve(ctx, srv, listener); err != nil {
 		slog.Error("HTTP server error", "error", err)
 		return 1
 	}
 	return 0
+}
+
+func (a *App) serve(ctx context.Context, srv *http.Server, listener net.Listener) error {
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- srv.Serve(listener) }()
+	select {
+	case err := <-serveDone:
+		return err
+	case <-ctx.Done():
+	}
+	a.draining.Store(true)
+	slog.Info("Shutting down", "addr", srv.Addr)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	err := srv.Shutdown(shutdownCtx)
+	if err != nil {
+		err = errors.Join(err, srv.Close())
+	}
+	serveErr := <-serveDone
+	if !errors.Is(serveErr, http.ErrServerClosed) {
+		err = errors.Join(err, serveErr)
+	}
+	return err
 }
 
 // newMux creates the HTTP route table. Extracted so tests can use the same
@@ -317,6 +333,11 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-store")
+	if a.draining.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "shutting down\n")
+		return
+	}
 	if a.orch != nil {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(probeOKBody)
