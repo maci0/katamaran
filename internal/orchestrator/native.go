@@ -69,7 +69,8 @@ type nativeRun struct {
 	updates               chan StatusUpdate
 	cancel                context.CancelFunc
 	finished              chan struct{}
-	closeOnce             sync.Once // guards close(updates) so Stop + poll exit can race safely
+	closeOnce             sync.Once
+	sendMu                sync.RWMutex
 
 	// resultMu guards the fields below. tailProgress writes them when it
 	// scrapes a KATAMARAN_RESULT marker; poll reads them when emitting
@@ -762,26 +763,27 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	return nil, fmt.Errorf("no katamaran container in dest job")
 }
 
-// send pushes u onto run.updates if the run is still live. If poll has
-// already closed updates (e.g. after Stop) the send is dropped silently.
-// Callers that need to know whether the send succeeded should select on
-// run.finished themselves; this helper exists to make late sends safe.
-//
-// Go channels have no non-panicking "send unless closed" primitive: the
-// finished signal can fire between the select branches and poll's
-// close(run.updates) here, so the send below races with that close.
-// The deferred recover absorbs that specific panic; any other runtime
-// panic in this goroutine still propagates.
 func (run *nativeRun) send(u StatusUpdate) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Debug("send to closed run.updates absorbed", "panic", r)
-		}
-	}()
+	run.sendMu.RLock()
+	defer run.sendMu.RUnlock()
+	select {
+	case <-run.finished:
+		return
+	default:
+	}
 	select {
 	case <-run.finished:
 	case run.updates <- u:
 	}
+}
+
+func (run *nativeRun) closeUpdates() {
+	run.closeOnce.Do(func() {
+		close(run.finished)
+		run.sendMu.Lock()
+		defer run.sendMu.Unlock()
+		close(run.updates)
+	})
 }
 
 // waitForJobPod polls until pick returns a non-empty value for any pod under
@@ -950,12 +952,7 @@ func (n *native) Stop(ctx context.Context, id MigrationID) error {
 func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 	defer run.cancel()
 	defer func() {
-		// Signal finished BEFORE closing updates so concurrent senders
-		// (tailProgress, stageThenStartDest) can break out via the
-		// select-on-finished pattern instead of panicking on a closed
-		// channel send.
-		close(run.finished)
-		run.closeOnce.Do(func() { close(run.updates) })
+		run.closeUpdates()
 		n.mu.Lock()
 		delete(n.inflight, id)
 		n.mu.Unlock()

@@ -4,7 +4,9 @@ import (
 	"context"
 	"maps"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -921,18 +923,13 @@ func TestParseInt64_RejectsMalformedAndOutOfRange(t *testing.T) {
 	}
 }
 
-// TestNativeRunSend_AfterClose: poll's defer can close run.updates
-// before tailProgress tries to send. The run.send helper must absorb
-// that race without panicking.
 func TestNativeRunSend_AfterClose(t *testing.T) {
 	t.Parallel()
 	run := &nativeRun{
 		updates:  make(chan StatusUpdate, 1),
 		finished: make(chan struct{}),
 	}
-	// Mimic poll's defer order: signal finished, then close updates.
-	close(run.finished)
-	run.closeOnce.Do(func() { close(run.updates) })
+	run.closeUpdates()
 
 	// Sending after the close must not panic.
 	defer func() {
@@ -941,6 +938,72 @@ func TestNativeRunSend_AfterClose(t *testing.T) {
 		}
 	}()
 	run.send(StatusUpdate{Phase: PhaseTransferring})
+}
+
+func TestNativeRunSend_CloseUnblocksSenders(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		run := &nativeRun{
+			updates:  make(chan StatusUpdate, 1),
+			finished: make(chan struct{}),
+		}
+		run.send(StatusUpdate{Phase: PhaseSubmitted})
+		var senders sync.WaitGroup
+		for range 8 {
+			senders.Go(func() {
+				run.send(StatusUpdate{Phase: PhaseTransferring})
+			})
+		}
+		synctest.Wait()
+		run.closeUpdates()
+		senders.Wait()
+		run.closeUpdates()
+		run.send(StatusUpdate{Phase: PhaseCutover})
+		if u := <-run.updates; u.Phase != PhaseSubmitted {
+			t.Fatalf("buffered phase = %s, want %s", u.Phase, PhaseSubmitted)
+		}
+		if u, ok := <-run.updates; ok {
+			t.Fatalf("unexpected update after close: %+v", u)
+		}
+	})
+}
+
+func TestNativeRunSend_ConcurrentPollClose(t *testing.T) {
+	t.Parallel()
+	const senders = 32
+	n := newFromClient(fake.NewSimpleClientset())
+	for range 100 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		run := &nativeRun{
+			updates:  make(chan StatusUpdate, senders+1),
+			finished: make(chan struct{}),
+			cancel:   cancel,
+		}
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		for range senders {
+			workers.Go(func() {
+				<-start
+				run.send(StatusUpdate{Phase: PhaseTransferring})
+			})
+		}
+		workers.Go(func() {
+			<-start
+			n.poll(ctx, "concurrent-close", run)
+		})
+		close(start)
+		workers.Wait()
+		terminal := 0
+		for u := range run.updates {
+			if u.Phase == PhaseFailed {
+				terminal++
+			}
+		}
+		if terminal != 1 {
+			t.Fatalf("terminal updates = %d, want 1", terminal)
+		}
+	}
 }
 
 // drainUpdates collects every value from c until it closes or deadline
