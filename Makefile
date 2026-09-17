@@ -43,7 +43,7 @@ vet:
 # tree (same rationale as the gofmt check above) so a script added outside
 # scripts/ cannot silently escape analysis.
 lint-shell:
-	shellcheck -x $$(git ls-files '*.sh')
+	shellcheck -x --enable=avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,require-double-brackets,useless-use-of-cat $$(git ls-files '*.sh')
 
 # Run unit tests with race detector
 test:
