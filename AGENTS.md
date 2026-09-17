@@ -18,9 +18,10 @@ failures without weakening the gate.
   in the Makefile.
 - Edit Job manifests only in `internal/orchestrator/templates/`: Go embeds them
   and `deploy/migrate.sh` renders the same files. Do not create deploy copies.
-- Migration timeouts and buffer sizes are named constants, not literals. The
-  controller's `StatusTimeout` and the Jobs' `activeDeadlineSeconds` must stay
-  in agreement.
+- Migration timeouts and buffer sizes are named constants, not literals. Keep
+  the controller's `StatusTimeout` and both Jobs' `activeDeadlineSeconds` equal
+  in duration and above `storageSyncTimeout + migrationTimeout`, with headroom
+  for Job startup and CNI convergence, to avoid aborting healthy migrations.
 
 ## Release
 
