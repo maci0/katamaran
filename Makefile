@@ -1,4 +1,4 @@
-.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim test smoke fuzz fuzz-long image dashboard mgr factory clean vet lint-shell help
+.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim check test smoke fuzz fuzz-long image dashboard mgr factory clean vet lint-shell help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
@@ -47,6 +47,10 @@ vet:
 # scripts/ cannot silently escape analysis.
 lint-shell:
 	shellcheck -x --enable=avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,require-double-brackets,useless-use-of-cat $$(git ls-files '*.sh')
+
+check:
+	go mod verify
+	$(MAKE) vet test smoke fuzz lint-shell all
 
 # Run unit tests with race detector
 test:
@@ -121,6 +125,7 @@ help:
 	@echo "  build-mgr           Build bin/katamaran-mgr"
 	@echo "  build-factory       Build bin/katamaran-factory"
 	@echo "  build-adopted-shim  Build bin/containerd-shim-katamaran-adopted-v2"
+	@echo "  check               Verify modules, run local checks, build all binaries"
 	@echo "  test                Run unit tests with race detector"
 	@echo "  smoke               Run smoke tests (no VMs required)"
 	@echo "  fuzz                Run fuzz test seed corpus (instant)"

@@ -43,9 +43,43 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 
 ## Prerequisites
 
+### Local contributor loop
+
+Use Linux (amd64 or arm64, as tested in CI) with:
+
+- Go at least the version in `go.mod` (currently 1.26.6), including `gofmt`.
+- Git, GNU Make, Bash, and standard Unix utilities.
+- GCC or Clang and C development headers for `go test -race`; CGO must be enabled (`go env CGO_ENABLED` should print `1`).
+- ShellCheck 0.9.0 or newer for `make lint-shell` (CI uses Ubuntu 24.04's package).
+
+No Kubernetes cluster, Kata, QEMU, KVM, container engine, or root privileges are needed for this loop. The first Go build or test downloads the dependencies declared in `go.mod` to the Go module cache; no global binary install is required.
+
+From a fresh clone, run:
+
+```bash
+git clone https://github.com/maci0/katamaran.git
+cd katamaran
+make check
+```
+
+`make check` verifies downloaded modules, runs `vet`, race-enabled tests, smoke tests, fuzz seeds, and ShellCheck, then builds all six binaries in `bin/`. `make help` lists individual targets. Keep Go's default temporary directory or use a short `TMPDIR`: the tests create Unix sockets, whose paths are limited by Linux.
+
+For an edit-test loop, run only the package or named test you changed:
+
+```bash
+go test ./internal/qmp/ -race -count=1 -timeout 120s
+go test ./internal/qmp/ -run '^TestNewClient_FullHandshake$' -race -count=1 -timeout 120s -v
+```
+
+Replace the package path with any directory under `internal/` or `cmd/`. Re-run `make check` before opening a pull request against `main`. Add regression tests alongside the code in `*_test.go`; new fuzz targets also belong in the Makefile's `fuzz-long` target.
+
+The local gate uses the same Make targets as CI. CI additionally runs the suite on both architectures, `govulncheck` v1.7.0, dependency review for pull requests, and multi-architecture container builds and image smoke tests. Those checks are not part of `make check`.
+
+### E2E prerequisites
+
 - Linux host with KVM support (`/dev/kvm` must exist)
 - Nested virtualization enabled (required for Kata Containers inside minikube)
-- Go 1.26+ (install system-wide)
+- Go at least the version in `go.mod`
 
 ### Verify Nested Virtualization
 

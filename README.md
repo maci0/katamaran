@@ -19,6 +19,8 @@ sudo ./bin/katamaran --mode source --qmp /run/vc/vm/<id>/extra-monitor.sock \
   --dest-ip <dest-node-ip> --vm-ip <pod-ip>
 ```
 
+Contributing without a cluster? Follow the [local contributor loop](docs/TESTING.md#local-contributor-loop) for prerequisites, `make check`, and single-test commands. Unit and smoke tests need no Kata, QEMU, KVM, or root privileges.
+
 Three-phase migration: **storage** (NBD drive-mirror) → **compute** (RAM pre-copy) → **network** (IPIP/GRE tunnel + sch_plug qdisc). Packets arriving during the VM pause are buffered and flushed on resume, zero drops. Add `--shared-storage` with Ceph/NFS to skip the storage phase entirely.
 
 ---
