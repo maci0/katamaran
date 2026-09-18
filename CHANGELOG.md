@@ -7,21 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
+### Added
+
+- Prometheus scrape targets for mgr and dashboard counters: metrics
+  Services plus ServiceMonitors in `deploy/dashboard.yaml`.
+- License notices for the vendored Chart.js 4.5.1 and Tailwind 3.4.17
+  dashboard assets.
+- `make check`, one local contributor target that runs the same
+  vet/test/smoke/fuzz/lint-shell gate CI uses, then builds every binary.
+
 ### Changed
 
-- Deployment shutdown wiring for katamaran-mgr: the debug and webhook
-  HTTP servers now keep serving until in-flight requests finish, main
-  waits for both before exiting, and /readyz returns 503 once
-  termination starts. deploy/manager.yaml adds a 5s preStop sleep and a
-  40s terminationGracePeriodSeconds to match. Prometheus scrape targets
-  for mgr and dashboard counters are declared in deploy/dashboard.yaml
-  (metrics Services + ServiceMonitors).
+- `KATAMARAN_MIGRATION_IMAGE` is required on katamaran-mgr and the
+  dashboard. They refuse to start when it is unset, and every Migration
+  `spec.image` must match it exactly, including after a controller
+  restart. `deploy/manager.yaml` and `deploy/dashboard.yaml` set
+  `localhost/katamaran:dev`; replace that with a trusted image (prefer
+  a digest) before deploying.
+- Deployment shutdown for mgr and dashboard: HTTP servers keep serving
+  until in-flight requests finish, main waits before exiting, and
+  `/readyz` returns 503 once termination starts. Both deploy manifests
+  add a 5s preStop sleep and 40s `terminationGracePeriodSeconds`.
+- Controller Migration list reads are paginated.
+- Dashboard Chart.js is loaded only when a history series exists, and
+  form controls use the hull palette.
+- Source and dest Job templates `exec` katamaran so Kubernetes SIGTERM
+  reaches the binary instead of the wrapper shell.
 - `go.mod` on k8s.io v0.37.0, golang.org/x/net v0.59.0,
   golang.org/x/sys v0.48.0, and google.golang.org/grpc v1.83.2.
 - All four Dockerfiles pin the golang builder at 1.27-alpine and the
   runtime at alpine 3.24.
 - GitHub Actions: checkout v7.0.1, setup-go v7.0.0, cache v6.1.0,
   docker setup/build/login v4, and softprops/action-gh-release v3.0.2.
+- Go builds use `-mod=readonly -buildvcs=false` in the Makefile and
+  Dockerfiles. `make vet` fails on gofmt drift and tool errors, and
+  `make lint-shell` enables extra ShellCheck checks.
+
+### Fixed
+
+- Adoption pods keep the source workload's selector labels, so the
+  admission webhook does not deny the replacement it just created.
+- Storage mirroring fails closed on stale or terminal ready Jobs,
+  cleans up after partial startup, and reports a stable error order.
+- Migration cleanup is retry-safe after a controller restart; dest
+  staging failure deletes the source Job; `migrate.sh` exits non-zero
+  when the dest Job wait fails.
+- Recovery poll budget is bounded so a stalled Job list fails closed,
+  and discovery is bounded by the dispatch `StatusTimeout`.
+- Status channel shutdown is synchronized; phase event time is the
+  event time, not the delivery time; completion logs keep the original
+  failure.
+- Cmdline replay preserves QEMU argument bytes and applies tap
+  defaults independently of other replayed flags.
+- Auto-downtime: dashboard validation and latency stats honor the
+  checkbox, the downtime field stays enabled after unchecking it, and
+  sub-millisecond RTT rounds up in the source budget.
+- Shim log growth is bounded at runtime; capped log and command output
+  stay on UTF-8 rune boundaries.
+- Dashboard unknown-field errors are reported in sorted key order;
+  loadgen reaps ping processes when scanning ends.
+- Smoke tests no longer clobber `bin/katamaran`, exercise stale
+  binaries, or fail spuriously under `pipefail`.
+- Hot-plug helper help and usage exits are correct.
+
+### Security
+
+- `google.golang.org/grpc` v1.83.2, which fixes GO-2026-6443 (server
+  panic on missing authority or Host headers). The factory gRPC server
+  is on that path.
 
 ## [0.4.2] - 2026-08-26
 
@@ -435,7 +490,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/maci0/katamaran/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.2
 [0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/maci0/katamaran/compare/v0.1.2...v0.2.0

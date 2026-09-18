@@ -1,6 +1,6 @@
 # Roadmap
 
-Current release: **v0.3.0** (2026-05-07)
+Current release: **v0.5.0** (2026-09-18)
 
 ---
 
