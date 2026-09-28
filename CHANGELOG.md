@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-28
+
+### Changed
+
+- Docker base image digests for golang 1.27-alpine and alpine 3.24.
+- GitHub Actions: docker/setup-qemu-action v4.4.0,
+  docker/setup-buildx-action v4.4.1, docker/build-push-action v7.4.0,
+  softprops/action-gh-release v3.0.3, and a refreshed
+  actions/dependency-review-action pin.
+- `go.mod` on k8s.io v0.37.1, google.golang.org/grpc v1.84.0,
+  github.com/containerd/containerd/api v1.12.0, and
+  github.com/containerd/ttrpc v1.2.10.
+
 ## [0.5.0] - 2026-09-18
 
 ### Added
@@ -490,7 +503,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/maci0/katamaran/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/maci0/katamaran/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.2
 [0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
