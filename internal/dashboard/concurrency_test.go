@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// guardHoldTime is how long a goroutine in the contention tests below keeps
+// the guard it won. It stands in for the real work that happens between
+// claiming the guard and releasing it (a migration run, a ping subprocess),
+// and is the only reason the other goroutines ever observe a taken guard:
+// without it the claim/release pair is short enough that the other goroutines
+// never interleave, and the "guard was not contended" assertion fails at
+// random depending on how the scheduler happens to run them.
+const guardHoldTime = 200 * time.Microsecond
+
 // serveThrough runs one request through the production middleware stack so the
 // test exercises the same handler the server does.
 func serveThrough(t *testing.T, h http.Handler, method, target string) *httptest.ResponseRecorder {
@@ -135,6 +144,12 @@ func TestAppLoadgenStartStopConcurrent(t *testing.T) {
 						t.Error("tryStartLoadgen returned a nil context on success")
 						return
 					}
+					// Hold the guard for a beat the way a real generator
+					// (subprocess plus a ping round trip) does. Without it
+					// the accepted start clears before any other goroutine
+					// reaches tryStartLoadgen, the guard is never contended,
+					// and the conflict assertion below fails at random.
+					time.Sleep(guardHoldTime)
 					app.resetLoadgen()
 				}
 			}
@@ -210,6 +225,12 @@ func TestAppMigrationStartRace(t *testing.T) {
 					winners++
 					mu.Unlock()
 					app.appendLog(">>> claimed")
+					// Hold the guard for a beat, the way a real
+					// migration holds it from claim to completion,
+					// so the other goroutines actually collide
+					// with it instead of each running the whole
+					// claim/release pair in turn.
+					time.Sleep(guardHoldTime)
 					release()
 					continue
 				}
