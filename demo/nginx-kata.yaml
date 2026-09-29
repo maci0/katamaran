@@ -12,6 +12,42 @@ spec:
     image: nginx:alpine
     ports:
     - containerPort: 80
+    # The NodePort Service below routes straight at this container, so a
+    # wedged nginx has to fail its probe or the Service keeps sending
+    # requests into it until someone notices.
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 80
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /
+        port: 80
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 2
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 64Mi
+    # nginx's master process binds :80 and drops privileges for its workers,
+    # so it needs CAP_NET_BIND_SERVICE plus the setuid/setgid pair. Every
+    # other default capability is unused and gets dropped. The filesystem
+    # stays writable because nginx writes its pid, temp bodies, and cache
+    # under /var/cache/nginx.
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+        add: ["CHOWN", "NET_BIND_SERVICE", "SETGID", "SETUID"]
+      seccompProfile:
+        type: RuntimeDefault
 ---
 apiVersion: v1
 kind: Service

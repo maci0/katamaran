@@ -11,3 +11,17 @@ spec:
   containers:
   - name: pause
     image: registry.k8s.io/pause:3.9
+    resources:
+      requests:
+        cpu: 1m
+        memory: 4Mi
+      limits:
+        cpu: 10m
+        memory: 16Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault

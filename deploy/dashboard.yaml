@@ -208,7 +208,6 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
@@ -216,10 +215,21 @@ spec:
           httpGet:
             path: /readyz
             port: 8080
-          initialDelaySeconds: 2
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
+        # /healthz binds as soon as the process is up; the startup probe
+        # gates liveness during boot instead of guessing with
+        # initialDelaySeconds. /readyz covers the rest: it stays 503 until
+        # an orchestrator is wired, which is what keeps a pod that cannot
+        # serve migrations out of the port-forward target.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 3
+          timeoutSeconds: 3
+          failureThreshold: 20
         volumeMounts:
         - name: tmp
           mountPath: /tmp

@@ -46,7 +46,7 @@ func TestMigrationImageStartupValidation(t *testing.T) {
 func TestDebugReadinessDuringShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mux := debugMux(ctx)
+	mux := debugMux(ctx, nil)
 	for _, draining := range []bool{false, true} {
 		if draining {
 			cancel()
@@ -62,6 +62,35 @@ func TestDebugReadinessDuringShutdown(t *testing.T) {
 				t.Fatalf("%s draining=%v: status=%d, want %d", path, draining, w.Code, want)
 			}
 		}
+	}
+}
+
+// TestDebugReadinessChecksDependency pins the split between the two probes:
+// /readyz reports 503 while a dependency is down, /healthz keeps returning
+// 200 so a dependency outage removes the pod from the webhook Service's
+// endpoints without restarting the controller.
+func TestDebugReadinessChecksDependency(t *testing.T) {
+	ctx := context.Background()
+	down := errors.New("apiserver unreachable")
+	mux := debugMux(ctx, func(context.Context) error { return down })
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz status=%d, want 503", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/healthz status=%d, want 200 during a dependency outage", w.Code)
+	}
+}
+
+func TestAPIServerReachableDisabledWithoutClient(t *testing.T) {
+	t.Parallel()
+	if got := apiServerReachable(nil); got != nil {
+		t.Fatalf("apiServerReachable(nil) = %v, want nil", got)
 	}
 }
 

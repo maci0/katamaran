@@ -20,9 +20,20 @@ spec:
     volumeMounts:
     - name: nfs-data
       mountPath: ${NFS_EXPORT_PATH}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
   volumes:
   - name: nfs-data
-    emptyDir: {}
+    emptyDir:
+      # Bounded so a runaway test export cannot fill the node's ephemeral
+      # storage and evict unrelated pods. 2Gi is well above what the
+      # migration tests write.
+      sizeLimit: 2Gi
 ---
 apiVersion: v1
 kind: Service

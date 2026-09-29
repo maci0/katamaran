@@ -184,8 +184,8 @@ The controller exposes operational endpoints on port `8081`:
 
 | Path | Description |
 |------|-------------|
-| `/healthz`     | Kubelet liveness probe |
-| `/readyz`      | Kubelet readiness probe |
+| `/healthz`     | Kubelet liveness and startup probe. Dependency-free on purpose: an apiserver outage must not restart the controller |
+| `/readyz`      | Kubelet readiness probe. 503 while draining or while the apiserver's `/readyz` is unreachable, so the pod leaves the webhook Service's endpoints instead of answering admission it cannot act on |
 | `/metrics`     | Prometheus text-format controller counters (`katamaran_migrations_*`) plus per-migration gauges for RAM, phase, downtime, applied downtime, and RTT |
 | `/debug/vars`  | Same controller counters via Go expvar JSON, plus runtime memstats |
 

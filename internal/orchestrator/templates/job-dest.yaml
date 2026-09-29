@@ -29,6 +29,7 @@ spec:
         app.kubernetes.io/name: katamaran
         app.kubernetes.io/component: dest
         app.kubernetes.io/part-of: katamaran
+        app.kubernetes.io/managed-by: kubectl
     spec:
       serviceAccountName: katamaran-source
       automountServiceAccountToken: true
@@ -40,6 +41,10 @@ spec:
       hostNetwork: true
       hostPID: true
       restartPolicy: Never
+      # Matches job-source.yaml: the dest binary holds the incoming QEMU
+      # (or waits for it) and needs the same SIGTERM teardown budget before
+      # kubelet escalates to SIGKILL.
+      terminationGracePeriodSeconds: 120
       initContainers:
       - name: load-modules
         image: ${IMAGE}

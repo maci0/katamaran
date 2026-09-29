@@ -6,6 +6,7 @@ import (
 	"expvar"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -13,14 +14,21 @@ import (
 	"time"
 
 	"github.com/maci0/katamaran/internal/controller"
+	"k8s.io/client-go/kubernetes"
 )
+
+// readinessDependencyTimeout bounds the apiserver round-trip inside /readyz
+// so a hung apiserver fails the probe instead of holding it open. It sits
+// under the manifest's readinessProbe timeoutSeconds (3s) with room for the
+// response write.
+const readinessDependencyTimeout = 2 * time.Second
 
 // serveDebug exposes /healthz, /readyz, /metrics, and /debug/vars (expvar).
 // Failure to listen is fatal because Kubernetes uses these probes for liveness.
-func serveDebug(ctx context.Context, addr string) {
+func serveDebug(ctx context.Context, addr string, ready dependencyCheck) {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           debugMux(ctx),
+		Handler:           debugMux(ctx, ready),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -31,7 +39,11 @@ func serveDebug(ctx context.Context, addr string) {
 	}
 }
 
-func debugMux(ctx context.Context) *http.ServeMux {
+// dependencyCheck reports whether a dependency the controller needs is
+// usable right now. A nil check means "no dependency to verify".
+type dependencyCheck func(context.Context) error
+
+func debugMux(ctx context.Context, ready dependencyCheck) *http.ServeMux {
 	mux := http.NewServeMux()
 	plainOK := func(body string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
@@ -42,11 +54,25 @@ func debugMux(ctx context.Context) *http.ServeMux {
 		}
 	}
 	mux.HandleFunc("GET /healthz", plainOK("ok"))
+	// /readyz is the dependency-aware probe: it reports not-ready once the
+	// process is draining or the apiserver is unreachable, so the pod leaves
+	// the webhook Service's endpoints instead of serving admission traffic it
+	// cannot act on. /healthz stays dependency-free on purpose: an apiserver
+	// outage must not restart the controller.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		if ctx.Err() != nil {
-			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, "shutting down", http.StatusServiceUnavailable)
 			return
+		}
+		if ready != nil {
+			checkCtx, cancel := context.WithTimeout(r.Context(), readinessDependencyTimeout)
+			defer cancel()
+			if err := ready(checkCtx); err != nil {
+				slog.Warn("Readiness check failed: dependency unavailable", "error", err)
+				http.Error(w, "dependency unavailable", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		plainOK("ready")(w, r)
 	})
@@ -57,6 +83,25 @@ func debugMux(ctx context.Context) *http.ServeMux {
 }
 
 const httpShutdownTimeout = 15 * time.Second
+
+// apiServerReachable returns a readiness dependency check backed by the
+// apiserver's own /readyz endpoint. The controller cannot reconcile or serve
+// admission without a reachable apiserver, so reporting ready while it is
+// down puts a pod in the webhook Service's endpoints that answers every
+// request with an error. GET (not HEAD) because the apiserver answers
+// /readyz with a body whose verb differs by version.
+func apiServerReachable(kube kubernetes.Interface) dependencyCheck {
+	if kube == nil {
+		return nil
+	}
+	rest := kube.Discovery().RESTClient()
+	if rest == nil {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		return rest.Get().AbsPath("/readyz").Do(ctx).Error()
+	}
+}
 
 func serveHTTP(ctx context.Context, srv *http.Server, serve func() error) error {
 	done := make(chan error, 1)

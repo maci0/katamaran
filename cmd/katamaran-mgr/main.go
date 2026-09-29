@@ -8,7 +8,9 @@
 //
 // Observability: a small HTTP server exposes /healthz, /readyz,
 // /metrics, and /debug/vars for controller counters and per-migration
-// progress gauges.
+// progress gauges. /healthz is dependency-free and backs the liveness and
+// startup probes; /readyz additionally requires a reachable apiserver and
+// backs the readiness probe.
 //
 // Deployment: config/crd/migration.yaml holds the CRD; deploy/manager.yaml
 // holds the ServiceAccount + ClusterRole + ClusterRoleBinding granting access
@@ -231,7 +233,7 @@ func main() {
 		stop()
 		servers.Wait()
 	}()
-	servers.Go(func() { serveDebug(ctx, *addr) })
+	servers.Go(func() { serveDebug(ctx, *addr, apiServerReachable(kube)) })
 	// Cert is generated per-process. The serving cert is used by
 	// serveWebhook below; the matching CA bundle is patched onto
 	// the ValidatingWebhookConfiguration only by the leader (see

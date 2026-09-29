@@ -220,6 +220,17 @@ spec:
           preStop:
             exec:
               command: ["/bin/sh", "-c", "rm -f /host-bin/katamaran /host-bin/katamaran-factory /host-bin/containerd-shim-katamaran-adopted-v2"]
+        # The keepalive does nothing but hold the host binaries in place, so
+        # its only failure mode is a wedged shell. `kill -0 1` catches that
+        # without a side effect: if the shell died, `wait` already returned
+        # and the container exits on its own, so a failure here means the
+        # process is alive but not reaping.
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "kill -0 1"]
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
         volumeMounts:
         - name: host-root
           mountPath: /host-bin
@@ -254,14 +265,22 @@ spec:
         readinessProbe:
           exec:
             command: ["/bin/sh", "-c", "test -S /var/run/katamaran/factory.sock"]
-          initialDelaySeconds: 2
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
+        # Startup gate: the socket can only appear after the watcher has
+        # loaded the node's VMConfig state, which reads every sbs dir. That
+        # is slow on a node with many sandboxes, so liveness stays disabled
+        # until the socket exists instead of racing it with a delay.
+        startupProbe:
+          exec:
+            command: ["/bin/sh", "-c", "test -S /var/run/katamaran/factory.sock"]
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 24
         livenessProbe:
           exec:
             command: ["/bin/sh", "-c", "test -S /var/run/katamaran/factory.sock"]
-          initialDelaySeconds: 15
           periodSeconds: 30
           timeoutSeconds: 3
           failureThreshold: 3

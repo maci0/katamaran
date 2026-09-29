@@ -173,17 +173,29 @@ spec:
           httpGet:
             path: /healthz
             port: debug
-          initialDelaySeconds: 5
           periodSeconds: 30
+          timeoutSeconds: 3
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: debug
-          initialDelaySeconds: 2
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
+        # Startup gate so a slow apiserver connection or a leader-election
+        # lease wait cannot trip liveness and crash-loop the pod. /readyz
+        # already reports 503 until the process is up, so both probes share
+        # one endpoint contract: no initialDelaySeconds guesswork.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: debug
+          periodSeconds: 5
+          timeoutSeconds: 3
+          # 30 checks at 5s gives a cold image pull-free start 150s to bind
+          # :8081 and generate its webhook cert before kubelet restarts it.
+          failureThreshold: 30
         lifecycle:
           # Stay up for the apiserver's endpoint propagation window so
           # in-flight admission and scrape requests drain instead of

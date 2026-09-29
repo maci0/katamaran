@@ -16,6 +16,10 @@ metadata:
   namespace: kube-system
   labels:
     app: katamaran-mgr
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   type: ClusterIP
   ports:
@@ -33,6 +37,10 @@ metadata:
   namespace: kube-system
   labels:
     app: katamaran-dashboard
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   type: ClusterIP
   ports:
