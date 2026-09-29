@@ -448,11 +448,13 @@ func surviveContainerExit(qmpSocket string) {
 // moveKVMHelperThreads finds kernel-thread PIDs whose comm contains
 // the QEMU pid (e.g. `kvm-nx-lpage-recovery-<qemupid>`) and moves
 // them into the supplied cgroup.procs file. Returns the count of
-// successfully moved threads. Best-effort; per-thread failures are
-// silently ignored (kernel-thread cgroup writes can fail under
-// security policies and a stuck thread is recoverable when the
-// container's cgroup is force-collected). A total /proc scan failure
-// is logged so a stuck-in-Running pod has a visible cause.
+// successfully moved threads. Best-effort; a per-thread cgroup write
+// failure is logged and skipped (kernel-thread cgroup writes can fail
+// under security policies and a stuck thread is recoverable when the
+// container's cgroup is force-collected), because an unmoved thread
+// is what keeps the dest pod Running until its Job deadline. A total
+// /proc scan failure is logged so a stuck-in-Running pod has a visible
+// cause.
 func moveKVMHelperThreads(qemuPID, procsPath string) int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -480,9 +482,15 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 		if !strings.HasPrefix(comm, "kvm-") || !strings.HasSuffix(comm, suffix) {
 			continue
 		}
-		if err := os.WriteFile(procsPath, []byte(e.Name()+"\n"), 0o644); err == nil {
-			moved++
+		if err := os.WriteFile(procsPath, []byte(e.Name()+"\n"), 0o644); err != nil {
+			// A thread left behind keeps the dest cgroup non-empty, which is
+			// exactly the stuck-in-Running condition documented above and the
+			// one an operator needs to see to act on it.
+			slog.Warn("Cannot move KVM helper thread to surviving cgroup",
+				"thread", e.Name(), "comm", comm, "path", procsPath, "error", err)
+			continue
 		}
+		moved++
 	}
 	return moved
 }

@@ -41,6 +41,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -314,7 +315,7 @@ func writeShimLog(f *os.File, maxBytes int64, record []byte) (err error) {
 	shimLogMu.Lock()
 	defer shimLogMu.Unlock()
 	if f == os.Stderr {
-		_, err = f.Write(record)
+		_, err = writeFull(f, record)
 		return err
 	}
 	if maxBytes <= 0 {
@@ -338,8 +339,19 @@ func writeShimLog(f *os.File, maxBytes int64, record []byte) (err error) {
 			return err
 		}
 	}
-	_, err = f.Write(record)
+	_, err = writeFull(f, record)
 	return err
+}
+
+// writeFull writes p and reports a short write as io.ErrShortWrite. A
+// truncated shim log record is a silent loss of the very output an operator
+// uses to diagnose an adoption, so it must surface on the fallback path.
+func writeFull(f *os.File, p []byte) (int, error) {
+	n, err := f.Write(p)
+	if err == nil && n < len(p) {
+		return n, io.ErrShortWrite
+	}
+	return n, err
 }
 
 // removeShimSocket unlinks the ttrpc socket file the shim's server was

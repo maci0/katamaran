@@ -179,10 +179,19 @@ func handleAdmit(w http.ResponseWriter, r *http.Request, rec *controller.Reconci
 		return
 	}
 	var review admissionv1.AdmissionReview
-	if err := json.Unmarshal(body, &review); err != nil || review.Request == nil {
+	if err := json.Unmarshal(body, &review); err != nil {
 		webhookFailOpenTotal.Add(1)
 		slog.Warn("Admission webhook failing open: cannot decode AdmissionReview", "error", err)
 		writeAdmissionAllow(w, types.UID(""), fmt.Sprintf("decode AdmissionReview: %v", err))
+		return
+	}
+	if review.Request == nil {
+		// Decodes cleanly but carries no request: a body the apiserver
+		// never sends. Report the missing field rather than a nil error,
+		// which would read as "no error" in the log and in the response.
+		webhookFailOpenTotal.Add(1)
+		slog.Warn("Admission webhook failing open: AdmissionReview carries no request")
+		writeAdmissionAllow(w, types.UID(""), "AdmissionReview has no request")
 		return
 	}
 	uid := review.Request.UID

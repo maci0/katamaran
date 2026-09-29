@@ -285,6 +285,12 @@ func FindSandboxPersist(root string) *SandboxPersist {
 		path := filepath.Join(root, e.Name(), "persist.json")
 		raw, err := os.ReadFile(path)
 		if err != nil {
+			// A sandbox that has not persisted yet is expected; any other
+			// read failure means this sandbox's VMConfig is skipped, so
+			// surface it like the parse failure on the next line.
+			if !os.IsNotExist(err) {
+				slog.Warn("Failed to read Kata persist.json; skipping", "path", path, "error", err)
+			}
 			continue
 		}
 		var p SandboxPersist

@@ -107,6 +107,12 @@ func New(kubeconfig string) (Orchestrator, error) {
 // empty). Shared by the orchestrator/discoverer constructors and katamaran-mgr.
 func LoadRESTConfig(kubeconfig string) (*rest.Config, error) {
 	if cfg, err := rest.InClusterConfig(); err == nil {
+		if kubeconfig != "" {
+			// In-cluster wins, so an operator who passed --kubeconfig
+			// inside a pod would otherwise never learn which credentials
+			// were actually used.
+			slog.Warn("In-cluster service account in use; ignoring --kubeconfig", "kubeconfig", kubeconfig, "host", cfg.Host)
+		}
 		return cfg, nil
 	}
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
