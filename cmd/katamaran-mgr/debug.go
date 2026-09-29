@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/maci0/katamaran/internal/controller"
+	"github.com/maci0/katamaran/internal/logging"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -45,6 +47,8 @@ type dependencyCheck func(context.Context) error
 
 func debugMux(ctx context.Context, ready dependencyCheck) *http.ServeMux {
 	mux := http.NewServeMux()
+	// Probes arrive concurrently, so the escalation counter is atomic.
+	var consecutiveReadinessFailures atomic.Int64
 	plainOK := func(body string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -69,11 +73,19 @@ func debugMux(ctx context.Context, ready dependencyCheck) *http.ServeMux {
 			checkCtx, cancel := context.WithTimeout(r.Context(), readinessDependencyTimeout)
 			defer cancel()
 			if err := ready(checkCtx); err != nil {
-				slog.Warn("Readiness check failed: dependency unavailable", "error", err)
+				// The probe beats every 10s per replica, so a long apiserver
+				// outage would otherwise log a warning continuously. Escalate
+				// on the consecutive-failure count instead.
+				n := int(consecutiveReadinessFailures.Add(1))
+				slog.Log(r.Context(), logging.TransientLevel(n),
+					"Readiness check failed: dependency unavailable",
+					"consecutive_failures", n,
+					"error", err)
 				http.Error(w, "dependency unavailable", http.StatusServiceUnavailable)
 				return
 			}
 		}
+		consecutiveReadinessFailures.Store(0)
 		plainOK("ready")(w, r)
 	})
 	mux.Handle("GET /debug/vars", expvar.Handler())

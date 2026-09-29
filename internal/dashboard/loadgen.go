@@ -72,7 +72,7 @@ func (a *App) tryStartLoadgen(w http.ResponseWriter, r *http.Request, loadgenTyp
 		runningType := a.loadgenType
 		a.loadgenMutex.Unlock()
 		slog.Warn("Load generator request rejected: already running", "running_type", runningType, "requested_type", loadgenType, "request_id", requestIDFromContext(r.Context()))
-		writeJSON(w, http.StatusConflict, map[string]string{
+		writeJSON(w, r, http.StatusConflict, map[string]string{
 			"error":        "Load generator already running",
 			"loadgen_type": runningType,
 		})
@@ -110,7 +110,7 @@ func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
 	if wasRunning {
 		slog.Info("Load generator stop requested", "loadgen_type", loadgenType, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": "Load generator stop requested", "stopped": wasRunning, "loadgen_type": loadgenType})
+	writeJSON(w, r, http.StatusOK, map[string]any{"message": "Load generator stop requested", "stopped": wasRunning, "loadgen_type": loadgenType})
 }
 
 // validateLoadgenTarget runs the shared validation preamble for both load
@@ -134,13 +134,13 @@ func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, labe
 	target = r.FormValue("target")
 	if target == "" {
 		slog.Warn("Load generator request rejected: missing target", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Missing required field: target", http.StatusBadRequest)
+		jsonError(w, r, "Missing required field: target", http.StatusBadRequest)
 		return "", nil, false
 	}
 	ips, ok = safeTargetIPs(r.Context(), target)
 	if !ok {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid value for target", http.StatusBadRequest)
+		jsonError(w, r, "Invalid value for target", http.StatusBadRequest)
 		return "", nil, false
 	}
 	return target, ips, true
@@ -228,7 +228,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Ping load generator started", "target": pingTarget})
+	writeJSON(w, r, http.StatusAccepted, map[string]string{"message": "Ping load generator started", "target": pingTarget})
 }
 
 // addPing records a ping latency sample or error to the loadgen log buffer.
@@ -351,5 +351,5 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"message": "HTTP load generator started", "target": target})
+	writeJSON(w, r, http.StatusAccepted, map[string]string{"message": "HTTP load generator started", "target": target})
 }

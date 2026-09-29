@@ -19,6 +19,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/maci0/katamaran/internal/logging"
 )
 
 // Client timeouts.
@@ -67,6 +69,7 @@ type Client struct {
 	buf      []byte     // Unprocessed partial line data from timeouts.
 	socket   string     // Socket path for diagnostic logging.
 	desynced bool       // Stream framing is lost; see ErrDesynced.
+	dropped  int        // Consecutive event-buffer overflows, for log escalation.
 }
 
 // bufferEvent adds an asynchronous event to the internal queue.
@@ -74,8 +77,18 @@ type Client struct {
 func (c *Client) bufferEvent(ev response) {
 	c.mu.Lock()
 	if len(c.events) >= maxBufferedEvents {
-		slog.Error("QMP event buffer full, dropping oldest event", "dropped", c.events[0].Event, "incoming", ev.Event, "queued", len(c.events), "socket", c.socket)
+		// A QEMU emitting events faster than they are consumed drops one per
+		// arrival, which at full rate is a log line per event. Escalate on the
+		// consecutive-drop count so the overflow stays visible in production
+		// without flooding the job log.
+		c.dropped++
+		slog.Log(context.Background(), logging.TransientLevel(c.dropped),
+			"QMP event buffer full, dropping oldest event",
+			"dropped", c.events[0].Event, "incoming", ev.Event,
+			"queued", len(c.events), "consecutive_drops", c.dropped, "socket", c.socket)
 		c.events = slices.Delete(c.events, 0, 1)
+	} else {
+		c.dropped = 0
 	}
 	c.events = append(c.events, ev)
 	c.mu.Unlock()
@@ -264,7 +277,17 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	if cmd == "" {
 		return nil, errors.New("QMP command is required")
 	}
+	// The socket path is the VM's identity. It is on every error this call
+	// can return, because the errors surface in Job logs where nothing else
+	// says which VM failed.
+	ret, err := c.execute(ctx, cmd, args)
+	if err != nil {
+		return nil, fmt.Errorf("qmp %s: %w", c.socket, err)
+	}
+	return ret, nil
+}
 
+func (c *Client) execute(ctx context.Context, cmd string, args Args) (json.RawMessage, error) {
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
@@ -374,6 +397,14 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 // Returns an error if the connection has already been closed and no matching
 // event is found in the buffer.
 func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout time.Duration) error {
+	err := c.waitForEvent(ctx, eventName, timeout)
+	if err != nil {
+		return fmt.Errorf("qmp %s: %w", c.socket, err)
+	}
+	return nil
+}
+
+func (c *Client) waitForEvent(ctx context.Context, eventName string, timeout time.Duration) error {
 	c.mu.Lock()
 	conn := c.conn
 	// Check the buffered events first: an event might have arrived while we
@@ -432,7 +463,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		}
 
 		if resp.Event == eventName {
-			slog.Info("QMP event matched", "event", resp.Event)
+			slog.Info("QMP event matched", "event", resp.Event,
+				"socket", c.socket,
+				"waited", time.Since(eventWaitStart).Round(time.Millisecond))
 			return nil
 		}
 
@@ -444,7 +477,7 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 		// missing-RESUME hang where you can't enable debug logging
 		// on a stuck job.
 		if resp.Event != "" {
-			slog.Info("QMP event received (non-matching, buffered)", "received", resp.Event, "waiting_for", eventName)
+			slog.Info("QMP event received (non-matching, buffered)", "received", resp.Event, "waiting_for", eventName, "socket", c.socket)
 			c.bufferEvent(resp)
 		}
 	}

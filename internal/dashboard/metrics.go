@@ -146,7 +146,7 @@ func migrationDurationBucket(d time.Duration) string {
 	}
 }
 
-func serveDashboardMetrics(w http.ResponseWriter, _ *http.Request) {
+func serveDashboardMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -154,7 +154,7 @@ func serveDashboardMetrics(w http.ResponseWriter, _ *http.Request) {
 	bw := bufio.NewWriter(w)
 	defer func() {
 		if err := bw.Flush(); err != nil {
-			slog.Warn("metrics scrape flush failed", "error", err)
+			slog.Warn("metrics scrape flush failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		}
 	}()
 

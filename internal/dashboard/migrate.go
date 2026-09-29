@@ -87,7 +87,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	for _, key := range migrateFormKeys {
 		if v := r.PostFormValue(key); v != "" && !validFormValue(v) {
 			slog.Warn("Rejected invalid form value", "field", key, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, fmt.Sprintf("Invalid value for %s", key), http.StatusBadRequest)
+			jsonError(w, r, fmt.Sprintf("Invalid value for %s", key), http.StatusBadRequest)
 			return
 		}
 	}
@@ -96,14 +96,14 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	for _, key := range migrateBoolFormKeys {
 		if v := r.PostFormValue(key); v != "" && v != "true" && v != "false" {
 			slog.Warn("Rejected invalid boolean form value", "field", key, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, fmt.Sprintf("Invalid value for %s (must be 'true' or 'false')", key), http.StatusBadRequest)
+			jsonError(w, r, fmt.Sprintf("Invalid value for %s (must be 'true' or 'false')", key), http.StatusBadRequest)
 			return
 		}
 	}
 
 	if a.allowedImage != "" && r.PostFormValue("image") != a.allowedImage {
 		slog.Warn("Rejected disallowed migration image", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Image is not allowed", http.StatusBadRequest)
+		jsonError(w, r, "Image is not allowed", http.StatusBadRequest)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	for _, key := range required {
 		if r.PostFormValue(key) == "" {
 			slog.Warn("Migration request rejected: missing required field", "field", key, "pod_mode", podMode, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, fmt.Sprintf("Missing required field: %s", key), http.StatusBadRequest)
+			jsonError(w, r, fmt.Sprintf("Missing required field: %s", key), http.StatusBadRequest)
 			return
 		}
 	}
@@ -132,12 +132,12 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	destPodName := r.PostFormValue("dest_pod_name")
 	if destPodNS == "" && destPodName != "" {
 		slog.Warn("Migration request rejected: missing paired dest pod field", "field", "dest_pod_namespace", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "dest_pod_namespace is required when dest_pod_name is set", http.StatusBadRequest)
+		jsonError(w, r, "dest_pod_namespace is required when dest_pod_name is set", http.StatusBadRequest)
 		return
 	}
 	if destPodNS != "" && destPodName == "" {
 		slog.Warn("Migration request rejected: missing paired dest pod field", "field", "dest_pod_name", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "dest_pod_name is required when dest_pod_namespace is set", http.StatusBadRequest)
+		jsonError(w, r, "dest_pod_name is required when dest_pod_namespace is set", http.StatusBadRequest)
 		return
 	}
 
@@ -151,7 +151,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	} {
 		if ref.ns != "" && !a.namespaces.allows(ref.ns) {
 			slog.Warn("Migration request rejected: namespace not allowed", "field", ref.field, "namespace", ref.ns, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Namespace not allowed", http.StatusForbidden)
+			jsonError(w, r, "Namespace not allowed", http.StatusForbidden)
 			return
 		}
 	}
@@ -163,7 +163,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		d, err := strconv.Atoi(dt)
 		if err != nil || d < 1 || d > migration.MaxDowntimeMS {
 			slog.Warn("Migration request rejected: invalid downtime value", "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, fmt.Sprintf("Invalid downtime value (must be between 1 and %d milliseconds)", migration.MaxDowntimeMS), http.StatusBadRequest)
+			jsonError(w, r, fmt.Sprintf("Invalid downtime value (must be between 1 and %d milliseconds)", migration.MaxDowntimeMS), http.StatusBadRequest)
 			return
 		}
 		downtimeMS = d
@@ -177,7 +177,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		disc := a.discoverer
 		if disc == nil {
 			slog.Warn("Migration request rejected: discoverer not configured", "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr)
-			jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+			jsonError(w, r, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 			return
 		}
 		pod := r.PostFormValue("source_pod_name")
@@ -187,18 +187,18 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		resolvedSrcNode, err = disc.LookupPodNode(r.Context(), ns, pod)
 		if err != nil {
 			slog.Warn("Migration request rejected: source pod lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Source pod lookup failed", http.StatusBadRequest)
+			jsonError(w, r, "Source pod lookup failed", http.StatusBadRequest)
 			return
 		}
 		resolvedDestIP, err = disc.LookupNodeInternalIP(r.Context(), dest)
 		if err != nil {
 			slog.Warn("Migration request rejected: destination node lookup failed", "source_pod", ns+"/"+pod, "dest_node", dest, "error", err, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Destination node lookup failed", http.StatusBadRequest)
+			jsonError(w, r, "Destination node lookup failed", http.StatusBadRequest)
 			return
 		}
 		if resolvedSrcNode == dest {
 			slog.Warn("Migration request rejected: source pod already on destination node", "source_pod", ns+"/"+pod, "node", dest, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, "Source and dest node must differ", http.StatusBadRequest)
+			jsonError(w, r, "Source and dest node must differ", http.StatusBadRequest)
 			return
 		}
 	}
@@ -208,12 +208,12 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeMS)
 	if err := orchestrator.Validate(req); err != nil {
 		slog.Warn("Migration request rejected: invalid orchestrator request", "error", err, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, r, "Invalid migration request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if a.orch == nil {
 		slog.Error("Migration request rejected: orchestrator not configured", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Orchestrator not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+		jsonError(w, r, "Orchestrator not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		runningID := a.migrationID
 		a.migrationMutex.Unlock()
 		slog.Warn("Migration request rejected: already running", "running_migration_id", runningID, "request_id", requestIDFromContext(r.Context()), "remote_addr", r.RemoteAddr)
-		writeJSON(w, http.StatusConflict, map[string]string{
+		writeJSON(w, r, http.StatusConflict, map[string]string{
 			"error":        "Migration already running",
 			"migration_id": runningID,
 		})
@@ -250,8 +250,13 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Migration initiated", "migration_id", migrationID, "request_id", reqID, "remote_addr", r.RemoteAddr, "source_node", req.SourceNode, "dest_node", req.DestNode, "image", req.Image, "dest_ip", req.DestIP, "vm_ip", req.VMIP, "shared_storage", req.SharedStorage, "pod_mode", podMode, "replay_cmdline", req.ReplayCmdline)
 	go a.runOrchestrator(ctx, cancel, a.orch, req, migrationID, reqID)
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
+	writeJSON(w, r, http.StatusAccepted, map[string]string{"message": "Migration started", "migration_id": migrationID})
 }
+
+// progressLogInterval bounds how often a migration worker logs a RAM
+// progress marker. The orchestrator emits one every few seconds for up to
+// hours, so logging each one drowns the log without adding information.
+const progressLogInterval = 30 * time.Second
 
 // runOrchestrator submits req to orch, reflects each StatusUpdate into the
 // dashboard log buffer, and finalises migration counters when the watch
@@ -317,11 +322,17 @@ func (a *App) runOrchestrator(ctx context.Context, cancel context.CancelFunc, or
 	var terminalErr error
 	phaseAt := map[orchestrator.StatusPhase]time.Time{}
 	var lastLoggedPhase orchestrator.StatusPhase
+	var lastProgressLog time.Time
 	for u := range updates {
 		if _, seen := phaseAt[u.Phase]; !seen {
 			phaseAt[u.Phase] = u.When
 		}
-		if u.Phase != lastLoggedPhase || u.Phase.IsTerminal() || u.RAMTotal > 0 || u.Error != nil {
+		// Repeated progress markers inside one phase are throttled to one
+		// line per progressLogInterval; the first marker of a phase, a
+		// terminal phase and any error always log.
+		phaseChanged := u.Phase != lastLoggedPhase
+		progressDue := time.Since(lastProgressLog) >= progressLogInterval
+		if phaseChanged || u.Phase.IsTerminal() || u.Error != nil || (u.RAMTotal > 0 && progressDue) {
 			attrs := []any{"orchestrator_id", string(id), "phase", u.Phase}
 			if u.Message != "" {
 				attrs = append(attrs, "message", u.Message)
@@ -339,6 +350,9 @@ func (a *App) runOrchestrator(ctx context.Context, cancel context.CancelFunc, or
 				logger.Info("Migration phase update", attrs...)
 			}
 			lastLoggedPhase = u.Phase
+			if u.RAMTotal > 0 && !u.Phase.IsTerminal() {
+				lastProgressLog = time.Now()
+			}
 		}
 		if u.RAMTotal > 0 || u.Phase == orchestrator.PhaseSucceeded {
 			a.migrationMutex.Lock()
@@ -523,7 +537,7 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 				"orchestrator_id", string(orchID), "error", err, "request_id", requestIDFromContext(r.Context()))
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
+	writeJSON(w, r, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
 
 // historySnapshot returns a copy of the completed-migration history, newest

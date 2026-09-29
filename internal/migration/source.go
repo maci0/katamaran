@@ -636,6 +636,7 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 		state[id] = &jobState{lastLoggedPct: -1}
 	}
 	appearDeadline := time.Now().Add(jobAppearTimeout)
+	syncStart := time.Now()
 	ticker := time.NewTicker(storagePollInterval)
 	defer ticker.Stop()
 
@@ -649,10 +650,17 @@ func waitForStorageSync(ctx context.Context, client *qmp.Client, jobIDs ...strin
 			if ctx.Err() != nil {
 				return fmt.Errorf("storage sync: %w", ctx.Err())
 			}
+			// A single failed read aborts a sync that has been running for
+			// minutes to hours. Name the drives it was waiting on, or the
+			// log cannot say what the aborted sync was doing.
+			slog.Error("Storage sync aborted: query-block-jobs failed",
+				"job_ids", jobIDs, "elapsed", time.Since(syncStart).Round(time.Second), "error", err)
 			return fmt.Errorf("querying block jobs: %w", err)
 		}
 		var jobs []qmp.BlockJobInfo
 		if err = json.Unmarshal(raw, &jobs); err != nil {
+			slog.Error("Storage sync aborted: cannot decode query-block-jobs response",
+				"job_ids", jobIDs, "elapsed", time.Since(syncStart).Round(time.Second), "error", err)
 			return fmt.Errorf("unmarshaling block jobs: %w", err)
 		}
 		jobsByID := make(map[string]*qmp.BlockJobInfo, len(jobs))

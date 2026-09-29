@@ -13,18 +13,20 @@ import (
 // writeJSON sends a JSON response with the given status code. Sets
 // Cache-Control: no-store on every JSON response: all dashboard JSON
 // payloads are dynamic and must not be cached by intermediaries.
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// r carries the request id onto the encode-failure log line, which every
+// other log line on the request path already carries.
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("Failed to encode JSON response", "error", err, "status", status)
+		slog.Error("Failed to encode JSON response", "error", err, "status", status, "path", r.URL.Path, "request_id", requestIDFromContext(r.Context()))
 	}
 }
 
 // jsonError sends a JSON error response: {"error": "..."}.
-func jsonError(w http.ResponseWriter, msg string, status int) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func jsonError(w http.ResponseWriter, r *http.Request, msg string, status int) {
+	writeJSON(w, r, status, map[string]string{"error": msg})
 }
 
 // parseFormPOST validates the request Content-Type and parses the form body
@@ -37,13 +39,13 @@ func parseFormPOST(w http.ResponseWriter, r *http.Request, logCtx string) bool {
 		ct := r.Header.Get("Content-Type")
 		if ct == "" {
 			slog.Warn(logCtx+": missing content type", "request_id", reqID)
-			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
+			jsonError(w, r, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
 			return false
 		}
 		mediaType, _, err := mime.ParseMediaType(ct)
 		if err != nil || mediaType != "application/x-www-form-urlencoded" {
 			slog.Warn(logCtx+": unsupported content type", "content_type", ct, "request_id", reqID)
-			jsonError(w, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
+			jsonError(w, r, "Content-Type must be application/x-www-form-urlencoded", http.StatusUnsupportedMediaType)
 			return false
 		}
 	}
@@ -52,10 +54,10 @@ func parseFormPOST(w http.ResponseWriter, r *http.Request, logCtx string) bool {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			slog.Warn(logCtx+": request body too large", "request_id", reqID)
-			jsonError(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			jsonError(w, r, "Request body too large", http.StatusRequestEntityTooLarge)
 		} else {
 			slog.Warn(logCtx+": failed to parse form body", "error", err, "request_id", reqID)
-			jsonError(w, "Invalid request body", http.StatusBadRequest)
+			jsonError(w, r, "Invalid request body", http.StatusBadRequest)
 		}
 		return false
 	}
@@ -76,7 +78,7 @@ func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed
 			continue
 		}
 		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Unknown form field: "+key, http.StatusBadRequest)
+		jsonError(w, r, "Unknown form field: "+key, http.StatusBadRequest)
 		return false
 	}
 	return true
@@ -92,7 +94,7 @@ func rejectUnknownFormFields(w http.ResponseWriter, r *http.Request, allowed map
 			continue
 		}
 		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Unknown form field: "+key, http.StatusBadRequest)
+		jsonError(w, r, "Unknown form field: "+key, http.StatusBadRequest)
 		return false
 	}
 	return true

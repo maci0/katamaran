@@ -1,7 +1,10 @@
 package dashboard
 
 import (
+	"bytes"
+	"log/slog"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,5 +148,37 @@ func TestPhaseBreakdown(t *testing.T) {
 				t.Errorf("phaseBreakdown() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRunOrchestratorThrottlesProgressLogging pins the progress throttle: a
+// burst of RAM markers inside one phase collapses to a single phase-update
+// line, while the phase transitions and the terminal phase still log.
+func TestRunOrchestratorThrottlesProgressLogging(t *testing.T) {
+	// Not parallel: the worker logs through slog.Default().
+	origLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(origLogger) })
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	orch := newFakeOrchestrator("progress")
+	orch.progressUpdates = 50
+	app := &App{startTime: time.Now()}
+	app.runOrchestrator(t.Context(), nil, orch, orchestrator.Request{
+		SourceNode: "node-a",
+		DestNode:   "node-b",
+		DestIP:     "10.0.0.5",
+		Image:      "katamaran:dev",
+		SourcePod:  &orchestrator.PodRef{Name: "src", Namespace: "default"},
+	}, "migration-1", "request-1")
+
+	// submitted, the first transferring marker, and succeeded. The other 49
+	// markers arrive within progressLogInterval and are dropped.
+	const want = 3
+	if got := strings.Count(logs.String(), "Migration phase update"); got != want {
+		t.Fatalf("phase update lines = %d, want %d; log:\n%s", got, want, logs.String())
+	}
+	if !strings.Contains(logs.String(), "request_id=request-1") {
+		t.Fatalf("phase update lines lost the request id; log:\n%s", logs.String())
 	}
 }

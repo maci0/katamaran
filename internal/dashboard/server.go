@@ -335,13 +335,13 @@ func handleAPIFallback(allowed map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if allow, ok := allowed[r.URL.Path]; ok {
 			w.Header().Set("Allow", allow)
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			writeJSON(w, r, http.StatusMethodNotAllowed, map[string]string{
 				"error": fmt.Sprintf("Method %s not allowed", r.Method),
 				"allow": allow,
 			})
 			return
 		}
-		jsonError(w, "Not found", http.StatusNotFound)
+		jsonError(w, r, "Not found", http.StatusNotFound)
 	}
 }
 
@@ -438,7 +438,7 @@ func (a *App) requireDiscoverer(w http.ResponseWriter, r *http.Request, subject 
 		return true
 	}
 	slog.Warn("List "+subject+" failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
-	jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+	jsonError(w, r, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
 	return false
 }
 
@@ -450,10 +450,10 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 	pods, err := a.discoverer.ListKataPods(r.Context())
 	if err != nil {
 		slog.Warn("list kata pods failed", "error", err, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Failed to list pods", http.StatusBadGateway)
+		jsonError(w, r, "Failed to list pods", http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.namespaces.filterPods(pods))
+	writeJSON(w, r, http.StatusOK, a.namespaces.filterPods(pods))
 }
 
 // handleListNodes returns nodes labeled for the kata runtime.
@@ -464,7 +464,7 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes, err := a.discoverer.ListKataNodes(r.Context())
 	if err != nil {
 		slog.Warn("list kata nodes failed", "error", err, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Failed to list nodes", http.StatusBadGateway)
+		jsonError(w, r, "Failed to list nodes", http.StatusBadGateway)
 		return
 	}
 	// The list is serialized here, at the boundary: a nil slice would reach
@@ -472,12 +472,12 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	if nodes == nil {
 		nodes = []orchestrator.NodeInfo{}
 	}
-	writeJSON(w, http.StatusOK, nodes)
+	writeJSON(w, r, http.StatusOK, nodes)
 }
 
 // handleHistory returns completed migrations, newest first.
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.historySnapshot())
+	writeJSON(w, r, http.StatusOK, a.historySnapshot())
 }
 
 // handleStatus returns the current dashboard state, including active
@@ -506,7 +506,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		after, ok := parseStatusCursor(cursors[i].raw)
 		if !ok {
 			slog.Warn("Status request rejected: malformed cursor", "field", cursors[i].name, "value", cursors[i].raw, "request_id", requestIDFromContext(r.Context()))
-			jsonError(w, fmt.Sprintf("Invalid value for %s (expected a non-negative integer cursor)", cursors[i].name), http.StatusBadRequest)
+			jsonError(w, r, fmt.Sprintf("Invalid value for %s (expected a non-negative integer cursor)", cursors[i].name), http.StatusBadRequest)
 			return
 		}
 		cursors[i].after, cursors[i].active = after, true
@@ -545,7 +545,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	loadgenType := a.loadgenType
 	a.loadgenMutex.Unlock()
 
-	writeJSON(w, http.StatusOK, StatusResponse{
+	writeJSON(w, r, http.StatusOK, StatusResponse{
 		Version:                 buildinfo.Version,
 		UptimeSeconds:           int64(time.Since(a.startTime).Seconds()),
 		Migrating:               status,

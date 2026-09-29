@@ -45,6 +45,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/maci0/katamaran/internal/adopt"
+	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/migration"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
@@ -151,6 +152,11 @@ type Reconciler struct {
 	tracking map[types.NamespacedName]*track // migrations currently being watched
 
 	pending *pendingAdoptionRegistry // ReplicaSet UIDs in source-deleted-adoption-pending window; consulted by webhook
+
+	// finalizerErrs counts consecutive addFinalizer failures per Migration.
+	// Entries are pruned every pass (see reconcileAll), so it stays bounded by
+	// the number of Migrations lacking our finalizer.
+	finalizerErrs map[types.NamespacedName]int
 }
 
 // track holds the per-migration state the controller needs to handle
@@ -175,6 +181,7 @@ func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orches
 		StatusTimeout: migration.JobActiveDeadline,
 		tracking:      map[types.NamespacedName]*track{},
 		pending:       newPendingAdoptionRegistry(),
+		finalizerErrs: map[types.NamespacedName]int{},
 	}
 }
 
@@ -213,6 +220,10 @@ const reconcilePageSize int64 = 500
 
 func (r *Reconciler) reconcileAll(ctx context.Context) error {
 	opts := metav1.ListOptions{Limit: reconcilePageSize}
+	// Keys seen this pass, used to drop finalizer counters for Migrations that
+	// are gone: the same failure repeats on every tick, so the counter must
+	// not outlive the object it belongs to.
+	seen := map[types.NamespacedName]bool{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("list Migrations: %w", err)
@@ -224,6 +235,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 		for i := range list.Items {
 			obj := &list.Items[i]
 			key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
+			seen[key] = true
 
 			// Deletion path first: runs even when phase is set.
 			if obj.GetDeletionTimestamp() != nil {
@@ -235,9 +247,13 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 			// a race between submit and delete cannot orphan jobs.
 			if !hasFinalizer(obj) {
 				if err := r.addFinalizer(ctx, obj); err != nil {
-					slog.Error("add finalizer failed", "migration", key, "error", err)
+					// Retried every tick for every Migration in the cluster,
+					// so a missing RBAC rule throttles instead of logging at
+					// Error 17 times a minute per migration.
+					r.logFinalizerError(key, err)
 					continue
 				}
+				r.clearFinalizerErrors(key)
 			}
 
 			phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
@@ -262,6 +278,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 		}
 		opts.Continue = list.GetContinue()
 		if opts.Continue == "" {
+			r.pruneFinalizerErrors(seen)
 			return nil
 		}
 	}
@@ -290,6 +307,39 @@ func (r *Reconciler) untrack(key types.NamespacedName) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tracking, key)
+}
+
+// logFinalizerError bumps key's consecutive addFinalizer failure count and
+// logs at the transient-failure level for that count.
+func (r *Reconciler) logFinalizerError(key types.NamespacedName, err error) {
+	r.mu.Lock()
+	if r.finalizerErrs == nil {
+		r.finalizerErrs = map[types.NamespacedName]int{}
+	}
+	r.finalizerErrs[key]++
+	n := r.finalizerErrs[key]
+	r.mu.Unlock()
+	slog.Log(context.Background(), logging.TransientLevel(n), "add finalizer failed",
+		"migration", key, "error", err, "consecutive_errors", n)
+}
+
+// clearFinalizerErrors forgets key's failure count once the finalizer is present.
+func (r *Reconciler) clearFinalizerErrors(key types.NamespacedName) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.finalizerErrs, key)
+}
+
+// pruneFinalizerErrors drops counters for Migrations absent from a complete
+// list pass, bounding the map by the cluster's live Migration count.
+func (r *Reconciler) pruneFinalizerErrors(seen map[types.NamespacedName]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.finalizerErrs {
+		if !seen[key] {
+			delete(r.finalizerErrs, key)
+		}
+	}
 }
 
 // setTrackCancel registers cancel under key so handleDeletion can abort
@@ -442,10 +492,26 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 	// always patched (see shouldPatchStatusUpdate).
 	var lastPatched orchestrator.StatusPhase
 	var lastPatchAt time.Time
+	// loggedPhase is the phase already reported to the log, so a run logs one
+	// line per transition instead of one per watch update.
+	var loggedPhase orchestrator.StatusPhase
 	for u := range updates {
 		errStr := ""
 		if u.Error != nil {
 			errStr = u.Error.Error()
+		}
+		if u.Phase != loggedPhase {
+			from := string(loggedPhase)
+			if from == "" {
+				from = "none"
+			}
+			attrs := []any{"migration", key, "migration_id", id, "from_phase", from, "phase", string(u.Phase)}
+			if u.Error != nil {
+				slog.Warn("Migration phase transition failed", attrs...)
+			} else {
+				slog.Info("Migration phase changed", attrs...)
+			}
+			loggedPhase = u.Phase
 		}
 		if shouldPatchStatusUpdate(u, lastPatched, lastPatchAt) {
 			var patchErr error
@@ -681,6 +747,10 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 	defer cancel()
 
 	selector := orchestrator.MigrationIDLabel + "=" + id
+	// Per-loop failure counters: both retries below repeat every PollInterval
+	// for the whole recovery budget, so they log at the transient level
+	// instead of once per tick.
+	var listJobErrs, resumeErrs int
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -708,9 +778,13 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			ResourceVersion: "0",
 		})
 		if err != nil {
-			slog.Error("recover: list jobs failed", "migration", key, "migration_id", id, "error", err)
+			listJobErrs++
+			slog.Log(context.Background(), logging.TransientLevel(listJobErrs),
+				"recover: list jobs failed", "migration", key, "migration_id", id,
+				"error", err, "consecutive_errors", listJobErrs)
 			continue
 		}
+		listJobErrs = 0
 		var src, dest *batchv1.Job
 		for i := range jobs.Items {
 			j := &jobs.Items[i]
@@ -777,10 +851,16 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			created, rErr := r.Orchestrator.Resume(jobCtx, orchestrator.MigrationID(id), req)
 			switch {
 			case rErr != nil:
-				slog.Warn("recover: Resume failed; will retry next tick", "migration", key, "migration_id", id, "error", rErr)
-			case created:
-				mResumed.Add(1)
-				slog.Info("Recovery: triggered Resume to create destination job", "migration", key, "migration_id", id, "source_job", src.Name)
+				resumeErrs++
+				slog.Log(context.Background(), logging.TransientLevel(resumeErrs),
+					"recover: Resume failed; will retry next tick", "migration", key,
+					"migration_id", id, "error", rErr, "consecutive_errors", resumeErrs)
+			default:
+				resumeErrs = 0
+				if created {
+					mResumed.Add(1)
+					slog.Info("Recovery: triggered Resume to create destination job", "migration", key, "migration_id", id, "source_job", src.Name)
+				}
 			}
 		}
 		if dest == nil && src == nil {

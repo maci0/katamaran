@@ -26,7 +26,13 @@ type fakeOrchestrator struct {
 	//               called or the test cleanup cancels the run.
 	//   "watchlost": emit submitted, then close without any terminal
 	//               phase, simulating a watch stream dying mid-migration.
+	//   "progress":  emit submitted, progressUpdates transferring markers
+	//               carrying RAM counters, then succeeded.
 	behaviour string
+
+	// progressUpdates is the number of RAM progress markers the "progress"
+	// behaviour emits inside the transferring phase.
+	progressUpdates int
 
 	// per-run state
 	runs map[orchestrator.MigrationID]*fakeRun
@@ -99,6 +105,12 @@ func (f *fakeOrchestrator) Apply(ctx context.Context, req orchestrator.Request) 
 			// Close the stream right after submission with no terminal
 			// phase: runOrchestrator must classify this as watch-lost.
 			return
+		case "progress":
+			const ramTotal = 1 << 30
+			for i := range f.progressUpdates {
+				run.updates <- orchestrator.StatusUpdate{ID: id, Phase: orchestrator.PhaseTransferring, When: time.Now(), RAMTransferred: int64(i+1) * ramTotal / int64(f.progressUpdates), RAMTotal: ramTotal}
+			}
+			run.updates <- orchestrator.StatusUpdate{ID: id, Phase: orchestrator.PhaseSucceeded, When: time.Now(), RAMTotal: ramTotal}
 		case "slow":
 			// Block until Stop() or context cancel.
 			select {

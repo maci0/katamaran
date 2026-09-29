@@ -138,7 +138,7 @@ func safeTargetIPs(ctx context.Context, target string) ([]net.IP, bool) {
 		// both fail closed identically, but an operator chasing a
 		// legitimate target that stopped resolving needs the underlying
 		// resolver/policy error to tell the cases apart.
-		slog.Info("Target rejected by safe-IP screen", "target", target, "reason", err)
+		slog.Warn("Target rejected by safe-IP screen", "target", target, "reason", err, "request_id", requestIDFromContext(ctx))
 		return nil, false
 	}
 	return ips, true

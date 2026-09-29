@@ -215,7 +215,12 @@ func handleAdmit(w http.ResponseWriter, r *http.Request, rec *controller.Reconci
 			Message: msg,
 			Code:    http.StatusForbidden,
 		}
-		slog.Info("Admission webhook denied Pod create", "namespace", pod.Namespace, "generateName", pod.GenerateName, "reason", msg)
+		slog.Info("Admission webhook denied Pod create",
+			"uid", uid,
+			"namespace", pod.Namespace,
+			"name", pod.Name,
+			"generateName", pod.GenerateName,
+			"reason", msg)
 	}
 	writeAdmissionResponse(w, resp)
 }
@@ -227,7 +232,7 @@ func writeAdmissionResponse(w http.ResponseWriter, resp admissionv1.AdmissionRes
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		slog.Warn("Failed to encode admission response", "error", err)
+		slog.Warn("Failed to encode admission response", "uid", resp.UID, "error", err)
 	}
 }
 

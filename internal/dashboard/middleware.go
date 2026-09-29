@@ -149,7 +149,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				slog.Error("HTTP handler panic", "method", r.Method, "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()), "request_id", requestIDFromContext(r.Context()))
 				if isAPIPath(r.URL.Path) {
-					jsonError(w, "Internal server error", http.StatusInternalServerError)
+					jsonError(w, r, "Internal server error", http.StatusInternalServerError)
 				} else {
 					http.Error(w, "Internal server error", http.StatusInternalServerError)
 				}
@@ -207,7 +207,7 @@ func csrfCheck(next http.Handler) http.Handler {
 func csrfForbidden(w http.ResponseWriter, r *http.Request) {
 	dashboardCSRFRejectionsTotal.Add(1)
 	if isAPIPath(r.URL.Path) {
-		jsonError(w, "Forbidden", http.StatusForbidden)
+		jsonError(w, r, "Forbidden", http.StatusForbidden)
 	} else {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 	}

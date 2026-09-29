@@ -237,8 +237,13 @@ func main() {
 		}
 		webhookCABundle = caBundle
 		servers.Go(func() {
+			// A dead admission listener is not self-healing, and with
+			// failurePolicy=Ignore the apiserver silently allows every Pod
+			// create that can no longer be denied. No probe covers :9443 and
+			// webhook_fail_open_total never moves, so exit and let the kubelet
+			// restart rather than run ready with a blind webhook.
 			if err := serveWebhook(ctx, *webhookAddr, cert, rec); err != nil {
-				slog.Error("Webhook server exited with error", "error", err)
+				fail(fmt.Errorf("webhook server: %w", err))
 			}
 		})
 	}
