@@ -27,6 +27,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_ROOT
+BIN_DIR="${PROJECT_ROOT}/bin"
+readonly BIN_DIR
 export PATH="${PROJECT_ROOT}/bin:${PATH}"
 # shellcheck source=scripts/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
@@ -126,14 +128,15 @@ PROFILE="katamaran-e2e-${PROVIDER}-${CNI}-${STORAGE}-${METHOD}"
 # node_exec and node_cp_to are provided by lib.sh.
 
 # qmp_hotplug_disk attaches a virtio-blk data disk to a running QEMU via QMP.
-# The QMP conversation lives in scripts/qmp-hotplug-disk.py, which runs on the
-# node (only the stdlib is available there).
+# The QMP conversation lives in cmd/qmp-hotplug-disk, which is copied to the
+# node and run there, so the node needs no QEMU tooling beyond the socket.
 #
 # Usage: qmp_hotplug_disk <node> <qmp_socket> <disk_image_path>
 qmp_hotplug_disk() {
     local node="$1" sock="$2" disk="$3"
-    node_cp_to "${node}" "${SCRIPT_DIR}/qmp-hotplug-disk.py" "/tmp/qmp-hotplug-disk.py"
-    node_exec "${node}" "${SUDO} python3 /tmp/qmp-hotplug-disk.py '${sock}' '${disk}'"
+    (cd "${PROJECT_ROOT}" && make build-qmp-hotplug-disk) >/dev/null
+    node_cp_to "${node}" "${BIN_DIR}/qmp-hotplug-disk" "/tmp/qmp-hotplug-disk"
+    node_exec "${node}" "${SUDO} /tmp/qmp-hotplug-disk '${sock}' '${disk}'"
 }
 
 cleanup() {

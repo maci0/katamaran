@@ -14,6 +14,10 @@ the gate.
 - Binaries are built by the `build-%` pattern rule in the Makefile: every
   command under `cmd/` must have a matching name in `BINARIES`, and the flag
   set lives in that one rule.
+- `cmd/qmp-hotplug-disk` is an E2E tool. `scripts/e2e.sh` builds it and copies
+  it to the test node, so the node needs no Python or QEMU tooling. It is in
+  `BINARIES` for build and repro coverage only; release.yml ships the other
+  four images and must not gain a matrix entry for it.
 - `make repro-check` builds everything twice under a different locale and
   timezone and diffs the result. The binaries must stay byte-identical; a diff
   means host state reached the build.

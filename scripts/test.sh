@@ -352,33 +352,37 @@ else
     fail "binary not found or not executable"
 fi
 
-HOTPLUG_SCRIPT="${SCRIPT_DIR}/qmp-hotplug-disk.py"
-for help_flag in --help -h; do
-    HOTPLUG_RC=0
-    NO_COLOR=1 TERM=dumb python3 "${HOTPLUG_SCRIPT}" "${help_flag}" \
-        >"${TEST_DIR}/hotplug.stdout" 2>"${TEST_DIR}/hotplug.stderr" || HOTPLUG_RC=$?
-    if [[ ${HOTPLUG_RC} -eq 0 && ! -s "${TEST_DIR}/hotplug.stderr" ]] && \
-        grep -q '<qmp-socket> <disk-image>' "${TEST_DIR}/hotplug.stdout"; then
-        pass "qmp-hotplug-disk.py ${help_flag} prints help on stdout and exits 0"
-    else
-        fail "qmp-hotplug-disk.py ${help_flag} should print help on stdout and exit 0"
-    fi
-done
-for arg_count in 0 1 3; do
-    HOTPLUG_ARGS=()
-    for ((i = 0; i < arg_count; i++)); do
-        HOTPLUG_ARGS+=(unused)
+HOTPLUG_BINARY="${PROJECT_ROOT}/bin/qmp-hotplug-disk"
+if (cd "${PROJECT_ROOT}" && make build-qmp-hotplug-disk) >/dev/null 2>&1 && [[ -x "${HOTPLUG_BINARY}" ]]; then
+    for help_flag in --help -h; do
+        HOTPLUG_RC=0
+        "${HOTPLUG_BINARY}" "${help_flag}" \
+            >"${TEST_DIR}/hotplug.stdout" 2>"${TEST_DIR}/hotplug.stderr" || HOTPLUG_RC=$?
+        if [[ ${HOTPLUG_RC} -eq 0 && ! -s "${TEST_DIR}/hotplug.stderr" ]] && \
+            grep -q '<qmp-socket> <disk-image>' "${TEST_DIR}/hotplug.stdout"; then
+            pass "qmp-hotplug-disk ${help_flag} prints help on stdout and exits 0"
+        else
+            fail "qmp-hotplug-disk ${help_flag} should print help on stdout and exit 0"
+        fi
     done
-    HOTPLUG_RC=0
-    python3 "${HOTPLUG_SCRIPT}" "${HOTPLUG_ARGS[@]}" \
-        >"${TEST_DIR}/hotplug.stdout" 2>"${TEST_DIR}/hotplug.stderr" || HOTPLUG_RC=$?
-    if [[ ${HOTPLUG_RC} -eq 2 && ! -s "${TEST_DIR}/hotplug.stdout" ]] && \
-        grep -q '<qmp-socket> <disk-image>' "${TEST_DIR}/hotplug.stderr"; then
-        pass "qmp-hotplug-disk.py rejects ${arg_count} arguments with usage on stderr and exit 2"
-    else
-        fail "qmp-hotplug-disk.py should reject ${arg_count} arguments with usage on stderr and exit 2"
-    fi
-done
+    for arg_count in 0 1 3; do
+        HOTPLUG_ARGS=()
+        for ((i = 0; i < arg_count; i++)); do
+            HOTPLUG_ARGS+=(unused)
+        done
+        HOTPLUG_RC=0
+        "${HOTPLUG_BINARY}" "${HOTPLUG_ARGS[@]}" \
+            >"${TEST_DIR}/hotplug.stdout" 2>"${TEST_DIR}/hotplug.stderr" || HOTPLUG_RC=$?
+        if [[ ${HOTPLUG_RC} -eq 2 && ! -s "${TEST_DIR}/hotplug.stdout" ]] && \
+            grep -q '<qmp-socket> <disk-image>' "${TEST_DIR}/hotplug.stderr"; then
+            pass "qmp-hotplug-disk rejects ${arg_count} arguments with usage on stderr and exit 2"
+        else
+            fail "qmp-hotplug-disk should reject ${arg_count} arguments with usage on stderr and exit 2"
+        fi
+    done
+else
+    fail "qmp-hotplug-disk binary not built"
+fi
 
 MIGRATE_SCRIPT="${PROJECT_ROOT}/deploy/migrate.sh"
 if [[ -x "${MIGRATE_SCRIPT}" ]]; then

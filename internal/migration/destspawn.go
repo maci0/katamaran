@@ -40,6 +40,13 @@ var (
 	// destReplayVirtiofsd is the virtiofsd binary path Kata installs.
 	destReplayVirtiofsd = "/opt/kata/libexec/virtiofsd"
 
+	// nvdimmTempDir is where the replayed nvdimm image copy is staged before
+	// it is handed to QEMU. The dest container must reach it, so it is not
+	// resolved from TMPDIR. Test seam: tests point it at their own temp dir,
+	// which keeps the leaked-file check off the shared /tmp namespace that
+	// concurrent tests write to.
+	nvdimmTempDir = "/tmp"
+
 	// destReplaySocketWaitTotal bounds how long we wait for the QEMU QMP
 	// socket to appear after spawning QEMU.
 	destReplaySocketWaitTotal = 15 * time.Second
@@ -648,7 +655,7 @@ func copyNvdimmImage(src string) (string, error) {
 		return "", fmt.Errorf("nvdimm image %s is not a regular file (mode %s)", src, fi.Mode())
 	}
 
-	out, err := os.CreateTemp("/tmp", "kata-dst-nvdimm-*.img")
+	out, err := os.CreateTemp(nvdimmTempDir, "kata-dst-nvdimm-*.img")
 	if err != nil {
 		return "", fmt.Errorf("create temp nvdimm: %w", err)
 	}

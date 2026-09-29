@@ -7,7 +7,7 @@ LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
 # one pattern rule builds them all. Adding a command is one entry in
 # BINARIES, and no binary can pick up different build flags than the others.
 BINARIES := katamaran katamaran-dashboard katamaran-orchestrator katamaran-mgr \
-            katamaran-factory containerd-shim-katamaran-adopted-v2
+            katamaran-factory containerd-shim-katamaran-adopted-v2 qmp-hotplug-disk
 BUILD_TARGETS := $(addprefix build-,$(BINARIES))
 
 # Default target

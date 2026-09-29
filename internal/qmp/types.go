@@ -149,6 +149,28 @@ type AnnounceSelfArgs struct {
 	Step    int `json:"step"`    // Delay increase per round (ms).
 }
 
+// BlockdevAddArgs are the arguments for the blockdev-add command.
+type BlockdevAddArgs struct {
+	Driver   string           `json:"driver"`
+	NodeName string           `json:"node-name"`
+	File     BlockdevFileSpec `json:"file"`
+}
+
+// BlockdevFileSpec is the file backend a blockdev-add node is layered on.
+type BlockdevFileSpec struct {
+	Driver   string `json:"driver"`
+	Filename string `json:"filename"`
+}
+
+// DeviceAddArgs are the arguments for the device_add command.
+type DeviceAddArgs struct {
+	Driver string `json:"driver"`
+	Drive  string `json:"drive"`
+	ID     string `json:"id"`
+	Bus    string `json:"bus"`
+	Addr   string `json:"addr"`
+}
+
 func (NBDServerStartArgs) qmpArgs()         {}
 func (NBDServerAddArgs) qmpArgs()           {}
 func (DriveMirrorArgs) qmpArgs()            {}
@@ -157,3 +179,5 @@ func (MigrateSetCapabilitiesArgs) qmpArgs() {}
 func (MigrateSetParametersArgs) qmpArgs()   {}
 func (MigrateArgs) qmpArgs()                {}
 func (AnnounceSelfArgs) qmpArgs()           {}
+func (BlockdevAddArgs) qmpArgs()            {}
+func (DeviceAddArgs) qmpArgs()              {}

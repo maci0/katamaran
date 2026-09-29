@@ -839,6 +839,17 @@ func TestSpawnReplayedQEMU_CleansUpNvdimmOnPreSpawnFailure(t *testing.T) {
 	setupTapIface = func(_ context.Context, _ string) error { return errors.New("forced tap failure") }
 	t.Cleanup(func() { setupTapIface = prevTap })
 
+	// Stage the nvdimm copy in this test's own directory. Globbing the
+	// shared /tmp namespace races the other tests in this package, which
+	// stage their copies concurrently, and made the leak check below
+	// report files it did not create.
+	prevTempDir := nvdimmTempDir
+	nvdimmTempDir = filepath.Join(tmpDir, "nvdimm-temp")
+	if err := os.MkdirAll(nvdimmTempDir, 0o755); err != nil {
+		t.Fatalf("create nvdimm temp dir: %v", err)
+	}
+	t.Cleanup(func() { nvdimmTempDir = prevTempDir })
+
 	before := listDestNvdimmTemps()
 	cfg := DestConfig{
 		ReplayCmdlineFile: cmdlinePath,
@@ -854,9 +865,10 @@ func TestSpawnReplayedQEMU_CleansUpNvdimmOnPreSpawnFailure(t *testing.T) {
 	}
 }
 
-// listDestNvdimmTemps returns the current /tmp/kata-dst-nvdimm-*.img set
-// so tests can detect orphaned copies via set-size comparison.
+// listDestNvdimmTemps returns the current nvdimmTempDir set so tests can
+// detect orphaned copies via set-size comparison. Tests point nvdimmTempDir
+// at their own directory, so concurrent tests cannot perturb the result.
 func listDestNvdimmTemps() []string {
-	matches, _ := filepath.Glob("/tmp/kata-dst-nvdimm-*.img")
+	matches, _ := filepath.Glob(filepath.Join(nvdimmTempDir, "kata-dst-nvdimm-*.img"))
 	return matches
 }
