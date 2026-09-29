@@ -501,6 +501,9 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 	// loop (i--) can spin forever on a busy network where most replies do
 	// not match our id+seq.
 	const maxUnrelatedReplies = samples * 5
+	// replyBufferSize is the largest ICMP packet a read can return: the
+	// 1500-byte IPv4 MTU, enough for any echo reply we send.
+	const replyBufferSize = 1500
 	network := "ip4:icmp"
 	listenAddr := "0.0.0.0"
 	var icmpType icmp.Type = ipv4.ICMPTypeEcho
@@ -541,7 +544,7 @@ func measureRTT(destIP netip.Addr) (time.Duration, error) {
 		if err := conn.SetReadDeadline(time.Now().Add(rttDialTimeout)); err != nil {
 			return 0, fmt.Errorf("RTT sample %d/%d set deadline: %w", i+1, samples, err)
 		}
-		reply := make([]byte, 1500)
+		reply := make([]byte, replyBufferSize)
 		n, _, err := conn.ReadFrom(reply)
 		if err != nil {
 			return 0, fmt.Errorf("RTT sample %d/%d recv failed: %w", i+1, samples, err)
