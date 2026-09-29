@@ -268,6 +268,39 @@ func TestValidateRejectsNegativeCNIConvergenceDelay(t *testing.T) {
 	}
 }
 
+// A cniConvergenceDelaySeconds past 9223372036 is rendered into the source
+// Job as --cni-convergence-delay <N>s, which time.ParseDuration rejects
+// ("invalid duration"), so the flag fails to parse and the Job dies on
+// startup. Validate must reject the request instead, before the Job is
+// submitted.
+func TestValidateRejectsOverflowingCNIConvergenceDelay(t *testing.T) {
+	t.Parallel()
+	for _, seconds := range []int{10000000000, 1 << 40} {
+		req := validRequestForValidation()
+		req.CNIConvergenceDelaySeconds = seconds
+
+		err := Validate(req)
+		if err == nil {
+			t.Fatalf("cniConvergenceDelaySeconds=%d: expected validation error", seconds)
+		}
+		if !strings.Contains(err.Error(), "cniConvergenceDelaySeconds") {
+			t.Fatalf("cniConvergenceDelaySeconds=%d: expected cniConvergenceDelaySeconds error, got: %v", seconds, err)
+		}
+	}
+}
+
+// The bound must agree with the CRD schema's maximum, or a value the apiserver
+// accepts is rejected by the orchestrator (or the reverse).
+func TestValidateAcceptsCRDMaximumCNIConvergenceDelay(t *testing.T) {
+	t.Parallel()
+	req := validRequestForValidation()
+	req.CNIConvergenceDelaySeconds = maxCNIConvergenceDelaySeconds
+
+	if err := Validate(req); err != nil {
+		t.Fatalf("cniConvergenceDelaySeconds=%d must be accepted: %v", maxCNIConvergenceDelaySeconds, err)
+	}
+}
+
 func TestValidateRejectsNegativePodWaitTimeout(t *testing.T) {
 	t.Parallel()
 	req := validRequestForValidation()

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -32,6 +33,42 @@ func TestHumanBytes(t *testing.T) {
 		if got := humanBytes(tt.n); got != tt.want {
 			t.Errorf("humanBytes(%d) = %q, want %q", tt.n, got, tt.want)
 		}
+	}
+}
+
+// TestTransferPercent pins the RAM share rendered into the migration log line.
+// The value must be rounded rather than truncated, so a transfer at 99.9% does
+// not read "99%" in the log while the progress bar beside it reads 100%, and
+// clamped into [0,100] so a negative or over-complete count scraped from the
+// source pod log cannot print a negative or >100% percentage.
+func TestTransferPercent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name               string
+		transferred, total int64
+		want               int
+	}{
+		{"zero total", 100, 0, 0},
+		{"empty", 0, 1024, 0},
+		{"half", 512, 1024, 50},
+		{"complete", 1024, 1024, 100},
+		{"rounds up at 99.9", 999, 1000, 100},
+		{"rounds up at 49.6", 496, 1000, 50},
+		{"rounds down at 49.4", 494, 1000, 49},
+		{"clamps above total", 2000, 1000, 100},
+		{"clamps negative", -5, 1000, 0},
+		{"negative total", 100, -1, 0},
+		// Byte counts near int64 max must not overflow the intermediate
+		// product the way transferred*100 would.
+		{"huge counts", math.MaxInt64 / 2, math.MaxInt64, 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := transferPercent(tt.transferred, tt.total); got != tt.want {
+				t.Errorf("transferPercent(%d, %d) = %d, want %d", tt.transferred, tt.total, got, tt.want)
+			}
+		})
 	}
 }
 

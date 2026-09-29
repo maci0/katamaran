@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -383,7 +384,14 @@ func (a *App) runOrchestrator(ctx context.Context, cancel context.CancelFunc, or
 			// orchestrator, which deliberately persists unmultiplied byte
 			// counts), while float64 keeps this display percent exact well
 			// past any plausible value.
-			pct := int(float64(u.RAMTransferred) / float64(u.RAMTotal) * 100)
+			//
+			// Rounded and clamped, not truncated, to match the progress bar's
+			// Math.round + Math.min/max in index.html. Truncating showed "99%"
+			// for a transfer at 99.9% while the bar next to it read 100%, and
+			// a negative transferred count (the marker is scraped from a pod
+			// log, and parseInt64 accepts a leading '-') would otherwise print
+			// a negative percentage.
+			pct := transferPercent(u.RAMTransferred, u.RAMTotal)
 			line += fmt.Sprintf(": %d%% (%s / %s)", pct, humanBytes(u.RAMTransferred), humanBytes(u.RAMTotal))
 		case u.Message != "":
 			line += ": " + u.Message
@@ -415,6 +423,19 @@ func (a *App) runOrchestrator(ctx context.Context, cancel context.CancelFunc, or
 		a.setMigrationResult("error", msg)
 		logger.Error("Migration finished", "outcome", "error", "elapsed", elapsed, "error", msg)
 	}
+}
+
+// transferPercent renders transferred/total as a whole percentage in [0,100].
+// Shared by the log line and the status endpoint so the two cannot disagree
+// about what share of a migration is done. Computed in float64 so the
+// numerator is never multiplied in integer arithmetic, which would overflow
+// for byte counts past ~92 PB.
+func transferPercent(transferred, total int64) int {
+	if total <= 0 {
+		return 0
+	}
+	pct := math.Round(float64(transferred) / float64(total) * 100)
+	return int(math.Min(100, math.Max(0, pct)))
 }
 
 // phaseBreakdown formats the wall-clock split between phases for the

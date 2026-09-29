@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -167,6 +168,31 @@ func SetPodWaitTimeout(o Orchestrator, d time.Duration) {
 	if n, ok := o.(*native); ok && d > 0 {
 		n.podWaitTimeout = d
 	}
+}
+
+// maxDurationSeconds is the largest second count that fits in a time.Duration
+// without overflowing int64 nanoseconds (math.MaxInt64 / 1e9, rounded down).
+const maxDurationSeconds = int64(math.MaxInt64) / int64(time.Second)
+
+// secondsAsDuration converts a Job's spec.activeDeadlineSeconds into a
+// Duration, saturating instead of overflowing. The field is an int64 read back
+// from the apiserver, so a Job carrying a deadline above maxDurationSeconds
+// makes the bare multiplication wrap to a negative Duration. Every caller here
+// compares an elapsed time against the result, and a negative bound makes that
+// comparison true for any age, i.e. the Job looks expired the instant it is
+// created. That is fail-open on a deadline check: a Job with a huge deadline
+// would be treated as already reaped, so the in-flight guard would hand out a
+// second migration ID for a pod whose first migration is still running.
+// Saturating keeps a hostile value meaning "no realistic expiry", which is
+// what an unbounded deadline means.
+func secondsAsDuration(seconds int64) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > maxDurationSeconds {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // cleanupContext derives a fresh, bounded deadline that ignores the parent's

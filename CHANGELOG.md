@@ -123,6 +123,26 @@ workflow refuses to publish a tag that has no section below.
   vet` and `make test` failed. The test now checks the error the signature
   returns, and the malformed-JSON case asserts that a config.json which
   cannot be decoded is an error rather than an empty annotation.
+- A Job whose `spec.activeDeadlineSeconds` overflows no longer reads as already
+  expired to the orchestrator's in-flight guard. `inflightForSourcePod`
+  multiplied the apiserver's int64 by `time.Second` without a bound; past
+  9223372036 the product wraps to a negative `time.Duration`, and since the
+  guard compares an elapsed time against that bound, a fresh Job looked
+  reaped instantly. The guard would then hand out a second migration ID for a
+  pod whose first migration was still running. The conversion now saturates
+  (`secondsAsDuration`), so an unbounded deadline reads as "no realistic
+  expiry", which is what it means.
+- `spec.cniConvergenceDelaySeconds` is bounded at 600 seconds, matching the
+  CRD schema's maximum. The value is rendered into the source Job as
+  `--cni-convergence-delay <N>s`, which `time.ParseDuration` rejects above
+  9223372036, so an oversized value crashed the already-submitted Job on
+  startup instead of being rejected as a bad request. This was the only
+  seconds-valued field without an upper bound.
+- The migration log line's RAM percentage is rounded and clamped to `[0,100]`
+  (`transferPercent`) instead of truncated, matching the progress bar's
+  `Math.round` + `Math.min`/`Math.max` in `index.html`. A transfer at 99.9%
+  read "99%" in the log while the bar beside it read 100%, and a negative
+  count scraped from a source pod log printed a negative percentage.
 - Replaying the `--replay-cmdline` dest Job submit no longer fails a live
   migration. `stageThenStartDest` treated an `AlreadyExists` create as a hard
   error, so a duplicated staging pass (or a create whose response was lost

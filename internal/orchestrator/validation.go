@@ -14,6 +14,12 @@ import (
 // bound is required.
 const maxPodWaitTimeoutSeconds = 86400
 
+// maxCNIConvergenceDelaySeconds caps spec.cniConvergenceDelaySeconds. Matches
+// the CRD schema's maximum so the two validators cannot disagree; see the
+// comment on the CNIConvergenceDelaySeconds check in Validate for why an upper
+// bound is required.
+const maxCNIConvergenceDelaySeconds = 600
+
 // Validate checks a Request for required fields and mode consistency. Exposed
 // so callers (e.g. the dashboard's HTTP handler) can pre-validate before
 // calling Apply.
@@ -90,8 +96,16 @@ func Validate(req Request) error {
 	if req.AutoDowntimeFloorMS < 0 || req.AutoDowntimeFloorMS > migration.MaxDowntimeMS {
 		return fmt.Errorf("autoDowntimeFloorMS must be between 0 and %d, got %d", migration.MaxDowntimeMS, req.AutoDowntimeFloorMS)
 	}
-	if req.CNIConvergenceDelaySeconds < 0 {
-		return fmt.Errorf("cniConvergenceDelaySeconds must be non-negative, got %d", req.CNIConvergenceDelaySeconds)
+	// CNIConvergenceDelaySeconds is rendered into the source Job as
+	// --cni-convergence-delay <N>s, which the katamaran CLI parses with
+	// time.ParseDuration. A value past 9223372036 overflows int64
+	// nanoseconds, so the flag fails to parse and the source Job dies on
+	// startup with a parse error instead of the request being rejected here.
+	// The Job is already submitted by this point, so the failure surfaces as
+	// a crashed migration rather than a rejected request. 10 minutes is far
+	// beyond any real CNI convergence window and matches the CRD maximum.
+	if req.CNIConvergenceDelaySeconds < 0 || req.CNIConvergenceDelaySeconds > maxCNIConvergenceDelaySeconds {
+		return fmt.Errorf("cniConvergenceDelaySeconds must be between 0 and %d, got %d", maxCNIConvergenceDelaySeconds, req.CNIConvergenceDelaySeconds)
 	}
 	if req.LogLevel != "" && req.LogLevel != "debug" && req.LogLevel != "info" && req.LogLevel != "warn" && req.LogLevel != "error" {
 		return fmt.Errorf("logLevel must be one of debug, info, warn, or error, got %q", req.LogLevel)

@@ -138,7 +138,7 @@ func (n *native) inflightForSourcePod(ctx context.Context, req Request) (Migrati
 		// object yet; only apply the deadline rule to a Job we can date.
 		if created := job.CreationTimestamp.Time; !created.IsZero() {
 			if deadline := job.Spec.ActiveDeadlineSeconds; deadline != nil &&
-				now.Sub(created) > time.Duration(*deadline)*time.Second {
+				now.Sub(created) > secondsAsDuration(*deadline) {
 				continue
 			}
 		}
