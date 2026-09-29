@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `make lint-shell` also enables ShellCheck's `add-default-case` and
   `quote-safe-variables`.
+- The dashboard's `/api` route table is now a single declaration. The 405
+  `Allow` header is derived from the registered mux patterns instead of a
+  hand-maintained copy, so a newly added endpoint can no longer answer 404
+  to a client that probes it with the wrong method.
 - `deploy/dashboard.yaml` no longer creates a ClusterIP Service in front
   of the dashboard UI. The dashboard ServiceAccount can list, patch, and
   delete pods in every namespace and creates hostPID migration Jobs, so
@@ -59,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dashboard list endpoints answer `[]` instead of `null` when empty.
+  `GET /api/history` and the `history` array in `GET /api/status` served a
+  JSON null on a dashboard that had not completed a migration, while
+  `logs` and `pings` in the same response already served `[]`; a client
+  iterating `history` threw. `GET /api/nodes` and `GET /api/pods` now
+  normalize an empty result the same way at the handler.
 - `deploy/monitoring.yaml` extraction. The metrics Services and
   ServiceMonitors moved out of `deploy/dashboard.yaml` so that manifest
   applies on a cluster without a Prometheus Operator, and the mgr's

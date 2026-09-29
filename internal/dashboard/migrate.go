@@ -494,6 +494,19 @@ func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Migration stop requested", "stopped": wasRunning, "migration_id": migrationID})
 }
 
+// historySnapshot returns a copy of the completed-migration history, newest
+// first. The copy is never nil: every list this API serves answers [] on an
+// empty result, because a JSON null breaks clients that iterate the field
+// directly (`data.history.forEach` throws, `resp.length` is undefined).
+func (a *App) historySnapshot() []MigrationHistoryEntry {
+	a.migrationMutex.Lock()
+	hist := make([]MigrationHistoryEntry, len(a.migrationHistory))
+	copy(hist, a.migrationHistory)
+	a.migrationMutex.Unlock()
+	slices.Reverse(hist)
+	return hist
+}
+
 // setMigrationResult updates the final status and error message of the completed migration.
 func (a *App) setMigrationResult(result, errMsg string) {
 	a.migrationMutex.Lock()

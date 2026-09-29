@@ -14,7 +14,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -263,6 +262,51 @@ func (a *App) serve(ctx context.Context, srv *http.Server, listener net.Listener
 	return err
 }
 
+// apiRoutes is the complete list of /api endpoints. newMux registers each
+// entry and derives the 405 Allow values from the same patterns, so a new
+// endpoint cannot be routed without also being advertised to clients that
+// probe it with the wrong method.
+func (a *App) apiRoutes() []apiRoute {
+	return []apiRoute{
+		{"POST /api/migrate", a.handleMigrate},
+		{"POST /api/migrate/stop", a.handleMigrateStop},
+		{"GET /api/pods", a.handleListPods},
+		{"GET /api/nodes", a.handleListNodes},
+		{"GET /api/status", a.handleStatus},
+		{"GET /api/history", a.handleHistory},
+		{"POST /api/ping", a.handlePingStart},
+		{"POST /api/ping/stop", a.handleLoadgenStop},
+		{"POST /api/httpgen", a.handleHTTPStart},
+		{"POST /api/httpgen/stop", a.handleLoadgenStop},
+	}
+}
+
+// apiRoute pairs a Go 1.22 method-aware ServeMux pattern with its handler.
+type apiRoute struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// apiAllowedMethods maps each registered /api path to the value of the Allow
+// header returned with 405. A "GET" pattern also serves HEAD, so the Allow
+// value advertises both, matching what net/http actually dispatches.
+func (a *App) apiAllowedMethods() map[string]string {
+	routes := a.apiRoutes()
+	allowed := make(map[string]string, len(routes))
+	for _, rt := range routes {
+		method, path, found := strings.Cut(rt.pattern, " ")
+		if !found {
+			continue
+		}
+		allow := method
+		if method == http.MethodGet {
+			allow = method + ", " + http.MethodHead
+		}
+		allowed[path] = allow
+	}
+	return allowed
+}
+
 // newMux creates the HTTP route table. Extracted so tests can use the same
 // routing as production without duplicating pattern strings.
 func (a *App) newMux(enableDebug bool) *http.ServeMux {
@@ -275,18 +319,12 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	mux.HandleFunc("GET /assets/tailwind-3.4.17.LICENSE.txt", serveAsset("tailwind-3.4.17.LICENSE.txt"))
 	mux.HandleFunc("GET /assets/chart-4.5.1.min.js", serveAsset("chart-4.5.1.min.js"))
 	mux.HandleFunc("GET /assets/chart-4.5.1.LICENSE.txt", serveAsset("chart-4.5.1.LICENSE.txt"))
-	mux.HandleFunc("/api", handleAPIFallback)
-	mux.HandleFunc("/api/", handleAPIFallback)
-	mux.HandleFunc("POST /api/migrate", a.handleMigrate)
-	mux.HandleFunc("POST /api/migrate/stop", a.handleMigrateStop)
-	mux.HandleFunc("GET /api/pods", a.handleListPods)
-	mux.HandleFunc("GET /api/nodes", a.handleListNodes)
-	mux.HandleFunc("GET /api/status", a.handleStatus)
-	mux.HandleFunc("GET /api/history", a.handleHistory)
-	mux.HandleFunc("POST /api/ping", a.handlePingStart)
-	mux.HandleFunc("POST /api/ping/stop", a.handleLoadgenStop)
-	mux.HandleFunc("POST /api/httpgen", a.handleHTTPStart)
-	mux.HandleFunc("POST /api/httpgen/stop", a.handleLoadgenStop)
+	fallback := handleAPIFallback(a.apiAllowedMethods())
+	mux.HandleFunc("/api", fallback)
+	mux.HandleFunc("/api/", fallback)
+	for _, rt := range a.apiRoutes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
 	if enableDebug {
 		// Runtime diagnostics: pprof (goroutine dumps, heap profiles, CPU profiles)
 		// and expvar (version, goroutine count, memstats). Zero overhead until accessed.
@@ -296,29 +334,18 @@ func (a *App) newMux(enableDebug bool) *http.ServeMux {
 	return mux
 }
 
-var apiAllowedMethods = map[string]string{
-	"/api/migrate":      http.MethodPost,
-	"/api/migrate/stop": http.MethodPost,
-	"/api/status":       http.MethodGet + ", " + http.MethodHead,
-	"/api/pods":         http.MethodGet + ", " + http.MethodHead,
-	"/api/nodes":        http.MethodGet + ", " + http.MethodHead,
-	"/api/history":      http.MethodGet + ", " + http.MethodHead,
-	"/api/ping":         http.MethodPost,
-	"/api/ping/stop":    http.MethodPost,
-	"/api/httpgen":      http.MethodPost,
-	"/api/httpgen/stop": http.MethodPost,
-}
-
-func handleAPIFallback(w http.ResponseWriter, r *http.Request) {
-	if allow, ok := apiAllowedMethods[r.URL.Path]; ok {
-		w.Header().Set("Allow", allow)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": fmt.Sprintf("Method %s not allowed", r.Method),
-			"allow": allow,
-		})
-		return
+func handleAPIFallback(allowed map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if allow, ok := allowed[r.URL.Path]; ok {
+			w.Header().Set("Allow", allow)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+				"error": fmt.Sprintf("Method %s not allowed", r.Method),
+				"allow": allow,
+			})
+			return
+		}
+		jsonError(w, "Not found", http.StatusNotFound)
 	}
-	jsonError(w, "Not found", http.StatusNotFound)
 }
 
 // Static probe response bodies, hoisted so each Kubernetes probe doesn't
@@ -437,16 +464,17 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to list nodes", http.StatusBadGateway)
 		return
 	}
+	// The list is serialized here, at the boundary: a nil slice would reach
+	// the client as JSON null, which breaks callers that iterate the result.
+	if nodes == nil {
+		nodes = []orchestrator.NodeInfo{}
+	}
 	writeJSON(w, http.StatusOK, nodes)
 }
 
 // handleHistory returns completed migrations, newest first.
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
-	a.migrationMutex.Lock()
-	hist := slices.Clone(a.migrationHistory)
-	a.migrationMutex.Unlock()
-	slices.Reverse(hist)
-	writeJSON(w, http.StatusOK, hist)
+	writeJSON(w, http.StatusOK, a.historySnapshot())
 }
 
 // handleStatus returns the current dashboard state, including active
@@ -483,9 +511,8 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		p := *a.latestProgress // copy under lock so caller mutation is safe
 		progress = &p
 	}
-	hist := slices.Clone(a.migrationHistory)
 	a.migrationMutex.Unlock()
-	slices.Reverse(hist)
+	hist := a.historySnapshot()
 
 	var elapsedSeconds int64
 	if status && !migrationStart.IsZero() {

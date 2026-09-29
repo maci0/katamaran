@@ -524,17 +524,20 @@ func TestMux_MethodNotAllowed(t *testing.T) {
 	tests := []struct {
 		method string
 		path   string
+		allow  string
 	}{
-		{http.MethodPost, "/api/status"},
-		{http.MethodGet, "/api/ping"},
-		{http.MethodGet, "/api/httpgen"},
-		{http.MethodGet, "/api/migrate"},
-		{http.MethodGet, "/api/migrate/stop"},
-		{http.MethodPost, "/api/history"},
-		{http.MethodGet, "/api/ping/stop"},
-		{http.MethodGet, "/api/httpgen/stop"},
-		{http.MethodPost, "/healthz"},
-		{http.MethodPost, "/"},
+		{http.MethodPost, "/api/status", "GET, HEAD"},
+		{http.MethodGet, "/api/ping", "POST"},
+		{http.MethodGet, "/api/httpgen", "POST"},
+		{http.MethodGet, "/api/migrate", "POST"},
+		{http.MethodGet, "/api/migrate/stop", "POST"},
+		{http.MethodPost, "/api/history", "GET, HEAD"},
+		{http.MethodGet, "/api/ping/stop", "POST"},
+		{http.MethodGet, "/api/httpgen/stop", "POST"},
+		{http.MethodPost, "/api/pods", "GET, HEAD"},
+		{http.MethodPost, "/api/nodes", "GET, HEAD"},
+		{http.MethodPost, "/healthz", ""},
+		{http.MethodPost, "/", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
@@ -547,8 +550,8 @@ func TestMux_MethodNotAllowed(t *testing.T) {
 			}
 			if allow := w.Header().Get("Allow"); allow == "" {
 				t.Fatal("expected Allow header to be set")
-			} else if want, ok := apiAllowedMethods[tt.path]; ok && allow != want {
-				t.Fatalf("Allow header = %q, want %q (must advertise exactly the registered methods)", allow, want)
+			} else if tt.allow != "" && allow != tt.allow {
+				t.Fatalf("Allow header = %q, want %q (must advertise exactly the registered methods)", allow, tt.allow)
 			}
 			if strings.HasPrefix(tt.path, "/api/") {
 				if ct := w.Header().Get("Content-Type"); ct != "application/json" {
@@ -2042,6 +2045,47 @@ func TestCSRFCheck_NonAPIPath(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); strings.Contains(ct, "json") {
 		t.Fatalf("non-API CSRF rejection should use plain text, got Content-Type %q", ct)
+	}
+}
+
+// TestEmptyListsAreArraysNotNull pins the empty-result shape of every list
+// this API serves. A JSON null in place of [] breaks clients that iterate
+// the field directly, so /api/history and /api/status must agree with
+// /api/status's logs and pings, which already answer [].
+func TestEmptyListsAreArraysNotNull(t *testing.T) {
+	t.Parallel()
+	app := &App{discoverer: &stubDiscoverer{}}
+	mux := app.newMux(false)
+
+	for _, path := range []string{"/api/history", "/api/status", "/api/pods", "/api/nodes"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %v (body=%s)", w.Code, w.Body.String())
+			}
+			if path == "/api/history" || path == "/api/pods" || path == "/api/nodes" {
+				if got := strings.TrimSpace(w.Body.String()); got != "[]" {
+					t.Fatalf("%s: body = %s, want []", path, got)
+				}
+				return
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &fields); err != nil {
+				t.Fatalf("failed to unmarshal response: %v; body=%s", err, w.Body.String())
+			}
+			for _, key := range []string{"logs", "pings", "history"} {
+				raw, ok := fields[key]
+				if !ok {
+					continue
+				}
+				if string(raw) != "[]" {
+					t.Fatalf("%s: field %q = %s, want []", path, key, raw)
+				}
+			}
+		})
 	}
 }
 

@@ -36,25 +36,57 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/healthz` | GET | Kubernetes liveness probe (lightweight, always returns 200 OK) |
 | `/readyz` | GET | Kubernetes readiness probe (returns 200 once a Native orchestrator is wired, 503 otherwise) |
 | `/` | GET | Dashboard frontend |
-| `/api/pods` | GET | List of `kata-qemu` pods cluster-wide: `[{namespace, name, node, pod_ip}]`. Backs the Source Pod and Dest Pod dropdowns. |
+| `/api/pods` | GET | List of `kata-qemu` pods: `[{namespace, name, node, pod_ip}]`, narrowed to `KATAMARAN_ALLOWED_NAMESPACES` when that variable is set. Backs the Source Pod and Dest Pod dropdowns. |
 | `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
-| `/api/migrate` | POST | Start migration. Pod-picker form fields: `source_pod_namespace`, `source_pod_name`, `dest_node`, `dest_pod_namespace` (opt), `dest_pod_name` (opt), `image`, `downtime`, `auto_downtime`, `shared_storage`, `replay_cmdline`, `tunnel_mode`. Legacy explicit form fields are still accepted: `source_node`, `dest_node`, `qmp_source`, `qmp_dest`, `tap`, `tap_netns`, `dest_ip`, `vm_ip`, `image`, `shared_storage`, `downtime`, `auto_downtime`, `tunnel_mode`. |
-| `/api/migrate/stop` | POST | Cancel running migration |
+| `/api/migrate` | POST | Start migration. See the form-field table below. Answers `202 Accepted` with `{"message","migration_id"}`. |
+| `/api/migrate/stop` | POST | Cancel running migration. Always `200 OK` with `{"message","stopped","migration_id"}`; `stopped` is false when nothing was running, so the call is safe to repeat. |
 | `/api/status` | GET | JSON status for the UI, including migration state, counters, `history`, `logs`, `logs_next`, `logs_reset`, `pings`, `pings_next`, and `pings_reset`. Accepts `logs_after` and `pings_after` cursors for incremental polling. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
 | `/api/history` | GET | Completed migrations, newest first |
 | `/api/ping` | POST | Start continuous ping (5/sec) to target. Accepts `target=<host-or-ip>` via form body or query string. |
-| `/api/ping/stop` | POST | Stop active ping/loadgen |
+| `/api/ping/stop` | POST | Stop active ping/loadgen. Same handler and response as `/api/httpgen/stop`; either path stops whichever generator is running. |
 | `/api/httpgen` | POST | Start HTTP load generator (5 req/sec) to target. Accepts `target=<host-or-ip[:port]>` via form body or query string. |
-| `/api/httpgen/stop` | POST | Stop active ping/loadgen |
+| `/api/httpgen/stop` | POST | Stop active ping/loadgen. Same handler and response as `/api/ping/stop`; either path stops whichever generator is running. |
 | `/metrics` | GET | Prometheus text-format operational metrics |
 | `/debug/pprof/` | GET | Runtime profiling (requires `--enable-debug`) |
 | `/debug/vars` | GET | Runtime metrics via expvar (requires `--enable-debug`) |
+
+### `POST /api/migrate` form fields
+
+Every value is read from the form body. The request is in pod-picker mode when
+`source_pod_name` or `source_pod_namespace` is set; otherwise it is in legacy
+explicit mode, which requires the source-side fields.
+
+| Field | Pod-picker mode | Legacy mode | Notes |
+|-------|-----------------|-------------|-------|
+| `image` | required | required | Must equal `KATAMARAN_MIGRATION_IMAGE`, else `400`. |
+| `dest_node` | required | required | Resolved to an internal IP via `/api/nodes` in pod-picker mode. |
+| `source_pod_namespace`, `source_pod_name` | required | ignored | Both required together; the pod is resolved to its node. |
+| `dest_pod_namespace`, `dest_pod_name` | optional pair | ignored | Both or neither; both must be in `KATAMARAN_ALLOWED_NAMESPACES`. |
+| `source_node`, `qmp_source`, `qmp_dest`, `tap`, `dest_ip`, `vm_ip` | ignored | required | Legacy explicit source/dest addressing. |
+| `tap_netns` | optional | optional | Network namespace of the source tap device. |
+| `downtime` | optional | optional | Integer milliseconds, 1 to 60000. Defaults to the orchestrator value when omitted. |
+| `auto_downtime` | optional | optional | Literal `true` or `false`; anything else is `400`. |
+| `shared_storage` | optional | optional | Literal `true` or `false`; anything else is `400`. |
+| `replay_cmdline` | optional | optional | Literal `true` or `false`; anything else is `400`. |
+| `tunnel_mode` | optional | optional | One of `ipip`, `gre`, `none`; anything else is `400`. |
+
+Non-2xx responses:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Missing, unknown, or invalid form field |
+| `403` | A pod namespace is outside `KATAMARAN_ALLOWED_NAMESPACES` |
+| `409` | A migration is already running; the body carries its `migration_id` |
+| `415` | Body sent with a content type other than `application/x-www-form-urlencoded` |
+| `503` | No Kubernetes client is wired, or the source pod cannot be resolved |
 
 API conventions:
 
 - State-changing `/api/*` endpoints accept `application/x-www-form-urlencoded` request bodies. Empty-body calls may pass parameters in the query string only where the endpoint description says so.
 - JSON responses set `Cache-Control: no-store`; errors use `{"error":"..."}` and may include endpoint-specific fields such as `migration_id`, `loadgen_type`, or `allow`.
 - Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values.
+- List endpoints (`/api/pods`, `/api/nodes`, `/api/history`, and the `logs`, `pings`, and `history` arrays in `/api/status`) answer `[]` on an empty result, never `null`, so clients can iterate them without a nil check.
+- A wrong method on a known `/api/*` path answers `405` with an `Allow` header and the same `{"error":...}` envelope; an unknown `/api/*` path answers `404`.
 
 ## Pod-picker workflow (recommended)
 

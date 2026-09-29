@@ -66,9 +66,13 @@ func (s namespaceScope) names() []string {
 }
 
 // filterPods drops pods outside the allowlist so /api/pods never discloses
-// a namespace the caller could not migrate.
+// a namespace the caller could not migrate. The result is never nil, so the
+// endpoint answers [] rather than a JSON null on an empty match.
 func (s namespaceScope) filterPods(pods []orchestrator.PodInfo) []orchestrator.PodInfo {
 	if len(s.allowed) == 0 {
+		if pods == nil {
+			return []orchestrator.PodInfo{}
+		}
 		return pods
 	}
 	kept := make([]orchestrator.PodInfo, 0, len(pods))
