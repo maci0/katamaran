@@ -5,11 +5,21 @@ kind: ServiceAccount
 metadata:
   name: katamaran-mgr
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: katamaran-mgr
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 rules:
 # Migration CRs.
 - apiGroups: ["katamaran.io"]
@@ -56,6 +66,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: katamaran-mgr
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 subjects:
 - kind: ServiceAccount
   name: katamaran-mgr
@@ -70,6 +85,11 @@ kind: PodDisruptionBudget
 metadata:
   name: katamaran-mgr
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   # Keep at least one mgr alive during voluntary disruptions (node drain,
   # cluster autoscaler eviction, kubectl drain). The reconciler is
@@ -84,6 +104,11 @@ kind: Deployment
 metadata:
   name: katamaran-mgr
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   # Two replicas exercise the leader-election Lease the controller
   # already wires (see katamaran-mgr's leaderelection.RunOrDie call).
@@ -101,7 +126,12 @@ spec:
     matchLabels: { app: katamaran-mgr }
   template:
     metadata:
-      labels: { app: katamaran-mgr }
+      labels:
+        app: katamaran-mgr
+        app.kubernetes.io/name: katamaran
+        app.kubernetes.io/component: mgr
+        app.kubernetes.io/part-of: katamaran
+        app.kubernetes.io/managed-by: kubectl
     spec:
       serviceAccountName: katamaran-mgr
       terminationGracePeriodSeconds: 40
@@ -189,6 +219,11 @@ kind: Service
 metadata:
   name: katamaran-mgr-webhook
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   selector:
     app: katamaran-mgr
@@ -209,6 +244,11 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: katamaran-mgr
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 webhooks:
 - name: pods.katamaran.io
   admissionReviewVersions: ["v1"]

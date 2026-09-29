@@ -5,6 +5,10 @@ metadata:
   namespace: kube-system
   labels:
     app: katamaran
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: node-agent
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   selector:
     matchLabels:
@@ -13,6 +17,10 @@ spec:
     metadata:
       labels:
         app: katamaran
+        app.kubernetes.io/name: katamaran
+        app.kubernetes.io/component: node-agent
+        app.kubernetes.io/part-of: katamaran
+        app.kubernetes.io/managed-by: kubectl
         # Two containers (keepalive, factory). Without this, `kubectl logs`
         # and `kubectl exec` on the DaemonSet pod require -c.
         kubectl.kubernetes.io/default-container: factory

@@ -12,6 +12,7 @@ metadata:
   labels:
     app.kubernetes.io/name: katamaran
     app.kubernetes.io/component: source
+    app.kubernetes.io/part-of: katamaran
     katamaran.io/migration-id: "${KATAMARAN_MIGRATION_ID}"
 spec:
   backoffLimit: 0
@@ -26,6 +27,14 @@ spec:
   activeDeadlineSeconds: 14400
   ttlSecondsAfterFinished: 3600
   template:
+    metadata:
+      # Mirrors the Job's own labels: NetworkPolicies, ServiceMonitors and
+      # any future PDB select the pod, not the Job.
+      labels:
+        app: katamaran-source
+        app.kubernetes.io/name: katamaran
+        app.kubernetes.io/component: source
+        app.kubernetes.io/part-of: katamaran
     spec:
       serviceAccountName: katamaran-source
       automountServiceAccountToken: true

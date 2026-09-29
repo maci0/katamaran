@@ -3,12 +3,22 @@ kind: ServiceAccount
 metadata:
   name: katamaran-dashboard
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: katamaran-dashboard-role
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 rules:
 - apiGroups: ["batch"]
   resources: ["jobs"]
@@ -22,6 +32,11 @@ kind: RoleBinding
 metadata:
   name: katamaran-dashboard-binding
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 subjects:
 - kind: ServiceAccount
   name: katamaran-dashboard
@@ -35,6 +50,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: katamaran-dashboard-cluster
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -47,6 +67,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: katamaran-dashboard-cluster-binding
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 subjects:
 - kind: ServiceAccount
   name: katamaran-dashboard
@@ -64,11 +89,21 @@ kind: ServiceAccount
 metadata:
   name: katamaran-source
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: katamaran-source
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -87,6 +122,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: katamaran-source
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 subjects:
 - kind: ServiceAccount
   name: katamaran-source
@@ -101,6 +141,11 @@ kind: Deployment
 metadata:
   name: katamaran-dashboard
   namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
 spec:
   replicas: 1
   selector:
@@ -110,6 +155,10 @@ spec:
     metadata:
       labels:
         app: katamaran-dashboard
+        app.kubernetes.io/name: katamaran
+        app.kubernetes.io/component: dashboard
+        app.kubernetes.io/part-of: katamaran
+        app.kubernetes.io/managed-by: kubectl
     spec:
       serviceAccountName: katamaran-dashboard
       terminationGracePeriodSeconds: 40
