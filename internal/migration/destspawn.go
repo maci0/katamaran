@@ -586,7 +586,8 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	}
 
 	// Start virtiofsd. e2e.sh:518 nohups the daemon; we use exec.Cmd with
-	// detached stdio + Setpgid so the process survives our exit if needed.
+	// stdio wired to slog instead of a tty, so the process survives our exit
+	// if needed.
 	vhostSock := filepath.Join(dstSandboxDir, vhostFsSocketName)
 	if err := startVirtiofsd(ctx, vhostSock, sharedDir); err != nil {
 		return fmt.Errorf("start virtiofsd: %w", err)
@@ -664,13 +665,28 @@ func copyNvdimmImage(src string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create temp nvdimm: %w", err)
 	}
-	defer func() { _ = out.Close() }()
-
-	if _, err := io.Copy(out, in); err != nil {
-		_ = os.Remove(out.Name())
-		return "", fmt.Errorf("copy %s -> %s: %w", src, out.Name(), err)
+	path := out.Name()
+	if err := copyAndClose(out, path, src, in); err != nil {
+		_ = os.Remove(path)
+		return "", err
 	}
-	return out.Name(), nil
+	return path, nil
+}
+
+// copyAndClose copies src into dst and closes dst on every exit path. Close is
+// the durability boundary for its caller: the resulting path is handed to a
+// live VM as its block backend, so a close that could not flush is reported as
+// a copy failure rather than a silently short file. srcPath only names the
+// source in the error message.
+func copyAndClose(dst io.WriteCloser, dstPath, srcPath string, src io.Reader) error {
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("copy %s -> %s: %w", srcPath, dstPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", dstPath, err)
+	}
+	return nil
 }
 
 // setupTapIface creates and brings up a tap device by name. Package-level

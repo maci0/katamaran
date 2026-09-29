@@ -281,6 +281,8 @@ func runServer(logFn func(format string, args ...any)) error {
 	}
 	srv, err := ttrpc.NewServer()
 	if err != nil {
+		// Nothing has claimed the listener yet, so no other path closes it.
+		_ = listener.Close()
 		return fmt.Errorf("ttrpc.NewServer: %w", err)
 	}
 	taskSvc := newAdoptedTaskService(logFn)

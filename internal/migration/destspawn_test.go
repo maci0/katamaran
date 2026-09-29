@@ -874,3 +874,57 @@ func listDestNvdimmTemps() []string {
 	matches, _ := filepath.Glob(filepath.Join(nvdimmTempDir, "kata-dst-nvdimm-*.img"))
 	return matches
 }
+
+// failingCloser records what was written and fails on Close, standing in for
+// a destination whose final flush did not make it to disk.
+type failingCloser struct {
+	bytes.Buffer
+	closeErr error
+	closed   bool
+}
+
+func (f *failingCloser) Close() error {
+	f.closed = true
+	return f.closeErr
+}
+
+// TestCopyAndClose_CloseFailureIsAnError pins that a destination whose Close
+// fails is reported as a failure. The nvdimm copy hands its path to a live
+// dest QEMU, so a swallowed close would leave a short image mapped as VM
+// memory with no error anywhere in the migration.
+func TestCopyAndClose_CloseFailureIsAnError(t *testing.T) {
+	dst := &failingCloser{closeErr: errors.New("no space left on device")}
+	err := copyAndClose(dst, "/tmp/kata-dst-nvdimm-x.img", "/opt/kata/nvdimm.img", strings.NewReader("payload"))
+	if err == nil {
+		t.Fatal("copyAndClose returned nil for a destination that failed to close")
+	}
+	if !strings.Contains(err.Error(), "no space left on device") {
+		t.Fatalf("error does not carry the close failure: %v", err)
+	}
+	if !dst.closed {
+		t.Fatal("destination was not closed")
+	}
+	if got := dst.String(); got != "payload" {
+		t.Fatalf("copied %q, want %q", got, "payload")
+	}
+}
+
+// TestCopyAndClose_SuccessClosesExactlyOnce pins the ordinary path: the
+// contents land and the handle is released before the caller uses the path.
+func TestCopyAndClose_SuccessClosesExactlyOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "copy.img")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := copyAndClose(f, path, "src.img", strings.NewReader("payload")); err != nil {
+		t.Fatalf("copyAndClose: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("file holds %q, want %q", got, "payload")
+	}
+}

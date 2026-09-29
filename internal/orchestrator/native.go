@@ -308,6 +308,14 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // stageDestJob is nil on the join path: the staging goroutine belongs to
 // whoever submitted the source Job, and a duplicate must not run it again.
 func (n *native) startRun(id MigrationID, srcName, destName string, req Request, staged []StatusUpdate, stageDestJob *batchv1.Job, seedSubmitted bool) {
+	// Claim the id before building the run: a duplicate call would otherwise
+	// allocate a cancel context and an updates channel it then drops, and the
+	// dropped cancel is a context nothing will ever release.
+	n.mu.Lock()
+	if _, exists := n.inflight[id]; exists {
+		n.mu.Unlock()
+		return
+	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	run := &nativeRun{
 		srcJob:                srcName,
@@ -316,11 +324,6 @@ func (n *native) startRun(id MigrationID, srcName, destName string, req Request,
 		updates:               make(chan StatusUpdate, 8),
 		cancel:                cancel,
 		finished:              make(chan struct{}),
-	}
-	n.mu.Lock()
-	if _, exists := n.inflight[id]; exists {
-		n.mu.Unlock()
-		return
 	}
 	n.inflight[id] = run
 	n.mu.Unlock()

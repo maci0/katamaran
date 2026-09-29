@@ -154,6 +154,14 @@ workflow refuses to publish a tag that has no section below.
   drop: an unreadable `persist.json`, a failed cgroup move, a stuck-in-Running
   pod found by the node scan, an AdmissionReview with no request, and a
   dropped shim log record.
+- The destination's writable nvdimm copy now reports a failed `close`. The
+  copy is a multi-hundred-MB write whose result dest QEMU maps as VM memory,
+  so a close that could not flush was silently handing the VM a truncated
+  image; it now fails the copy and removes the temp file like any other
+  write error.
+- A duplicate migration registration no longer builds a run it discards.
+  `startRun` claims the migration id before creating its cancel context and
+  update channel, so a join racing a live run leaves nothing behind.
 
 ### Security
 
