@@ -18,8 +18,11 @@ test('auto-downtime toggles manual entry without waiting for status polling', ()
         disabled: false,
         classList: {
             toggle(name, enabled) {
-                if (enabled) classes.add(name);
-                else classes.delete(name);
+                if (enabled) {
+                    classes.add(name);
+                } else {
+                    classes.delete(name);
+                }
             }
         }
     };
@@ -79,10 +82,12 @@ for (const [value, automatic, badInput, allowed] of [
         assert.ok(start >= 0 && end > start);
         const fields = new Map();
         const getField = id => {
-            if (!fields.has(id)) fields.set(id, {
-                id, value: '', disabled: false,
-                focus() {}, setAttribute() {}, removeAttribute() {}
-            });
+            if (!fields.has(id)) {
+                fields.set(id, {
+                    id, value: '', disabled: false,
+                    focus() {}, setAttribute() {}, removeAttribute() {}
+                });
+            }
             return fields.get(id);
         };
         getField('source_pod_name').value = 'source';
@@ -122,13 +127,15 @@ function statusHarness() {
     assert.ok(start >= 0 && end > start);
     const elements = new Map();
     function element(id) {
-        if (!elements.has(id)) elements.set(id, {
-            textContent: '', style: {}, className: '',
-            classList: { add() {}, remove() {} },
-            setAttribute() {}, removeAttribute() {}, toggleAttribute() {},
-            querySelector(selector) { return element(id + selector); },
-            get parentElement() { return element(`${id}-parent`); }
-        });
+        if (!elements.has(id)) {
+            elements.set(id, {
+                textContent: '', style: {}, className: '',
+                classList: { add() {}, remove() {} },
+                setAttribute() {}, removeAttribute() {}, toggleAttribute() {},
+                querySelector(selector) { return element(id + selector); },
+                get parentElement() { return element(`${id}-parent`); }
+            });
+        }
         return elements.get(id);
     }
     let response;

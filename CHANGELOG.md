@@ -27,6 +27,10 @@ workflow refuses to publish a tag that has no section below.
 - `make lint-js`: Biome lints the dashboard's hand-written JavaScript, and
   `make check` plus a CI job run it. The file set is scoped in `biome.json`
   so the vendored bundles under `internal/dashboard/assets/` stay out.
+- `make lint-yaml`: yamllint lints every tracked `.yml`/`.yaml` file
+  (manifests, CRDs, Job templates, kind configs, and the workflows), and
+  `make check` plus CI and the release gate run it. `.yamllint` keeps the
+  defect rules and disables only the stylistic ones, each with a reason.
 - `docs/THREAT_MODEL.md`: a risk-ranked threat model naming the trust
   boundaries and the file that implements each control.
 - The recommended `app.kubernetes.io/*` labels on the DaemonSet, the mgr
@@ -96,6 +100,11 @@ workflow refuses to publish a tag that has no section below.
   `web` in one namespace joined the running migration of `web` in another and
   that migration's status was written to the wrong Migration CR. Jobs now also
   carry `katamaran.io/source-pod-namespace` and the guard selects on both.
+- `TestReadAdoptedSandboxID` called `readAdoptedSandboxID` as a one-value
+  function, so the adopted shim's test package failed to compile and `make
+  vet` and `make test` failed. The test now checks the error the signature
+  returns, and the malformed-JSON case asserts that a config.json which
+  cannot be decoded is an error rather than an empty annotation.
 - Replaying the `--replay-cmdline` dest Job submit no longer fails a live
   migration. `stageThenStartDest` treated an `AlreadyExists` create as a hard
   error, so a duplicated staging pass (or a create whose response was lost

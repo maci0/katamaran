@@ -33,6 +33,7 @@ jobs:
     timeout-minutes: 20
     env:
       GOVULNCHECK_VERSION: v1.7.0
+      YAMLLINT_VERSION: 1.38.0
     permissions:
       contents: read
     steps:
@@ -81,6 +82,14 @@ jobs:
         # this step a tag could publish images whose dashboard JS never met
         # the linter CI enforces.
         uses: ./.github/actions/lint-js
+      - name: Lint YAML files
+        # Same reasoning as lint-js above: lint-yaml is part of `make
+        # check` and has no other presence in this workflow, so a tag
+        # would otherwise publish images built from a tree whose
+        # manifests never met the linter CI enforces.
+        run: |
+          pipx install "yamllint==${YAMLLINT_VERSION}"
+          make lint-yaml
       - name: Build all binaries
         run: make -j4 all
       # Byte-identical binaries are a release invariant (AGENTS.md). A build

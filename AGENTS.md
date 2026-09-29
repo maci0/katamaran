@@ -5,13 +5,15 @@ edit `AGENTS.md`.
 
 ## Gate
 
-`make check` (go mod verify, vet, test, smoke, fuzz, lint-shell, lint-js, build
-all binaries) must pass before a change is done. Fix failures without weakening
-the gate.
+`make check` (go mod verify, vet, test, smoke, fuzz, lint-shell, lint-js,
+lint-yaml, build all binaries) must pass before a change is done. Fix failures
+without weakening the gate.
 
-`node` (version in `.node-version`) and `biome` (version in `biome.json`'s
-`$schema`) must be on `PATH`: the repo ships no `package.json`, so nothing
-installs them, and `test` and `lint-js` fail loud when either is absent.
+`node` (version in `.node-version`), `biome` (version in `biome.json`'s
+`$schema`), and `yamllint` (version in the `lint-yaml` CI job's
+`YAMLLINT_VERSION`) must be on `PATH`: the repo ships no `package.json`, so
+nothing installs them, and `test`, `lint-js`, and `lint-yaml` fail loud when
+one is absent.
 
 ## Constraints
 
@@ -43,6 +45,12 @@ installs them, and `test` and `lint-js` fail loud when either is absent.
   in the Makefile.
 - Edit Job manifests only in `internal/orchestrator/templates/`: Go embeds them
   and `deploy/migrate.sh` renders the same files. Do not create deploy copies.
+- Every tracked `.yml`/`.yaml` file is linted by `make lint-yaml` against
+  `.yamllint`, which keeps the defect rules (syntax, key-duplicates, brackets,
+  trailing-spaces) and disables only the stylistic ones, each with a stated
+  reason. `scripts/manifests/kata-pod.yaml` is excluded there: it is a shell
+  template, valid only after `scripts/e2e.sh` substitutes its `${...}`
+  placeholders.
 - Migration timeouts and buffer sizes are named constants, not literals. Keep
   the controller's `StatusTimeout` and both Jobs' `activeDeadlineSeconds` equal
   in duration and above `storageSyncTimeout + migrationTimeout`, with headroom

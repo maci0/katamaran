@@ -268,6 +268,9 @@ func TestReadAdoptedSandboxID(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// An undecodable config.json is an error rather than an
+			// empty annotation: falling back to the default id would
+			// resolve some other migration's QEMU.
 			name:    "malformed json",
 			body:    `{"annotations":{"` + adoptedSandboxAnnotation + `":"a"`,
 			want:    "",

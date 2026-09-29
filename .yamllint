@@ -1,0 +1,60 @@
+# yamllint config for the Kubernetes manifests, CRDs and GitHub Actions
+# workflows in this repo. Run by `make lint-yaml` and by the `lint-yaml`
+# CI job.
+#
+# Scope: yamllint is here to catch YAML that is *wrong* (unparseable
+# documents, duplicate keys, unbalanced quotes and brackets, tabs, trailing
+# whitespace), not to restyle manifests that the cluster and `kubectl`
+# already accept. Every rule disabled below is disabled for a stated
+# reason, not because it was noisy once.
+#
+# Must-pass, so deliberately NOT disabled: syntax, key-duplicates,
+# key-ordering, brackets, braces, colons, commas, quoted-strings,
+# trailing-spaces, new-lines, tabs, empty-values, octal-values,
+# float-values, anchors, document-end.
+
+extends: default
+
+# scripts/manifests/kata-pod.yaml is a shell template, not a document:
+# e2e.sh substitutes ${POD_NAME}, ${HOST_NETWORK}, ${VOLUME_MOUNTS_SECTION}
+# and ${VOLUMES_SECTION} before anything reads it, and the bare
+# `${HOST_NETWORK}` line makes it unparseable until then. Lint the
+# rendered form instead; `make smoke` covers that.
+ignore: |
+  scripts/manifests/kata-pod.yaml
+
+rules:
+  # Kubernetes manifests, CRDs and Actions workflows all indent block
+  # sequences at the parent key's level, and Actions workflows indent
+  # continuation lines of a multi-line `run:` block one step deeper than
+  # YAML's block rules expect. yamllint's own k8s-friendly preset still
+  # disagrees with the tree in ~80 places, and the difference is style
+  # only: every file parses and applies cleanly.
+  indentation: disable
+
+  # Manifests carry long embedded scripts, cert bundles and annotation
+  # values. There is no line length the tree already respects.
+  line-length: disable
+
+  # `on:` is the Actions key, not a YAML 1.1 boolean.
+  truthy:
+    check-keys: false
+
+  # Templates rendered by scripts/e2e.sh start with their own
+  # `---`; requiring `---` as line 1 fights split multi-document files.
+  document-start: disable
+
+  # Inline comments sit above the key they annotate throughout deploy/.
+  comments-indentation: disable
+
+  # Inline comments are the workflow's convention for pinning an action to
+  # a commit (`uses: ... # v7.0.1`), and a single space before them keeps
+  # the line readable. This is spacing around a comment, not a defect.
+  comments: disable
+
+  # Two-space alignment inside inline flow mappings (`{ cpu: 50m, memory:
+  # 64Mi }`) is the tree's convention and reads better than the
+  # zero-space form.
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1

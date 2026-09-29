@@ -53,6 +53,9 @@ Use Linux (amd64 or arm64, as tested in CI) with:
 - ShellCheck 0.9.0 or newer for `make lint-shell` (CI uses Ubuntu 24.04's package).
 - Biome 2.5.14 for `make lint-js`, which lints the dashboard's hand-written
   JavaScript (CI pins the same version via `npx`).
+- yamllint 1.38.0 or newer for `make lint-yaml`, which lints every tracked
+  `.yml`/`.yaml` file (manifests, CRDs, Job templates, kind configs, and the
+  workflows) against `.yamllint`.
 
 No Kubernetes cluster, Kata, QEMU, KVM, container engine, or root privileges are needed for this loop. The first Go build or test downloads the dependencies declared in `go.mod` to the Go module cache; no global binary install is required.
 
@@ -64,7 +67,7 @@ cd katamaran
 make check
 ```
 
-`make check` verifies downloaded modules, runs `vet`, race-enabled tests, smoke tests, fuzz seeds, ShellCheck, and Biome, then builds all six binaries in `bin/`. `make help` lists individual targets. Keep Go's default temporary directory or use a short `TMPDIR`: the tests create Unix sockets, whose paths are limited by Linux.
+`make check` verifies downloaded modules, runs `vet`, race-enabled tests, smoke tests, fuzz seeds, ShellCheck, Biome, and yamllint, then builds all six binaries in `bin/`. `make help` lists individual targets. Keep Go's default temporary directory or use a short `TMPDIR`: the tests create Unix sockets, whose paths are limited by Linux.
 
 For an edit-test loop, run only the package or named test you changed:
 

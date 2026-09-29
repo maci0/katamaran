@@ -1,4 +1,4 @@
-.PHONY: all build $(BUILD_TARGETS) check check-node test smoke fuzz fuzz-long repro-check image dashboard mgr factory clean vet lint-shell lint-js help
+.PHONY: all build $(BUILD_TARGETS) check check-node test smoke fuzz fuzz-long repro-check image dashboard mgr factory clean vet lint-shell lint-js lint-yaml check-yamllint help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
@@ -61,9 +61,27 @@ check-biome:
 		printf '  npx --yes "@biomejs/biome@%s" lint\n' "$$version" >&2; \
 		exit 1; }
 
+# Lint every tracked YAML file: the Kubernetes manifests under deploy/ and
+# config/crd/, the Job templates Go embeds, the kind configs and the
+# GitHub Actions workflows. git ls-files keeps this in sync with the tree
+# (same rationale as the gofmt and shellcheck checks above), and .yamllint
+# excludes scripts/manifests/kata-pod.yaml, a shell template that is only
+# valid once e2e.sh has substituted its ${...} placeholders.
+lint-yaml: check-yamllint
+	yamllint -c .yamllint --strict $$(git ls-files '*.yml' '*.yaml')
+
+# yamllint is not a Go or Node toolchain, so nothing installs it for us.
+# Fail with the install line rather than a bare "yamllint: command not
+# found" buried in the target.
+check-yamllint:
+	@command -v yamllint >/dev/null 2>&1 || { \
+		printf 'yamllint not found on PATH; the YAML lint requires it:\n' >&2; \
+		printf '  pipx install yamllint   # or: pip install --user yamllint\n' >&2; \
+		exit 1; }
+
 check:
 	go mod verify
-	$(MAKE) vet test smoke fuzz lint-shell lint-js all
+	$(MAKE) vet test smoke fuzz lint-shell lint-js lint-yaml all
 
 # Build every binary twice from the same tree and diff the results. Two
 # builds of the same source must be byte-identical; a diff means the build
@@ -167,6 +185,8 @@ help:
 	@echo "  fuzz-long           Run actual fuzzing for 30s per target"
 	@echo "  vet                 Run go vet and gofmt checks"
 	@echo "  lint-shell          Run shellcheck over every tracked .sh file"
+	@echo "  lint-js             Run biome over the hand-written dashboard JS"
+	@echo "  lint-yaml           Run yamllint over every tracked .yml/.yaml file"
 	@echo "  image               Build katamaran container image"
 	@echo "  dashboard           Build dashboard container image"
 	@echo "  mgr                 Build katamaran-mgr container image"

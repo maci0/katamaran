@@ -89,6 +89,25 @@ jobs:
       - name: Lint dashboard JS
         uses: ./.github/actions/lint-js
 
+  # The Kubernetes manifests, CRDs, Job templates and workflows in this
+  # repo are not covered by any other gate. yamllint is installed at a
+  # pinned version rather than the runner's preinstalled one so a runner
+  # image bump cannot turn a green build red (or a red one green) without
+  # a commit that says so.
+  lint-yaml:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      YAMLLINT_VERSION: 1.38.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install yamllint
+        run: pipx install "yamllint==${YAMLLINT_VERSION}"
+      - name: Lint YAML files
+        run: make lint-yaml
+
   dependency-review:
     # Surface known-vulnerable / license-incompatible deps newly introduced
     # by a PR before merge. Skipped on push events because the action only
@@ -123,7 +142,7 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: [lint-and-test, test-arm64, build-and-smoke, shellcheck, lint-js]
+    needs: [lint-and-test, test-arm64, build-and-smoke, shellcheck, lint-js, lint-yaml]
     strategy:
       fail-fast: false
       matrix:
