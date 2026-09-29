@@ -14,6 +14,8 @@ workflow refuses to publish a tag that has no section below.
 
 ### Added
 
+- `SECURITY.md`: supported versions and in-scope issues, stating plainly that
+  no private disclosure channel is configured rather than naming one.
 - `KATAMARAN_ALLOWED_NAMESPACES` on the dashboard: a comma-separated
   namespace allowlist. `/api/pods` omits pods outside it and
   `POST /api/migrate` answers 403 for a `source_pod_namespace` or
