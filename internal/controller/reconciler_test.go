@@ -340,6 +340,18 @@ func (f *fakeDiscoverer) LookupPodScheduling(_ context.Context, namespace, name 
 	return f.podScheduling, f.schedErr
 }
 
+func (f *fakeDiscoverer) LookupSourcePod(_ context.Context, namespace, name string) (orchestrator.SourcePodInfo, error) {
+	f.podNS = namespace
+	f.podName = name
+	if f.podNodeErr != nil {
+		return orchestrator.SourcePodInfo{}, f.podNodeErr
+	}
+	if f.schedErr != nil {
+		return orchestrator.SourcePodInfo{}, f.schedErr
+	}
+	return orchestrator.SourcePodInfo{Node: f.podNode, PodScheduling: f.podScheduling}, nil
+}
+
 func (f *fakeDiscoverer) DeletePod(_ context.Context, namespace, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -435,10 +447,10 @@ type deadlineDiscoverer struct {
 	err error
 }
 
-func (d *deadlineDiscoverer) LookupPodNode(ctx context.Context, _, _ string) (string, error) {
+func (d *deadlineDiscoverer) LookupSourcePod(ctx context.Context, _, _ string) (orchestrator.SourcePodInfo, error) {
 	<-ctx.Done()
 	d.err = ctx.Err()
-	return "", d.err
+	return orchestrator.SourcePodInfo{}, d.err
 }
 
 func TestReconcilerRejectsUntrustedImage(t *testing.T) {
@@ -704,13 +716,16 @@ func TestResolveSourcePodDiscovery_FailuresAndSelectorMerge(t *testing.T) {
 			wantMsg: "resolve source pod node",
 		},
 		{
-			name: "auto-select scheduling lookup fails",
-			disc: &fakeDiscoverer{podNode: "worker-a", schedErr: errors.New("scheduling lookup boom")},
+			// The node and the scheduling constraints come from one Pod
+			// read, so a failure of that read is reported once. The error
+			// still has to reach both the caller and the CR status.
+			name: "auto-select source pod read fails",
+			disc: &fakeDiscoverer{podNodeErr: errors.New("scheduling lookup boom")},
 			mutateCR: func(cr *unstructured.Unstructured) {
 				_ = unstructured.SetNestedField(cr.Object, nil, "spec", "destNode")
 			},
 			wantErr: "scheduling lookup boom",
-			wantMsg: "resolve source pod scheduling",
+			wantMsg: "resolve source pod node",
 		},
 		{
 			name: "auto-select merges nodeSelectors CRD-wins",

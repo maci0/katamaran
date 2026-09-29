@@ -314,8 +314,11 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx, discoveryCtx context.Context
 	}
 	lookupCtx, lookupCancel := context.WithTimeout(discoveryCtx, 30*time.Second)
 	defer lookupCancel()
-	srcNode, lerr := r.Discoverer.LookupPodNode(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-	if lerr != nil || srcNode == "" {
+	// One apiserver read for both the node and, in auto-select mode, the
+	// scheduling constraints the dest Job inherits: these are two fields of
+	// the same Pod, and a second Get would repeat the round trip.
+	src, lerr := r.Discoverer.LookupSourcePod(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
+	if lerr != nil || src.Node == "" {
 		if lerr == nil {
 			lerr = fmt.Errorf("source pod node is empty")
 		}
@@ -323,29 +326,23 @@ func (r *Reconciler) resolveSourcePodDiscovery(ctx, discoveryCtx context.Context
 		r.patchFailedStatus(ctx, key, "", "resolve source pod node", lerr.Error())
 		return lerr
 	}
-	req.SourceNode = srcNode
+	req.SourceNode = src.Node
 
 	if req.DestNode == "" {
 		// Auto-select mode: copy the source pod's scheduling
 		// constraints so the dest Job lands on a compatible node.
-		sched, lerr := r.Discoverer.LookupPodScheduling(lookupCtx, req.SourcePod.Namespace, req.SourcePod.Name)
-		if lerr != nil {
-			slog.Error("Resolve source pod scheduling failed", "migration", key, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "error", lerr)
-			r.patchFailedStatus(ctx, key, "", "resolve source pod scheduling", lerr.Error())
-			return lerr
-		}
 		// Merge source pod nodeSelector into any CRD-level destNodeSelector.
-		if len(sched.NodeSelector) > 0 {
+		if len(src.NodeSelector) > 0 {
 			if req.DestNodeSelector == nil {
-				req.DestNodeSelector = make(map[string]string, len(sched.NodeSelector))
+				req.DestNodeSelector = make(map[string]string, len(src.NodeSelector))
 			}
-			for k, v := range sched.NodeSelector {
+			for k, v := range src.NodeSelector {
 				if _, exists := req.DestNodeSelector[k]; !exists {
 					req.DestNodeSelector[k] = v
 				}
 			}
 		}
-		req.DestTolerations = sched.Tolerations
+		req.DestTolerations = src.Tolerations
 		// DestIP will be resolved after the dest Job pod is scheduled
 		// (inside native.Apply's auto-select path).
 		return nil

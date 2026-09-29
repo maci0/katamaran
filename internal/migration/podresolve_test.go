@@ -227,16 +227,13 @@ func TestRecordSandboxMatches_MatchesNaiveNeedleSearch(t *testing.T) {
 		}
 	}
 
-	wanted := make(map[string]*procWant, len(uuids))
-	for _, uuid := range uuids {
-		wanted[uuid] = &procWant{uuid: []byte(uuid)}
-	}
+	wanted := newProcWantSet(uuids)
 	var multi []string
 	recordSandboxMatches(raw, wanted, 4242, 1, &multi)
 
 	// Exactly one process was scanned, so every resolved uuid must carry that
 	// PID and nothing may be reported as a multi-process match.
-	for uuid, w := range wanted {
+	for uuid, w := range wanted.byName {
 		switch {
 		case wantMatched[uuid] && w.best != 4242:
 			t.Errorf("uuid %q: expected a match, got best=%d", uuid, w.best)
@@ -251,7 +248,7 @@ func TestRecordSandboxMatches_MatchesNaiveNeedleSearch(t *testing.T) {
 	// A second, higher-numbered process matching the same uuids must be
 	// reported once each and must not displace the lower PID already recorded.
 	recordSandboxMatches(raw, wanted, 5000, 2, &multi)
-	for uuid, w := range wanted {
+	for uuid, w := range wanted.byName {
 		if wantMatched[uuid] && w.best != 4242 {
 			t.Errorf("uuid %q: lowest PID not kept, got %d", uuid, w.best)
 		}
@@ -263,6 +260,55 @@ func TestRecordSandboxMatches_MatchesNaiveNeedleSearch(t *testing.T) {
 	}
 	if want := len(wantMatched); len(multi) != want {
 		t.Errorf("multi-match list = %v, want one entry per matched uuid (%d)", multi, want)
+	}
+}
+
+// TestReadProcCmdline covers the reused-buffer reader the /proc walk depends
+// on. The empty-file case is the load-bearing one: a kernel thread or zombie
+// has a zero-length cmdline, which must read as an empty result and not as an
+// error, and must not leave stale bytes from the previous process in the
+// buffer. A payload larger than the buffer's initial capacity covers the growth
+// path.
+func TestReadProcCmdline(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	long := bytes.Repeat([]byte("qemu-system-x86_64\x00"), 4096) // ~76 KiB, past initialCmdlineBufSize
+	empty := dir + "/empty"
+	longPath := dir + "/long"
+	small := dir + "/small"
+	for path, content := range map[string][]byte{empty: nil, longPath: long, small: []byte("a\x00b\x00")} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	var buf []byte
+	// The long file grows the buffer; the empty and small files that follow
+	// must see only their own bytes.
+	if got, err := readProcCmdline(longPath, &buf); err != nil {
+		t.Fatalf("read long: %v", err)
+	} else if !bytes.Equal(got, long) {
+		t.Fatalf("long read returned %d bytes, want %d", len(got), len(long))
+	}
+	if cap(buf) < len(long) {
+		t.Fatalf("buffer capacity %d did not grow to hold %d bytes", cap(buf), len(long))
+	}
+
+	if got, err := readProcCmdline(empty, &buf); err != nil {
+		t.Fatalf("read empty: unexpected error %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("empty read returned %d bytes (%q), want 0: stale buffer contents leaked", len(got), got)
+	}
+
+	if got, err := readProcCmdline(small, &buf); err != nil {
+		t.Fatalf("read small: %v", err)
+	} else if string(got) != "a\x00b\x00" {
+		t.Fatalf("small read = %q, want %q", got, "a\x00b\x00")
+	}
+
+	if _, err := readProcCmdline(dir+"/does-not-exist", &buf); err == nil {
+		t.Fatal("read of a missing file returned no error")
 	}
 }
 

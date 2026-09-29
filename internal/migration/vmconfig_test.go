@@ -110,7 +110,7 @@ func TestEmitVMConfig_MatchingPidEmitsMarkers(t *testing.T) {
 	writeSandboxPersist(t, root, "sb-mine", qemuPID, "mine")
 
 	var buf bytes.Buffer
-	emitVMConfig(qemuPID, &buf)
+	emitVMConfig(qemuPID, "", &buf)
 	out := buf.String()
 
 	vmPayloads := markerLines(t, out, "KATAMARAN_VMCONFIG_B64=")
@@ -163,7 +163,7 @@ func TestEmitVMConfig_NoMatchingPidEmitsNothing(t *testing.T) {
 	writeSandboxPersist(t, root, "sb-a", 1111, "a")
 
 	var buf bytes.Buffer
-	emitVMConfig(4242, &buf)
+	emitVMConfig(4242, "", &buf)
 	out := buf.String()
 
 	for _, marker := range []string{"KATAMARAN_VMCONFIG_B64=", "KATAMARAN_AGENTCONFIG_B64="} {
@@ -171,6 +171,67 @@ func TestEmitVMConfig_NoMatchingPidEmitsNothing(t *testing.T) {
 			t.Fatalf("%s emitted despite no PID match: %v", marker, got)
 		}
 	}
+}
+
+// TestEmitVMConfig_ResolvedSandboxHint covers the direct-lookup path: when
+// the caller already knows which sandbox owns the QEMU pid (resolvePodSandbox
+// returns it), emitVMConfig must read that one persist.json rather than
+// scanning every sandbox on the node. A stale hint must still fall back to
+// the scan, so a hint that disagrees with the on-disk state cannot cost the
+// migration its adoption data.
+func TestEmitVMConfig_ResolvedSandboxHint(t *testing.T) {
+	// Not parallel: swaps kataSBSRoot.
+	root := t.TempDir()
+	withKataSBSRoot(t, root)
+
+	const qemuPID = 4242
+	writeSandboxPersist(t, root, "sb-other", 9999, "other")
+	writeSandboxPersist(t, root, "sb-mine", qemuPID, "mine")
+
+	// A correct hint resolves to sb-mine's config, never sb-other's.
+	var direct bytes.Buffer
+	emitVMConfig(qemuPID, "sb-mine", &direct)
+	markers := markerLines(t, direct.String(), "KATAMARAN_VMCONFIG_B64=")
+	if len(markers) != 1 {
+		t.Fatalf("hint path emitted %d VMCONFIG markers, want 1; stdout:\n%s", len(markers), direct.String())
+	}
+	if !strings.Contains(decodeMarker(t, markers[0]), "qemu-mine") {
+		t.Fatalf("hint path emitted %s, want the sb-mine payload", decodeMarker(t, markers[0]))
+	}
+
+	// A hint naming a sandbox that does not exist falls back to the scan.
+	var missing bytes.Buffer
+	emitVMConfig(qemuPID, "sb-nonexistent", &missing)
+	markers = markerLines(t, missing.String(), "KATAMARAN_VMCONFIG_B64=")
+	if len(markers) != 1 {
+		t.Fatalf("missing-sandbox hint emitted %d VMCONFIG markers, want the scan fallback to recover 1; stdout:\n%s",
+			len(markers), missing.String())
+	}
+	if !strings.Contains(decodeMarker(t, markers[0]), "qemu-mine") {
+		t.Fatalf("missing-sandbox fallback emitted %s, want the sb-mine payload", decodeMarker(t, markers[0]))
+	}
+
+	// A hint naming a real sandbox whose persist.json holds a different pid
+	// is stale too, and must not emit that wrong sandbox's config.
+	var wrongPID bytes.Buffer
+	emitVMConfig(qemuPID, "sb-other", &wrongPID)
+	markers = markerLines(t, wrongPID.String(), "KATAMARAN_VMCONFIG_B64=")
+	if len(markers) != 1 {
+		t.Fatalf("stale-pid hint emitted %d VMCONFIG markers, want 1 via fallback; stdout:\n%s", len(markers), wrongPID.String())
+	}
+	if !strings.Contains(decodeMarker(t, markers[0]), "qemu-mine") {
+		t.Fatalf("stale-pid fallback emitted %s, want the sb-mine payload", decodeMarker(t, markers[0]))
+	}
+}
+
+// decodeMarker base64-decodes one marker payload, failing the test on error.
+func decodeMarker(t *testing.T, payload string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode marker payload: %v", err)
+	}
+	return string(raw)
 }
 
 // TestFindSandboxPersist covers the sandbox persist.json scanner shared by

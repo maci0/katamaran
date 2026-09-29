@@ -56,10 +56,13 @@ func queryMigrateInfo(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo,
 // resolveSourcePod resolves pod-mode configuration before any QMP work:
 // it fills cfg.VMIP and cfg.QMPSocket from the live sandbox state and
 // returns the resolved QEMU PID.
-func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (int, error) {
+// resolveSourcePod resolves pod-mode configuration before any QMP work:
+// it fills cfg.VMIP and cfg.QMPSocket from the live sandbox state and
+// returns the resolved QEMU PID plus the sandbox identifier that owns it.
+func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (pid int, sandboxID string, err error) {
 	addr, res, err := resolvePodSandbox(ctx, cfg.PodNamespace, cfg.PodName)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	cfg.VMIP = addr
 	cfg.QMPSocket = overrideQMPSocket(cfg.QMPSocket, DefaultQMPSocket, res.Sandbox)
@@ -73,7 +76,7 @@ func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (int, error) {
 	} else {
 		slog.Info("Removed kata tc mirred ingress filter on eth0", "netns", netnsPath)
 	}
-	return res.PID, nil
+	return res.PID, res.Sandbox, nil
 }
 
 // RunSource initiates live migration from the source node to the destination.
@@ -103,12 +106,14 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		slog.SetDefault(slog.Default().With("role", "source", "pod", cfg.PodName, "namespace", cfg.PodNamespace))
 	}
 	var resolvedQEMUPID int
+	var resolvedSandboxID string
 	if cfg.PodName != "" {
-		pid, err := resolveSourcePod(ctx, &cfg)
+		pid, sandboxID, err := resolveSourcePod(ctx, &cfg)
 		if err != nil {
 			return err
 		}
 		resolvedQEMUPID = pid
+		resolvedSandboxID = sandboxID
 	}
 
 	// Capture the QEMU cmdline for the dest job to replay with -incoming defer.
@@ -160,7 +165,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// Done regardless of cmdline replay mode: any migration benefits
 	// from having VMConfig available for adoption.
 	if resolvedQEMUPID != 0 {
-		emitVMConfig(resolvedQEMUPID, out)
+		emitVMConfig(resolvedQEMUPID, resolvedSandboxID, out)
 	}
 
 	cfg.DestIP = cfg.DestIP.Unmap()
@@ -876,7 +881,55 @@ func writeMarker(out io.Writer, format string, args ...any) error {
 // VMConfig as a base64-encoded stdout marker. The dest binary scrapes
 // this from the source pod's log to populate migration-meta.json so the
 // factory can serve it to the Kata shim for VM adoption.
-func emitVMConfig(qemuPID int, out io.Writer) {
+//
+// sandboxID, when non-empty, names the sandbox that resolvePodSandbox already
+// matched to qemuPID, so its persist.json is read directly. Only when that
+// hint is absent or does not hold the running QEMU does this fall back to
+// scanning every sandbox, which is O(sandboxes) reads and full JSON parses of
+// multi-KB persist.json files.
+func emitVMConfig(qemuPID int, sandboxID string, out io.Writer) {
+	if sandboxID != "" {
+		persistPath := filepath.Join(kataSBSRoot, sandboxID, "persist.json")
+		if raw, err := os.ReadFile(persistPath); err == nil {
+			if emitVMConfigFrom(raw, qemuPID, sandboxID, out) {
+				return
+			}
+		} else if !os.IsNotExist(err) {
+			slog.Warn("emitVMConfig: read resolved sandbox persist.json failed; falling back to scan",
+				"path", persistPath, "error", err)
+		}
+	}
+	emitVMConfigByScan(qemuPID, out)
+}
+
+// emitVMConfigFrom emits the markers when raw is a persist.json whose
+// HypervisorState names qemuPID. Reports whether it emitted; a non-match is
+// not an error, it just means the caller's hint was wrong.
+func emitVMConfigFrom(raw []byte, qemuPID int, sandboxID string, out io.Writer) bool {
+	var persist struct {
+		HypervisorState struct {
+			Pid int `json:"Pid"`
+		} `json:"HypervisorState"`
+		Config KataPersistConfig `json:"Config"`
+	}
+	if err := json.Unmarshal(raw, &persist); err != nil {
+		slog.Warn("Failed to parse Kata persist.json for VMConfig emission", "sandbox", sandboxID, "error", err)
+		return false
+	}
+	if persist.HypervisorState.Pid != qemuPID {
+		return false
+	}
+	vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
+	fmt.Fprintf(out, "%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg))
+	fmt.Fprintf(out, "%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(persist.Config.KataAgentConfig))
+	slog.Info("Emitted VMConfig for factory adoption", "sandbox", sandboxID, "size", len(vmCfg))
+	return true
+}
+
+// emitVMConfigByScan locates the sandbox owning qemuPID by reading every
+// sandbox's persist.json under kataSBSRoot. Used when the caller's sandbox
+// hint is missing or stale.
+func emitVMConfigByScan(qemuPID int, out io.Writer) {
 	entries, err := os.ReadDir(kataSBSRoot)
 	if err != nil {
 		slog.Warn("Cannot read sandbox dir for VMConfig emission; factory VM adoption will fall back to cold start", "dir", kataSBSRoot, "error", err)
@@ -894,31 +947,9 @@ func emitVMConfig(qemuPID int, out io.Writer) {
 			}
 			continue
 		}
-		var persist struct {
-			HypervisorState struct {
-				Pid int `json:"Pid"`
-			} `json:"HypervisorState"`
-			Config KataPersistConfig `json:"Config"`
-		}
-		if err := json.Unmarshal(raw, &persist); err != nil {
-			slog.Warn("Failed to parse Kata persist.json for VMConfig emission", "path", persistPath, "error", err)
-			continue
-		}
-		if persist.HypervisorState.Pid != qemuPID {
-			continue
-		}
-		vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
-		agentCfg := persist.Config.KataAgentConfig
-		if err := writeMarker(out, "%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg)); err != nil {
-			slog.Warn("Failed to emit VMConfig marker; factory VM adoption will fall back to cold start", "error", err)
+		if emitVMConfigFrom(raw, qemuPID, e.Name(), out) {
 			return
 		}
-		if err := writeMarker(out, "%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg)); err != nil {
-			slog.Warn("Failed to emit agent config marker; factory VM adoption may fail", "error", err)
-			return
-		}
-		slog.Info("Emitted VMConfig for factory adoption", "sandbox", e.Name(), "size", len(vmCfg))
-		return
 	}
 	slog.Info("No matching sandbox found for VMConfig emission", "qemu_pid", qemuPID)
 }

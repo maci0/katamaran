@@ -109,6 +109,23 @@ func (d *nativeDiscoverer) LookupPodScheduling(ctx context.Context, namespace, n
 	}, nil
 }
 
+// LookupSourcePod reads the pod once and returns both the node and the
+// scheduling constraints, so the auto-select dispatch path does not issue two
+// sequential Gets for the same object.
+func (d *nativeDiscoverer) LookupSourcePod(ctx context.Context, namespace, name string) (SourcePodInfo, error) {
+	p, err := d.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return SourcePodInfo{}, fmt.Errorf("get pod %s/%s: %w", namespace, name, err)
+	}
+	return SourcePodInfo{
+		Node: p.Spec.NodeName,
+		PodScheduling: PodScheduling{
+			NodeSelector: p.Spec.NodeSelector,
+			Tolerations:  p.Spec.Tolerations,
+		},
+	}, nil
+}
+
 func (d *nativeDiscoverer) DeletePod(ctx context.Context, namespace, name string) error {
 	return d.client.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }

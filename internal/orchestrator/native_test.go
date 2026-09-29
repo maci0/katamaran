@@ -1110,7 +1110,7 @@ func TestParseProgressFields(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		got := parseProgressFields(tc.in)
+		got := parseProgressFields([]byte(tc.in))
 		if !maps.Equal(got, tc.want) {
 			t.Errorf("parseProgressFields(%q) = %v, want %v", tc.in, got, tc.want)
 		}

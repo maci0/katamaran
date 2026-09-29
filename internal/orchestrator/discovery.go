@@ -14,6 +14,15 @@ type PodScheduling struct {
 	Tolerations  []corev1.Toleration
 }
 
+// SourcePodInfo is everything the migration dispatch path needs from the
+// source pod, in one apiserver read: the node it runs on plus the scheduling
+// constraints a destination Job inherits when destNode is omitted.
+type SourcePodInfo struct {
+	// Node is spec.nodeName, empty while the pod is still Pending.
+	Node string
+	PodScheduling
+}
+
 // PodInfo is the projection of a Kubernetes pod that the orchestrator and
 // dashboard care about: identity, scheduling node, and pod IP.
 type PodInfo struct {
@@ -56,6 +65,12 @@ type Discoverer interface {
 	// named pod's spec. Used to copy scheduling constraints from the source
 	// pod to the destination Job when destNode is omitted.
 	LookupPodScheduling(ctx context.Context, namespace, name string) (PodScheduling, error)
+
+	// LookupSourcePod returns the named pod's node and scheduling constraints
+	// together. Callers that need both should prefer this over calling
+	// LookupPodNode and LookupPodScheduling in sequence, which reads the same
+	// object twice.
+	LookupSourcePod(ctx context.Context, namespace, name string) (SourcePodInfo, error)
 
 	// DeletePod deletes the named pod.
 	DeletePod(ctx context.Context, namespace, name string) error

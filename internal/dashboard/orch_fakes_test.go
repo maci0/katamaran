@@ -186,6 +186,13 @@ func (s *stubDiscoverer) LookupNodeInternalIP(_ context.Context, name string) (s
 func (s *stubDiscoverer) LookupPodScheduling(_ context.Context, _, _ string) (orchestrator.PodScheduling, error) {
 	return orchestrator.PodScheduling{}, nil
 }
+func (s *stubDiscoverer) LookupSourcePod(ctx context.Context, namespace, name string) (orchestrator.SourcePodInfo, error) {
+	node, err := s.LookupPodNode(ctx, namespace, name)
+	if err != nil {
+		return orchestrator.SourcePodInfo{}, err
+	}
+	return orchestrator.SourcePodInfo{Node: node}, nil
+}
 func (s *stubDiscoverer) DeletePod(_ context.Context, _, _ string) error {
 	return nil
 }

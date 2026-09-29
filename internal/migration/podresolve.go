@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -146,11 +147,53 @@ type realProc struct{}
 // walks of every process's cmdline.
 var sandboxNeedlePrefix = []byte("sandbox-")
 
+// initialCmdlineBufSize is the starting capacity of the /proc walk's reused
+// cmdline read buffer. A QEMU cmdline runs a few KiB, so this holds the
+// overwhelming majority without a reallocation.
+const initialCmdlineBufSize = 8 * 1024
+
 // procWant is the per-sandbox match state built by PIDsForSandboxes.
 type procWant struct {
 	uuid []byte // wanted identifier, compared as a prefix of a scanned token
 	best int    // lowest matching PID so far; 0 = none yet
 	gen  int    // scan generation that last matched, 0 = never
+}
+
+// procWantSet is the wanted-sandbox index one /proc scan resolves against.
+//
+// A wanted uuid matches a scanned token exactly when it is a prefix of that
+// token, and prefix equality is decided entirely by length: uuid U is a prefix
+// of token T iff U equals T[:len(U)] and len(U) <= len(T). Indexing by that
+// length turns each anchor's match from a walk over every wanted uuid into one
+// map lookup per distinct identifier length present in the set. Real sandboxes
+// all share one length, so the common case is a single lookup.
+type procWantSet struct {
+	byName  map[string]*procWant
+	lengths []int // distinct wanted-identifier lengths, ascending
+}
+
+// newProcWantSet indexes uuids, skipping any that fail sandboxUUIDRe. Returns
+// nil when nothing valid remains, so callers can bail out before touching
+// /proc at all.
+func newProcWantSet(uuids []string) *procWantSet {
+	s := &procWantSet{byName: make(map[string]*procWant, len(uuids))}
+	seenLen := make(map[int]struct{}, len(uuids))
+	for _, uuid := range uuids {
+		if !sandboxUUIDRe.MatchString(uuid) {
+			slog.Warn("Skipping invalid sandbox identifier", "sandbox", uuid)
+			continue
+		}
+		s.byName[uuid] = &procWant{uuid: []byte(uuid)}
+		if _, dup := seenLen[len(uuid)]; !dup {
+			seenLen[len(uuid)] = struct{}{}
+			s.lengths = append(s.lengths, len(uuid))
+		}
+	}
+	if len(s.byName) == 0 {
+		return nil
+	}
+	slices.Sort(s.lengths)
+	return s
 }
 
 // isSandboxIDByte reports whether c can appear in a sandbox identifier, i.e.
@@ -176,7 +219,7 @@ func isSandboxIDByte(c byte) bool {
 // wanted uuid with a full cmdline substring search: a wanted uuid matches iff
 // the identifier token right after an anchor starts with it, because
 // sandboxUUIDRe admits no character that could split the token.
-func recordSandboxMatches(raw []byte, wanted map[string]*procWant, pid, gen int, multi *[]string) {
+func recordSandboxMatches(raw []byte, wanted *procWantSet, pid, gen int, multi *[]string) {
 	for off := 0; off < len(raw); {
 		i := bytes.Index(raw[off:], sandboxNeedlePrefix)
 		if i < 0 {
@@ -188,8 +231,16 @@ func recordSandboxMatches(raw []byte, wanted map[string]*procWant, pid, gen int,
 			end++
 		}
 		token := raw[start:end]
-		for uuid, w := range wanted {
-			if !bytes.HasPrefix(token, w.uuid) {
+		// Every wanted uuid that prefixes the token is one of the token's
+		// prefixes at a length the set actually holds, so probing those
+		// lengths is equivalent to (and cheaper than) testing each uuid.
+		for _, n := range wanted.lengths {
+			if n > len(token) {
+				break // lengths ascend; no shorter uuid can match either
+			}
+			uuid := string(token[:n])
+			w, ok := wanted.byName[uuid]
+			if !ok {
 				continue
 			}
 			if w.gen == gen {
@@ -222,15 +273,8 @@ func recordSandboxMatches(raw []byte, wanted map[string]*procWant, pid, gen int,
 // mentions the sandbox path), the lowest PID wins. UUIDs with no matching
 // process are absent from the returned map; invalid identifiers are skipped.
 func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
-	wanted := make(map[string]*procWant, len(uuids))
-	for _, uuid := range uuids {
-		if !sandboxUUIDRe.MatchString(uuid) {
-			slog.Warn("Skipping invalid sandbox identifier", "sandbox", uuid)
-			continue
-		}
-		wanted[uuid] = &procWant{uuid: []byte(uuid)}
-	}
-	if len(wanted) == 0 {
+	wanted := newProcWantSet(uuids)
+	if wanted == nil {
 		return nil
 	}
 	entries, err := os.ReadDir("/proc")
@@ -241,21 +285,27 @@ func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
 	var multi []string
 	// gen is 1-based so 0 can mean "no process has matched this uuid yet".
 	gen := 0
+	// One read buffer for the whole walk. A cmdline is a few KiB and the walk
+	// touches every PID on the node, so a fresh allocation per process is the
+	// scan's dominant cost; reusing the buffer keeps it flat in memory. It only
+	// grows, and only when a cmdline exceeds what the previous one left room
+	// for, so a long-lived caller settles at the largest cmdline seen.
+	var buf []byte
 	for _, e := range entries {
 		pid, perr := strconv.Atoi(e.Name())
 		if perr != nil {
 			continue // not a PID directory
 		}
 		// A read error means the process exited mid-scan or is unreadable; skip.
-		raw, rerr := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		raw, rerr := readProcCmdline(filepath.Join("/proc", e.Name(), "cmdline"), &buf)
 		if rerr != nil {
 			continue
 		}
 		gen++
 		recordSandboxMatches(raw, wanted, pid, gen, &multi)
 	}
-	out := make(map[string]int, len(wanted))
-	for uuid, w := range wanted {
+	out := make(map[string]int, len(wanted.byName))
+	for uuid, w := range wanted.byName {
 		if w.best != 0 {
 			out[uuid] = w.best
 		}
@@ -295,8 +345,42 @@ func (realProc) NetnsHasIP(pid int, ip string) (bool, error) {
 	return false, nil
 }
 
-// netnsInterfaceAddrs returns the interface addresses visible inside the network
-// namespace of pid. setns(2) only affects the calling OS thread, and Go freely
+// readProcCmdline reads a /proc/<pid>/cmdline file into the caller-owned
+// buffer, growing it only when the contents do not fit, and returns the
+// populated prefix. The returned slice aliases buf and stays valid only until
+// the next call, which is what lets one buffer serve a whole /proc walk.
+//
+// /proc files report a size of 0, so the read cannot be sized up front; it
+// grows by doubling until the file is consumed. An empty file (a kernel thread
+// or a zombie) is not an error: it returns an empty, non-nil-safe result the
+// caller skips, matching what os.ReadFile reports for it.
+func readProcCmdline(path string, buf *[]byte) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if cap(*buf) == 0 {
+		*buf = make([]byte, 0, initialCmdlineBufSize)
+	}
+	b := (*buf)[:0]
+	for {
+		if len(b) == cap(b) {
+			b = append(b, 0)[:len(b)]
+		}
+		n, err := f.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if err != nil {
+			*buf = b
+			if len(b) == 0 && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			return b, nil
+		}
+	}
+}
+
+// netnsInterfaceAddrs returns the interface addresses visible inside the network// namespace of pid. setns(2) only affects the calling OS thread, and Go freely
 // migrates goroutines across threads, so the switch is done on a dedicated
 // goroutine pinned with runtime.LockOSThread that is never unlocked: when it
 // returns, the runtime terminates the (now netns-tainted) thread rather than
