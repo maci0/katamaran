@@ -1,4 +1,4 @@
-package main
+package katamaran
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
-	"github.com/maci0/katamaran/internal/katamaran"
 )
 
 func TestRun_Help(t *testing.T) {
@@ -16,7 +15,7 @@ func TestRun_Help(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			t.Parallel()
 			var stdout, stderr bytes.Buffer
-			code := katamaran.Run(context.Background(), []string{flag}, &stdout, &stderr)
+			code := Run(context.Background(), []string{flag}, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 			}
@@ -35,7 +34,7 @@ func TestRun_Version(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			t.Parallel()
 			var stdout, stderr bytes.Buffer
-			code := katamaran.Run(context.Background(), []string{flag}, &stdout, &stderr)
+			code := Run(context.Background(), []string{flag}, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("exit code %d, want 0; stderr: %s", code, stderr.String())
 			}
@@ -49,7 +48,7 @@ func TestRun_Version(t *testing.T) {
 func TestRun_MissingMode(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{}, &stdout, &stderr)
+	code := Run(context.Background(), []string{}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -61,7 +60,7 @@ func TestRun_MissingMode(t *testing.T) {
 func TestRun_InvalidMode(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "invalid"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "invalid"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -73,7 +72,7 @@ func TestRun_InvalidMode(t *testing.T) {
 func TestRun_UnexpectedArgs(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"foo", "bar"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"foo", "bar"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -85,7 +84,7 @@ func TestRun_UnexpectedArgs(t *testing.T) {
 func TestRun_UnknownFlag(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--nonexistent-flag"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--nonexistent-flag"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -97,7 +96,7 @@ func TestRun_UnknownFlag(t *testing.T) {
 func TestRun_InvalidLogFormat(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--log-format", "yaml"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--log-format", "yaml"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -106,14 +105,14 @@ func TestRun_InvalidLogFormat(t *testing.T) {
 	}
 }
 
-// Tests below this point exercise katamaran.Run() past the logging.SetupLogger() call,
+// Tests below this point exercise Run() past the logging.SetupLogger() call,
 // which calls slog.SetDefault() and mutates global state. They must not be
 // parallel. Tests above this block that exit before reaching SetupLogger are
 // safe for parallel.
 
 func TestRun_NegativeMultifd(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--multifd-channels", "-1"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--multifd-channels", "-1"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -124,7 +123,7 @@ func TestRun_NegativeMultifd(t *testing.T) {
 
 func TestRun_SourceNegativeAutoDowntimeFloor(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--vm-ip", "10.0.0.2",
@@ -141,7 +140,7 @@ func TestRun_SourceNegativeAutoDowntimeFloor(t *testing.T) {
 
 func TestRun_SourceAutoDowntimeFloorAboveCap(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--vm-ip", "10.0.0.2",
@@ -158,7 +157,7 @@ func TestRun_SourceAutoDowntimeFloorAboveCap(t *testing.T) {
 
 func TestRun_SourceNegativeCNIConvergenceDelay(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--vm-ip", "10.0.0.2",
@@ -174,7 +173,7 @@ func TestRun_SourceNegativeCNIConvergenceDelay(t *testing.T) {
 
 func TestRun_SourceMissingRequiredFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -188,7 +187,7 @@ func TestRun_SourcePodFlagsAccepted(t *testing.T) {
 	// Source mode with --pod-name/--pod-namespace should pass flag parsing and
 	// XOR validation, then fail later when migration tries to resolve the pod.
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--pod-name", "foo", "--pod-namespace", "bar",
@@ -206,7 +205,7 @@ func TestRun_SourcePodFlagsAccepted(t *testing.T) {
 
 func TestRun_SourcePartialPodFlagsRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--pod-name", "foo",
@@ -221,7 +220,7 @@ func TestRun_SourcePartialPodFlagsRejected(t *testing.T) {
 
 func TestRun_SourceBothFlagPairsRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1",
 		"--qmp", "/tmp/qmp.sock",
@@ -239,7 +238,7 @@ func TestRun_SourceBothFlagPairsRejected(t *testing.T) {
 
 func TestRun_SourceInvalidDestIP(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "not-an-ip", "--qmp", "/tmp/qmp.sock", "--vm-ip", "10.0.0.1"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--dest-ip", "not-an-ip", "--qmp", "/tmp/qmp.sock", "--vm-ip", "10.0.0.1"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -250,7 +249,7 @@ func TestRun_SourceInvalidDestIP(t *testing.T) {
 
 func TestRun_SourceInvalidVMIP(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "not-an-ip"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "not-an-ip"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -261,7 +260,7 @@ func TestRun_SourceInvalidVMIP(t *testing.T) {
 
 func TestRun_SourceIPFamilyMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "fd00::1"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "fd00::1"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -272,7 +271,7 @@ func TestRun_SourceIPFamilyMismatch(t *testing.T) {
 
 func TestRun_SourceInvalidTunnelMode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "10.0.0.2",
 		"--tunnel-mode", "invalid",
 	}, &stdout, &stderr)
@@ -286,7 +285,7 @@ func TestRun_SourceInvalidTunnelMode(t *testing.T) {
 
 func TestRun_SourceInvalidDowntime(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "10.0.0.2",
 		"--downtime", "0",
 	}, &stdout, &stderr)
@@ -300,7 +299,7 @@ func TestRun_SourceInvalidDowntime(t *testing.T) {
 
 func TestRun_SourceDowntimeUpperBound(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source", "--dest-ip", "10.0.0.1", "--qmp", "/tmp/qmp.sock", "--vm-ip", "10.0.0.2",
 		"--downtime", "70000",
 	}, &stdout, &stderr)
@@ -314,7 +313,7 @@ func TestRun_SourceDowntimeUpperBound(t *testing.T) {
 
 func TestRun_SourceBadQMPSocket(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--qmp", "/nonexistent/qmp.sock",
@@ -330,7 +329,7 @@ func TestRun_SourceBadQMPSocket(t *testing.T) {
 
 func TestRun_DestBadQMPSocket(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "dest",
 		"--qmp", "/nonexistent/qmp.sock",
 	}, &stdout, &stderr)
@@ -345,7 +344,7 @@ func TestRun_DestBadQMPSocket(t *testing.T) {
 func TestRun_DestIgnoredSourceFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	// Migration will fail (bad socket), but the warning should still be printed.
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "dest",
 		"--dest-ip", "10.0.0.1",
 		"--pod-name", "source-pod",
@@ -362,7 +361,7 @@ func TestRun_DestIgnoredSourceFlags(t *testing.T) {
 
 func TestRun_DestSourcePodFlagsAcceptedWithoutIgnoredWarning(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "dest",
 		"--pod-name", "source-pod",
 		"--pod-namespace", "default",
@@ -378,7 +377,7 @@ func TestRun_DestSourcePodFlagsAcceptedWithoutIgnoredWarning(t *testing.T) {
 
 func TestRun_DestPartialSourcePodFlagsRejected(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "dest",
 		"--pod-name", "source-pod",
 	}, &stdout, &stderr)
@@ -392,7 +391,7 @@ func TestRun_DestPartialSourcePodFlagsRejected(t *testing.T) {
 
 func TestRun_DestRejectsReplayCmdlineConflict(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "dest",
 		"--replay-cmdline", "/tmp/source-qemu.cmdline",
 		"--replay-cmdline-from-pod", "default/source-pod",
@@ -407,7 +406,7 @@ func TestRun_DestRejectsReplayCmdlineConflict(t *testing.T) {
 
 func TestRun_SourceIgnoredDestFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--tap", "tap0",
@@ -426,7 +425,7 @@ func TestRun_SourceIgnoredDestFlags(t *testing.T) {
 
 func TestRun_CaseInsensitiveMode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{"--mode", "SOURCE"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--mode", "SOURCE"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code %d, want 2", code)
 	}
@@ -441,7 +440,7 @@ func TestRun_CaseInsensitiveMode(t *testing.T) {
 
 func TestRun_AutoDowntimeOverridesDowntimeWarning(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--downtime", "50", "--auto-downtime",
@@ -461,7 +460,7 @@ func TestRun_AutoDowntimeOverridesDowntimeWarning(t *testing.T) {
 
 func TestRun_AutoDowntimeFloorWithoutAutoWarning(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--auto-downtime-floor-ms", "50",
@@ -478,7 +477,7 @@ func TestRun_AutoDowntimeFloorWithoutAutoWarning(t *testing.T) {
 
 func TestRun_CaseInsensitiveTunnelMode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := katamaran.Run(context.Background(), []string{
+	code := Run(context.Background(), []string{
 		"--mode", "source",
 		"--dest-ip", "10.0.0.1", "--vm-ip", "10.0.0.2",
 		"--tunnel-mode", "GRE",
