@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -146,7 +147,12 @@ func TestRealProcPIDsForSandboxes_FindsSpawnedProcess(t *testing.T) {
 	}
 	t.Parallel()
 
-	const uuid = "11111111-2222-3333-4444-555555555555"
+	// The identifier is unique per run. PIDsForSandboxes returns the LOWEST
+	// pid matching the needle, so a fixed uuid makes the assertion depend on
+	// whether any other helper from an earlier or concurrent run is still
+	// alive: its pid wins and the test fails against a process it never
+	// spawned. PIDs recycle, so a leftover is not a bounded window.
+	uuid := fmt.Sprintf("11111111-2222-3333-4444-%012x", time.Now().UnixNano()&0xffffffffffff)
 	// Helper whose argv carries sandbox-<uuid>: the interpreter loops so the
 	// process and its cmdline stay observable until we kill it. PIDsForSandboxes
 	// matches the needle literally against /proc/<pid>/cmdline.
@@ -155,11 +161,14 @@ func TestRealProcPIDsForSandboxes_FindsSpawnedProcess(t *testing.T) {
 		t.Fatalf("write helper script: %v", err)
 	}
 	cmd := exec.Command(script, "sandbox-"+uuid)
+	// Own process group so the `sleep` children die with the interpreter:
+	// killing only the shell leaves the grandchild orphaned per iteration.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn helper process: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	})
 

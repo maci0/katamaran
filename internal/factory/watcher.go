@@ -130,9 +130,16 @@ func (w *Watcher) scan() {
 
 		var state MigrationState
 		if err := json.Unmarshal(data, &state); err != nil {
-			// Do not mark the path seen: a parse failure is a read anomaly,
-			// not proof the migration is handled, and marking it makes this
-			// migration invisible to every later scan.
+			// Deliberately NOT recorded in w.seen. A parse failure is a read
+			// anomaly, not proof the migration is handled, and marking it
+			// makes this migration invisible to every later scan. The writer
+			// publishes via temp+fsync+rename, so the file on disk is
+			// genuinely not a MigrationMeta (a crashed predecessor, a foreign
+			// file, a truncated write from an older binary). Marking it seen
+			// would blacklist that sandbox for the life of the daemon with no
+			// retry, and the VM is then never offered for adoption. Retrying
+			// costs one read per poll; logTransient keeps the warning from
+			// repeating at full volume.
 			errored = true
 			w.logTransient("Failed to parse migration metadata", "path", metaPath, "error", err)
 			continue

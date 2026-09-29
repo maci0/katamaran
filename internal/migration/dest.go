@@ -2,7 +2,6 @@ package migration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -571,21 +570,12 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 		}
 	}
 
-	metaPath := filepath.Join(filepath.Dir(cfg.QMPSocket), MigrationMetaFile)
-	metaJSON, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		slog.Warn("Failed to marshal migration metadata", "error", err)
-		return
-	}
-	// Write atomically (temp in the same dir + rename) so the factory watcher,
-	// which polls this directory, never reads a half-written file and parses it
-	// as invalid JSON (which it would then mark as seen and never retry).
-	tmpPath := metaPath + ".tmp"
-	if err := os.WriteFile(tmpPath, metaJSON, 0o600); err != nil {
-		slog.Warn("Failed to write migration metadata", "path", tmpPath, "error", err)
-	} else if err := os.Rename(tmpPath, metaPath); err != nil {
-		slog.Warn("Failed to rename migration metadata", "path", metaPath, "error", err)
-		_ = os.Remove(tmpPath)
+	// Publish atomically and durably (temp in the same dir + fsync + rename +
+	// directory fsync) so the factory watcher, which polls this directory from
+	// another process, never reads a half-written file and a node crash cannot
+	// leave an empty one behind.
+	if metaPath, err := WriteMigrationMetaFile(filepath.Dir(cfg.QMPSocket), meta); err != nil {
+		slog.Warn("Failed to write migration metadata", "path", filepath.Join(filepath.Dir(cfg.QMPSocket), MigrationMetaFile), "error", err)
 	} else {
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
 	}
