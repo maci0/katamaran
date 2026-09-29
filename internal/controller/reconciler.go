@@ -53,17 +53,18 @@ import (
 // expvar (no Prometheus client dep) keeps the mgr image small; the
 // /metrics handler walks the expvar registry in-process.
 var (
-	mDispatched      = expvar.NewInt("katamaran_migrations_dispatched_total")
-	mSucceeded       = expvar.NewInt("katamaran_migrations_succeeded_total")
-	mFailed          = expvar.NewInt("katamaran_migrations_failed_total")
-	mRecovered       = expvar.NewInt("katamaran_migrations_recovered_total")
-	mResumed         = expvar.NewInt("katamaran_migrations_resumed_total")
-	mDeleted         = expvar.NewInt("katamaran_migrations_deleted_total")
-	mInflight        = expvar.NewInt("katamaran_migrations_inflight")
-	mReconcileErrors = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
-	mStatusPatchErrs = expvar.NewInt("katamaran_migrations_status_patch_errors_total")
-	mWatchLost       = expvar.NewInt("katamaran_migrations_watch_lost_total")
-	mWorkerPanics    = expvar.NewInt("katamaran_migrations_worker_panics_total")
+	mDispatched        = expvar.NewInt("katamaran_migrations_dispatched_total")
+	mSucceeded         = expvar.NewInt("katamaran_migrations_succeeded_total")
+	mFailed            = expvar.NewInt("katamaran_migrations_failed_total")
+	mRecovered         = expvar.NewInt("katamaran_migrations_recovered_total")
+	mResumed           = expvar.NewInt("katamaran_migrations_resumed_total")
+	mDeleted           = expvar.NewInt("katamaran_migrations_deleted_total")
+	mInflight          = expvar.NewInt("katamaran_migrations_inflight")
+	mReconcileErrors   = expvar.NewInt("katamaran_migrations_reconcile_errors_total")
+	mStatusPatchErrs   = expvar.NewInt("katamaran_migrations_status_patch_errors_total")
+	mTerminalPatchLost = expvar.NewInt("katamaran_migrations_terminal_status_patch_exhausted_total")
+	mWatchLost         = expvar.NewInt("katamaran_migrations_watch_lost_total")
+	mWorkerPanics      = expvar.NewInt("katamaran_migrations_worker_panics_total")
 )
 
 // migrationProgress tracks per-migration progress for Prometheus export.
@@ -479,7 +480,7 @@ func (r *Reconciler) dispatch(ctx context.Context, key types.NamespacedName, obj
 			msg += " (last phase " + lastPhase + ")"
 		}
 		lastError = msg
-		_ = r.patchStatusRetry(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
+		r.patchStatusTerminal(ctx, key, string(id), string(orchestrator.PhaseFailed), msg, "")
 	}
 	attrs := []any{"migration", key, "migration_id", id, "final_phase", lastPhase, "elapsed", time.Since(start)}
 	if lastMessage != "" {
@@ -653,12 +654,12 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 
 	if r.Kube == nil {
 		slog.Warn("Recovery skipped: no Kube clientset wired", "migration", key)
-		_ = r.patchStatusRetry(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
+		r.patchStatusTerminal(ctx, key, id, string(orchestrator.PhaseFailed), "controller restarted; recovery unavailable", "")
 		return
 	}
 	if id == "" {
 		slog.Error("Recovery failed: no migration ID on status", "migration", key)
-		_ = r.patchStatusRetry(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
+		r.patchStatusTerminal(ctx, key, "", string(orchestrator.PhaseFailed), "recovery: no migrationID on status", "")
 		return
 	}
 
@@ -684,7 +685,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				slog.Error("Recovery timed out waiting for jobs", "migration", key, "migration_id", id, "timeout", r.StatusTimeout)
 				patchCtx, patchCancel := context.WithTimeout(ctx, statusPatchTimeout)
 				defer patchCancel()
-				_ = r.patchStatusRetry(patchCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
+				r.patchStatusTerminal(patchCtx, key, id, string(orchestrator.PhaseFailed), "recovery timed out waiting for jobs", "")
 			}
 			return
 		}
@@ -715,7 +716,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		if dest != nil {
 			if cond := orchestrator.TerminalJobCondition(dest); cond == batchv1.JobComplete {
 				slog.Info("Recovery completed from destination job", "migration", key, "migration_id", id, "dest_job", dest.Name)
-				_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
+				r.patchStatusTerminal(jobCtx, key, id, string(orchestrator.PhaseSucceeded), "recovered: dest job complete", "")
 				// Run the documented post-success side effects
 				// (sourceCleanup, adoptVM) exactly like the dispatch
 				// path: a controller restart mid-migration must not
@@ -731,7 +732,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 				detail, attrs := jobFailureDetails(dest)
 				attrs = append([]any{"migration", key, "migration_id", id, "dest_job", dest.Name}, attrs...)
 				slog.Error("Recovery failed from destination job", attrs...)
-				_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
+				r.patchStatusTerminal(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: dest job failed", detail)
 				return
 			}
 		}
@@ -739,7 +740,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 			detail, attrs := jobFailureDetails(src)
 			attrs = append([]any{"migration", key, "migration_id", id, "source_job", src.Name}, attrs...)
 			slog.Error("Recovery failed from source job before destination started", attrs...)
-			_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
+			r.patchStatusTerminal(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source job failed before dest started", detail)
 			return
 		}
 		// Source still running but dest never got created: the orchestrator
@@ -776,7 +777,7 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 		}
 		if dest == nil && src == nil {
 			slog.Error("Recovery failed: source and destination jobs disappeared", "migration", key, "migration_id", id)
-			_ = r.patchStatusRetry(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
+			r.patchStatusTerminal(jobCtx, key, id, string(orchestrator.PhaseFailed), "recovered: source/dest jobs disappeared", "")
 			return
 		}
 	}
@@ -973,6 +974,23 @@ func (r *Reconciler) patchStatusRetry(ctx context.Context, key types.NamespacedN
 		Phase:   orchestrator.StatusPhase(phase),
 		Message: message,
 	}, errStr)
+}
+
+// patchStatusTerminal writes a terminal phase to the Migration status and
+// owns the reporting. patchStatusRetry already logs every individual patch
+// attempt, but the caller cannot tell an exhausted retry budget from a
+// success unless it inspects the return value, and discarding it leaves the
+// CR in a non-terminal phase forever: the migration looks in flight while
+// its Jobs are done, and the next controller restart recovers it as if it
+// were still running. This is the call site for every terminal transition.
+func (r *Reconciler) patchStatusTerminal(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) {
+	err := r.patchStatusRetry(ctx, key, migrationID, phase, message, errStr)
+	if err == nil {
+		return
+	}
+	mTerminalPatchLost.Add(1)
+	slog.Error("Terminal status patch exhausted its retry budget; Migration CR stays in its previous phase",
+		"migration", key, "migration_id", migrationID, "phase", phase, "message", message, "error", err)
 }
 
 func (r *Reconciler) patchStatusUpdateRetry(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {

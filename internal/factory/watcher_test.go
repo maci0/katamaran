@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/maci0/katamaran/internal/migration"
@@ -104,6 +106,55 @@ func TestWatcherScanProcessesRecreatedSandboxPath(t *testing.T) {
 		t.Fatalf("GetBaseVM second: %v", err)
 	}
 	assertVM(t, got, second)
+}
+
+// A sandbox whose migration-meta.json cannot be read fails on every poll
+// for as long as it stays broken. The scan must not re-log the failure at
+// WARN on every tick (that noise trains operators to ignore warnings), and
+// the escalation counter must reset once the offending path is gone.
+func TestWatcherScanThrottlesRepeatedReadFailures(t *testing.T) {
+	dir := t.TempDir()
+	srv := NewServer()
+	watcher := NewWatcher(dir, srv)
+
+	// A directory where a file is expected makes os.ReadFile fail with EISDIR
+	// for every user, including root, so the test does not depend on
+	// permission bits being enforced.
+	broken := filepath.Join(dir, "sandbox-broken", migration.MigrationMetaFile)
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", broken, err)
+	}
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	for i := 1; i <= 9; i++ {
+		watcher.scan()
+		if got, want := watcher.consecutiveErrors, i; got != want {
+			t.Fatalf("consecutiveErrors after %d scans = %d, want %d", i, got, want)
+		}
+	}
+	if got := logs.String(); strings.Contains(got, "level=WARN") {
+		t.Fatalf("scan failures escalated to WARN before the 10th occurrence:\n%s", got)
+	}
+
+	watcher.scan()
+	if got, want := watcher.consecutiveErrors, 10; got != want {
+		t.Fatalf("consecutiveErrors = %d, want %d", got, want)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("10th consecutive scan failure did not log at WARN:\n%s", logs.String())
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "sandbox-broken")); err != nil {
+		t.Fatalf("remove broken sandbox: %v", err)
+	}
+	watcher.scan()
+	if got := watcher.consecutiveErrors; got != 0 {
+		t.Fatalf("consecutiveErrors after a clean scan = %d, want 0", got)
+	}
 }
 
 func writeMigrationMeta(t *testing.T, root, sandbox string, state MigrationState) {

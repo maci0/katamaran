@@ -1986,6 +1986,54 @@ func TestRecover_StatusPatchRetriedUntilPersisted(t *testing.T) {
 	}
 }
 
+// When every status patch attempt fails, the CR keeps its pre-migration
+// phase while its Jobs are done, and the next controller restart recovers
+// the migration as still running. The exhausted terminal write must be
+// counted and logged with the migration key, not dropped on the floor as
+// the discarded return value of the old call site.
+func TestRecover_TerminalStatusPatchExhaustedIsCountedAndLogged(t *testing.T) {
+	// Not parallel: asserts deltas on process-global expvar counters and
+	// swaps the process-global default logger.
+	jobID := "id-recov-exhausted"
+	cr := newMigrationCR("m-recov-exhausted", []string{finalizerName}, false, map[string]any{
+		"phase":       "transferring",
+		"migrationID": jobID,
+	})
+	rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, completedDestJob(jobID))
+	rec.PollInterval = time.Millisecond
+	rec.StatusTimeout = 30 * time.Second
+
+	savedBackoff := statusPatchBackoff
+	statusPatchBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { statusPatchBackoff = savedBackoff })
+
+	dyn.PrependReactor("patch", "migrations", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		a, ok := action.(clienttesting.PatchAction)
+		if !ok || a.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		return true, nil, errors.New("synthetic patch failure")
+	})
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	before := mTerminalPatchLost.Value()
+	rec.recover(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-recov-exhausted"}, cr)
+
+	if delta := mTerminalPatchLost.Value() - before; delta != 1 {
+		t.Fatalf("mTerminalPatchLost delta = %d, want 1 (one exhausted terminal write)", delta)
+	}
+	if !strings.Contains(logs.String(), "Terminal status patch exhausted") {
+		t.Fatalf("exhausted terminal patch was not logged:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "m-recov-exhausted") {
+		t.Fatalf("exhausted terminal patch log lacks the migration key:\n%s", logs.String())
+	}
+}
+
 // Recovery after a controller restart must run the documented post-success
 // side effects too: sourceCleanup=delete must delete the source pod even
 // though the success was observed via Job inspection rather than the watch.

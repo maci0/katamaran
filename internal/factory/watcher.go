@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/migration"
 )
 
@@ -25,6 +26,11 @@ type Watcher struct {
 	dir    string
 	server *Server
 	seen   map[string]struct{}
+	// consecutiveErrors counts scans that ended with at least one error. A
+	// persistent error (unmounted hostPath, wrong permissions) otherwise
+	// re-logs the same warning every poll interval for the life of the
+	// node daemon, which buries real signal. Reset by a clean scan.
+	consecutiveErrors int
 }
 
 // NewWatcher returns a Watcher that scans dir for sandbox
@@ -70,6 +76,17 @@ func (w *Watcher) safeScan() {
 	w.scan()
 }
 
+// logTransient logs at Debug for the first few consecutive failing scans
+// and escalates to Warn per logging.TransientLevel. A watch directory that
+// stays unreadable (hostPath unmounted, wrong permissions) otherwise emits
+// the same warning every poll interval for the life of the node daemon,
+// which is exactly the noise that makes operators ignore warnings.
+func (w *Watcher) logTransient(msg string, attrs ...any) {
+	w.consecutiveErrors++
+	slog.Log(context.Background(), logging.TransientLevel(w.consecutiveErrors), msg,
+		append(attrs, "consecutive_errors", w.consecutiveErrors)...)
+}
+
 // scan walks the watch directory looking for sandbox subdirectories
 // that contain a migration-meta.json file we haven't processed yet.
 func (w *Watcher) scan() {
@@ -79,12 +96,15 @@ func (w *Watcher) scan() {
 		// case is expected and stays silent. Other errors (permissions,
 		// I/O) mean we are blind to migrations and need to be visible
 		// to operators.
-		if !os.IsNotExist(err) {
-			slog.Warn("Watcher scan failed", "dir", w.dir, "error", err)
+		if os.IsNotExist(err) {
+			w.consecutiveErrors = 0
+			return
 		}
+		w.logTransient("Watcher scan failed", "dir", w.dir, "error", err)
 		return
 	}
 
+	errored := false
 	current := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -102,14 +122,16 @@ func (w *Watcher) scan() {
 			// Other errors (permissions, I/O) mean we are silently blind
 			// to a real migration; surface them.
 			if !os.IsNotExist(err) {
-				slog.Warn("Watcher failed to read migration metadata", "path", metaPath, "error", err)
+				errored = true
+				w.logTransient("Watcher failed to read migration metadata", "path", metaPath, "error", err)
 			}
 			continue
 		}
 
 		var state MigrationState
 		if err := json.Unmarshal(data, &state); err != nil {
-			slog.Warn("Failed to parse migration metadata", "path", metaPath, "error", err)
+			errored = true
+			w.logTransient("Failed to parse migration metadata", "path", metaPath, "error", err)
 			w.seen[metaPath] = struct{}{}
 			continue
 		}
@@ -126,5 +148,8 @@ func (w *Watcher) scan() {
 		if _, ok := current[metaPath]; !ok {
 			delete(w.seen, metaPath)
 		}
+	}
+	if !errored {
+		w.consecutiveErrors = 0
 	}
 }
