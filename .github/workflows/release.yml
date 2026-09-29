@@ -215,16 +215,24 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           # Pull out everything between "## [<version>]" and the next
-          # "## [" header. CHANGELOG.md uses bare semver section headers,
-          # so strip the leading "v" from the tag.
+          # "## [" header, stopping before the compare-link block at the
+          # end of the file. CHANGELOG.md uses bare semver section
+          # headers, so strip the leading "v" from the tag. The heading is
+          # matched as a prefix string, so a dated heading
+          # ("## [1.2.3] - 2026-01-01") matches and the dots in the
+          # version do not act as regex wildcards. A tag with no section
+          # fails the release rather than publishing empty notes.
           version="${REF_NAME#v}"
           awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { in_section=1; print; next }
-            in_section && $0 ~ "^## \\[" { exit }
+            BEGIN { header = "## [" v "]" }
+            index($0, header) == 1 { in_section=1; print; next }
+            in_section && (/^## \[/ || /^\[/) { exit }
             in_section { print }
           ' CHANGELOG.md > release-notes.md
           if [ ! -s release-notes.md ]; then
-            printf '## %s\n\nSee CHANGELOG.md for details.\n' "$REF_NAME" > release-notes.md
+            printf 'CHANGELOG.md has no "## [%s]" section. Add the release\n' "$version" >&2
+            printf 'notes and the compare link before pushing the tag.\n' >&2
+            exit 1
           fi
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3

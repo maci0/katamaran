@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The project is pre-1.0 and carries no API stability promise. A minor release
+(`0.x.0`) may break users, and every such change is listed under Breaking
+changes or Removed; a patch release (`0.x.y`) carries fixes only. The release
+workflow refuses to publish a tag that has no section below.
+
 ## [Unreleased]
 
 ### Added
@@ -20,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make lint-js`: Biome lints the dashboard's hand-written JavaScript, and
   `make check` plus a CI job run it. The file set is scoped in `biome.json`
   so the vendored bundles under `internal/dashboard/assets/` stay out.
+- `docs/THREAT_MODEL.md`: a risk-ranked threat model naming the trust
+  boundaries and the file that implements each control.
+- The recommended `app.kubernetes.io/*` labels on the DaemonSet, the mgr
+  and dashboard Deployments and Services, and both Job templates.
+- `docs/INSTALL.md` documents pulling the four published GHCR images for a
+  release, and the retag the DaemonSet install expects.
+
+### Breaking changes
+
+- `deploy/dashboard.yaml` no longer creates a ClusterIP Service in front of
+  the dashboard UI. The dashboard ServiceAccount can list, patch, and delete
+  pods in every namespace and creates hostPID migration Jobs, so the Service
+  handed an admin surface to every pod in the cluster. Upgrade: any
+  `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080`
+  or Service-backed ingress, monitoring rule, or `curl` that named that
+  Service must be repointed at `svc/katamaran-dashboard-metrics`, which
+  now serves the UI on the same port 8080 through the apiserver proxy.
+  Applying the new manifest on an existing deployment leaves the old
+  Service in place until it is deleted by hand.
 
 ### Changed
 
@@ -35,15 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Service handed an admin surface to every pod in the cluster. Reach
   the UI with `kubectl port-forward -n kube-system
   svc/katamaran-dashboard-metrics 8080:8080`.
-
+- The build flags live in one Makefile pattern rule, with
+  `-buildvcs=false`, `-trimpath`, and `-mod=readonly` applied to every
+  binary, so no command can pick up different flags than the others.
 - The release pipeline runs `make repro-check` in its verify job. A build
   that reads host state is now caught before images are pushed to GHCR
   rather than shipped silently.
-
 - `scripts/e2e.sh` builds the katamaran image with `make image` instead of
   invoking the container engine directly, matching the katamaran-mgr path
   it already used. Both images are built with the same flags and both
   archives land in the repository root instead of the caller's cwd.
+- The `katamaran-factory` image owns `/var/run/katamaran`, so the
+  non-root user it runs as can still create the runtime socket directory.
+- The node sandbox scan matches needles in a single pass over `/proc`
+  instead of one pass per needle.
 
 ### Fixed
 
@@ -52,6 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script under `pipefail`, and a real build failure printed none of its
   own error. The full log is kept and the last 40 lines are shown on
   failure.
+- The dashboard's ICMP ping subprocess runs under `LC_ALL=C`, so a host
+  locale can no longer change the output it parses, and the HTML it
+  serves declares `charset=utf-8`.
+- Migration, webhook, and shim error paths log the failure they used to
+  drop: an unreadable `persist.json`, a failed cgroup move, a stuck-in-Running
+  pod found by the node scan, an AdmissionReview with no request, and a
+  dropped shim log record.
 
 ### Security
 
