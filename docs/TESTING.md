@@ -837,6 +837,9 @@ The script produces a structured report at the end:
 | Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
 | Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
 
+Every E2E section below produces these two logs; the per-CNI sections omit
+the table rather than repeat it.
+
 ## 7. Cilium E2E Migration Test (Two-Node, Zero-Drop Proof)
 
 Creates a two-node cluster with **Cilium** as the CNI (eBPF datapath), runs a full live migration, and verifies zero packet loss. Works with both minikube and Kind.
@@ -894,11 +897,9 @@ Flannel's VXLAN FDB entries are updated via GARP after migration. The IPIP tunne
 1. Creates a 2-node cluster with **no built-in CNI** (`--cni=bridge` for minikube, `disableDefaultCNI: true` for Kind)
 2. Installs Flannel via `kubectl apply` from the upstream release manifest
 3. Waits for the `kube-flannel-ds` DaemonSet in `kube-flannel` namespace and all nodes to be Ready
-4. Installs Kata Containers via Helm on both nodes
-5. Applies E2E-specific Kata QMP and timeout settings, then deploys katamaran via DaemonSet
-6. Deploys source pod and replays its QEMU command line in a destination helper pod
-7. Starts continuous ping and runs migration
-8. Reports zero-drop proof
+
+Steps 4-8 are identical to the Cilium test in [Section 7](#7-cilium-e2e-migration-test-two-node-zero-drop-proof);
+only steps 1-3 differ.
 
 ## 9. Kind + Podman E2E Migration Test (Two-Node, Zero-Drop Proof)
 
@@ -992,12 +993,7 @@ Kind is faster to spin up and tear down, making it useful for CI pipelines. The 
   PASS: ZERO PACKET LOSS VERIFIED
 ```
 
-### Artifacts
-
-| Artifact | How to Collect | Contents |
-|----------|----------------|----------|
-| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
+Artifacts: see the table in [Section 6](#6-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof).
 
 ## 10. NFS Shared-Storage E2E Migration Test (Two-Node, Zero-Drop Proof)
 
@@ -1063,10 +1059,7 @@ The default `--storage none` E2E mode uses `--shared-storage` only to skip the s
 
 ### Artifacts
 
-| Artifact | How to Collect | Contents |
-|----------|----------------|----------|
-| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
+See the table in [Section 6](#6-ovn-kubernetes-e2e-migration-test-two-node-zero-drop-proof).
 
 ## 11. Job-Based Orchestration Details (Kind + Podman, Zero-Drop Proof)
 

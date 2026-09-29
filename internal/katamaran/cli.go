@@ -193,7 +193,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// Validate mode before any side effects (logger setup, warnings).
 	switch mode {
 	case roleSource, roleDest:
-		// valid
 	case "":
 		_, _ = fmt.Fprintf(stderr, "Error: --mode is required (valid: source, dest)\n\n")
 		printUsage(stderr)

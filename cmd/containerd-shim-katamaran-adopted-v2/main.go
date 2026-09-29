@@ -286,7 +286,7 @@ func runServer(logFn func(format string, args ...any)) error {
 	// shim works regardless of which API the host containerd happens to
 	// pick. The v2 wrapper just adapts the request/response types: the
 	// adoption logic lives in adoptedTaskService and is shared.
-	taskAPIv2.RegisterTTRPCTaskService(srv, &v2Adapter{inner: taskSvc, logFn: logFn})
+	taskAPIv2.RegisterTTRPCTaskService(srv, &v2Adapter{inner: taskSvc})
 	logFn("ttrpc server starting")
 
 	go func() {
@@ -735,7 +735,6 @@ func (s *adoptedTaskService) Stats(_ context.Context, _ *taskAPI.StatsRequest) (
 // additions without per-method code changes.
 type v2Adapter struct {
 	inner *adoptedTaskService
-	logFn func(format string, args ...any)
 }
 
 func proxyMessage(in proto.Message, out proto.Message) error {

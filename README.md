@@ -29,8 +29,6 @@ Supports both **local storage** (NBD drive-mirror) and **shared storage** (Ceph,
 
 Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata Containers, pods typically use local virtio-blk disks, meaning the entire block device must be migrated alongside RAM and network state. `katamaran` orchestrates all three phases in the correct order while guaranteeing **zero in-flight packet drops** during the cutover.
 
-> *Like a catamaran glides between two hulls, katamaran glides your VM between two nodes: smoothly, with nothing lost overboard.*
-
 ---
 
 ## Table of Contents
@@ -54,8 +52,6 @@ See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAG
 ---
 
 ## Getting Started
-
-This section walks you through building katamaran, setting up a two-node cluster with Kata Containers, and running your first live migration, step by step.
 
 ### Tutorial Requirements
 

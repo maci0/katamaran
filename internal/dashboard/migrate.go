@@ -203,10 +203,7 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build and validate the orchestrator request before touching migration
-	// state. Earlier handleMigrate flipped isMigrating + bumped counters
-	// before Validate, so a bad request polluted /api/status's
-	// last_migration_* fields and the lifetime "failed" counter even though
-	// no migration ever ran.
+	// state, so a bad request cannot pollute /api/status.
 	req := formToOrchestratorRequest(r, podMode, resolvedSrcNode, resolvedDestIP, downtimeMS)
 	if err := orchestrator.Validate(req); err != nil {
 		slog.Warn("Migration request rejected: invalid orchestrator request", "error", err, "request_id", requestIDFromContext(r.Context()))

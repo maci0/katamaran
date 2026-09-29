@@ -133,8 +133,8 @@ func writeProgressMetrics(w io.Writer, snap map[string]controller.MigrationProgr
 		func(e controller.MigrationProgressEntry) int64 { return e.RAMTransferred })
 	emitIntGauge("katamaran_migration_ram_total_bytes", "Total RAM bytes to transfer.",
 		func(e controller.MigrationProgressEntry) int64 { return e.RAMTotal })
-	fmt.Fprintf(w, "# HELP katamaran_migration_phase Current migration phase.\n")
-	fmt.Fprintf(w, "# TYPE katamaran_migration_phase gauge\n")
+	fmt.Fprint(w, "# HELP katamaran_migration_phase Current migration phase.\n")
+	fmt.Fprint(w, "# TYPE katamaran_migration_phase gauge\n")
 	for _, id := range ids {
 		fmt.Fprintf(w, "katamaran_migration_phase{migration_id=%q,phase=%q} 1\n", id, snap[id].Phase)
 	}

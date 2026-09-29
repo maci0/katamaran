@@ -160,7 +160,6 @@ func main() {
 		}
 	}
 
-	// Normalize enum flags for case-insensitive matching.
 	*logFormat = strings.ToLower(*logFormat)
 	*logLevel = strings.ToLower(*logLevel)
 

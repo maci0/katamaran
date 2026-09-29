@@ -10,15 +10,7 @@
 // reconciler call into the orchestrator package directly rather than
 // shelling out to this binary.
 //
-// Example:
-//
-//	echo '{
-//	  "SourceNode":"worker-a","DestNode":"worker-b","DestIP":"10.0.0.20",
-//	  "Image":"localhost/katamaran:dev",
-//	  "SourcePod":{"Namespace":"default","Name":"kata-demo"},
-//	  "DestPod":{"Namespace":"default","Name":"kata-dest-shell"},
-//	  "SharedStorage":true,"ReplayCmdline":true
-//	}' | katamaran-orchestrator
+// Run with --help for a request example.
 package main
 
 import (

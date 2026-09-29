@@ -354,7 +354,7 @@ func captureSourceCmdline(qemuPID int, outPath string) error {
 		return fmt.Errorf("captured cmdline for pid %d is empty", qemuPID)
 	}
 
-	if dir := filepath.Dir(outPath); dir != "" && dir != "." {
+	if dir := filepath.Dir(outPath); dir != "." {
 		// 0o700 keeps the captured cmdline out of reach of other UIDs sharing
 		// the host /tmp via the cmdline-dir hostPath mount. Matches the dest
 		// side's writeCmdlineTempFile, which uses the same dir.
@@ -665,7 +665,6 @@ var spawnDetachedProcess = func(name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set
 	cmd.Stdout = logWriter{name, "stdout"}
 	cmd.Stderr = logWriter{name, "stderr"}
-	cmd.Stdin = nil
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)

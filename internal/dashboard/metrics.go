@@ -35,8 +35,6 @@ var (
 )
 
 func recordHTTPRequest(status int, duration time.Duration) {
-	// Caller (requestLogger) gates observability paths upstream so this
-	// function is only entered for paths that should be metered.
 	dashboardHTTPRequestsTotal.Add(1)
 	dashboardHTTPResponsesByStatusClass.Add(statusClass(status), 1)
 	dashboardHTTPRequestDurationMSTotal.Add(duration.Milliseconds())

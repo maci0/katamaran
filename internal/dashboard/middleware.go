@@ -115,8 +115,7 @@ func requestLogger(next http.Handler) http.Handler {
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey, reqID))
 		next.ServeHTTP(rw, r)
 		// Skip metric recording and logging for health, readiness, metrics,
-		// and debug scrape paths. Single check avoids the duplicate
-		// isObservabilityPath inside recordHTTPRequest.
+		// and debug scrape paths.
 		if isObservabilityPath(r.URL.Path) {
 			return
 		}

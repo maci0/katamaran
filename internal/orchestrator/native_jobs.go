@@ -23,11 +23,6 @@ var sourceJobTemplate []byte
 //go:embed templates/job-dest.yaml
 var destJobTemplate []byte
 
-// jobSuffix returns the per-migration Job name suffix. Migration IDs are
-// 16 lowercase hex chars, short enough to embed in a 253-char Job name
-// and long enough to avoid collisions across concurrent migrations.
-func jobSuffix(id MigrationID) string { return string(id) }
-
 // renderSourceJob and renderDestJob substitute ${VAR} placeholders in the
 // embedded templates and decode the result into a typed *batchv1.Job ready
 // for Create. The substitution intentionally mirrors `envsubst $VAR` from
@@ -42,7 +37,7 @@ func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Jo
 		"DEST_IP":                req.DestIP,
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
-		"JOB_SUFFIX":             jobSuffix(id),
+		"JOB_SUFFIX":             string(id),
 	})
 }
 
@@ -55,7 +50,7 @@ func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job,
 		"QMP_SOCKET":             cmp.Or(req.DestQMP, migration.DestDefaultQMPSocket),
 		"EXTRA_ARGS":             extraArgs,
 		"KATAMARAN_MIGRATION_ID": string(id),
-		"JOB_SUFFIX":             jobSuffix(id),
+		"JOB_SUFFIX":             string(id),
 	})
 	if err != nil {
 		return nil, err

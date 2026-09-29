@@ -79,9 +79,6 @@ func FuzzMigrateInfoUnmarshal(f *testing.F) {
 		if err := json.Unmarshal(data, &info); err != nil {
 			return
 		}
-		switch info.Status {
-		case "completed", "failed", "cancelled":
-		}
 		if info.Status == "failed" && info.ErrorDesc != "" {
 			_ = fmt.Errorf("migration failed: %s", info.ErrorDesc)
 		}
