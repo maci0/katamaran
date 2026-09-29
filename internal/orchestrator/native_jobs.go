@@ -4,6 +4,7 @@ import (
 	"cmp"
 	_ "embed"
 	"fmt"
+	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -118,4 +119,74 @@ func expandShellVars(s string, vars map[string]string) string {
 		i++
 	}
 	return out.String()
+}
+
+// sourceExtraArgs returns the EXTRA_ARGS string for the source Job. It
+// augments the shared buildExtraArgs with source-only flags that the source
+// CLI requires but that must not leak into the dest command. In legacy mode
+// (no SourcePod) the source binary needs an explicit --vm-ip, otherwise it
+// exits 2 with "source mode requires either (--vm-ip ...) or (--pod-name ...)";
+// a SourceQMP override is forwarded too. In pod mode the source CLI rejects
+// --qmp/--vm-ip alongside --pod-name, so nothing extra is added and the
+// caller-supplied override (if any) is intentionally ignored.
+func sourceExtraArgs(req Request) string {
+	base := buildExtraArgs(req)
+	if req.SourcePod != nil {
+		return base
+	}
+	extra := []string{base, "--vm-ip", req.VMIP}
+	if req.SourceQMP != "" {
+		extra = append(extra, "--qmp", req.SourceQMP)
+	}
+	return strings.TrimSpace(strings.Join(extra, " "))
+}
+
+// buildExtraArgs assembles the EXTRA_ARGS string appended to both rendered
+// source and dest container commands. Mode-specific flags may appear in this
+// shared string; the katamaran CLI warns and ignores flags that do not apply
+// to the current mode. Replay cmdline delivery flags are appended separately.
+// Source-only flags (--vm-ip, legacy --qmp) are added by sourceExtraArgs.
+func buildExtraArgs(req Request) string {
+	var args []string
+	if req.SharedStorage {
+		args = append(args, "--shared-storage")
+	}
+	if req.SourcePod != nil {
+		args = append(args, "--pod-name", req.SourcePod.Name, "--pod-namespace", req.SourcePod.Namespace)
+	}
+	if req.DestPod != nil {
+		args = append(args, "--dest-pod-name", req.DestPod.Name, "--dest-pod-namespace", req.DestPod.Namespace)
+	}
+	if req.TapIface != "" {
+		args = append(args, "--tap", req.TapIface)
+	}
+	if req.TapNetns != "" {
+		args = append(args, "--tap-netns", req.TapNetns)
+	}
+	if req.TunnelMode != "" {
+		args = append(args, "--tunnel-mode", req.TunnelMode)
+	}
+	if req.DowntimeMS > 0 {
+		args = append(args, "--downtime", strconv.Itoa(req.DowntimeMS))
+	}
+	if req.AutoDowntime {
+		args = append(args, "--auto-downtime")
+		if req.AutoDowntimeFloorMS > 0 {
+			args = append(args, "--auto-downtime-floor-ms", strconv.Itoa(req.AutoDowntimeFloorMS))
+		}
+	}
+	if req.CNIConvergenceDelaySeconds > 0 {
+		args = append(args, "--cni-convergence-delay", fmt.Sprintf("%ds", req.CNIConvergenceDelaySeconds))
+	}
+	// Always pass --multifd-channels (including 0) so the source binary
+	// does not fall back to its own non-zero default and create a multifd
+	// mismatch with the dest (which sets multifd from this same value).
+	args = append(args, "--multifd-channels", strconv.Itoa(req.MultifdChannels))
+	if req.LogLevel != "" {
+		args = append(args, "--log-level", req.LogLevel)
+	}
+	if req.LogFormat != "" {
+		args = append(args, "--log-format", req.LogFormat)
+	}
+	return strings.Join(args, " ")
 }
