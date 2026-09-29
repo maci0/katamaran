@@ -81,3 +81,19 @@ func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed
 	}
 	return true
 }
+
+// rejectUnknownFormFields applies the allowlist to r.Form, the merge of the
+// request body and the query string. Endpoints documented to accept a
+// parameter in either place need this rather than rejectUnknownPostFormFields,
+// so a misspelled name is rejected whichever transport carried it.
+func rejectUnknownFormFields(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
+	for _, key := range slices.Sorted(maps.Keys(r.Form)) {
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
+		jsonError(w, "Unknown form field: "+key, http.StatusBadRequest)
+		return false
+	}
+	return true
+}

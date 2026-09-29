@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -438,6 +439,51 @@ func TestHandleStatus_IncludesLogsAndPings(t *testing.T) {
 	}
 }
 
+// TestHandleStatus_MalformedCursorRejected pins that a cursor the endpoint
+// cannot parse answers 400 naming the field. The previous behavior fell back
+// to a full snapshot, so a client stuck on a bad cursor never learned why its
+// incremental view was not advancing.
+func TestHandleStatus_MalformedCursorRejected(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, target, field string }{
+		{"logs", "/api/status?logs_after=abc", "logs_after"},
+		{"pings", "/api/status?pings_after=-1", "pings_after"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := &App{}
+			app.appendLog("a log")
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			w := httptest.NewRecorder()
+			app.handleStatus(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for malformed %s, got %v", tc.field, w.Code)
+			}
+			var resp map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to unmarshal error body: %v", err)
+			}
+			if !strings.Contains(resp["error"], tc.field) {
+				t.Fatalf("error %q does not name field %q", resp["error"], tc.field)
+			}
+		})
+	}
+}
+
+// TestHandleStatus_EmptyCursorAccepted pins that omitting a cursor, the
+// documented full-snapshot request, still answers 200.
+func TestHandleStatus_EmptyCursorAccepted(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	app.appendLog("a log")
+	req := httptest.NewRequest(http.MethodGet, "/api/status?logs_after=&pings_after=", nil)
+	w := httptest.NewRecorder()
+	app.handleStatus(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for empty cursors, got %v", w.Code)
+	}
+}
+
 func TestHandleStatus_DeltaLogsAndPings(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -630,6 +676,47 @@ func TestHandlePingStart_MissingTarget(t *testing.T) {
 	app.handlePingStart(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing target, got %v", w.Code)
+	}
+}
+
+// TestHandleLoadgenStart_UnknownFieldRejected pins that both loadgen start
+// endpoints apply the same one-field allowlist to the query string they
+// already apply to the form body. A typo in either transport must answer 400
+// instead of silently starting a generator with a defaulted target.
+func TestHandleLoadgenStart_UnknownFieldRejected(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, target string
+		handler      func(*App, http.ResponseWriter, *http.Request)
+	}{
+		{"ping query", "/api/ping?target=192.0.2.1&targt=192.0.2.2", (*App).handlePingStart},
+		{"ping body", "/api/ping", (*App).handlePingStart},
+		{"httpgen query", "/api/httpgen?target=192.0.2.1&targt=192.0.2.2", (*App).handleHTTPStart},
+		{"httpgen body", "/api/httpgen", (*App).handleHTTPStart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := &App{}
+			t.Cleanup(app.stopLoadgen)
+			var body io.Reader
+			if tc.target == "/api/ping" || tc.target == "/api/httpgen" {
+				body = strings.NewReader("target=192.0.2.1&targt=192.0.2.2")
+			}
+			req := httptest.NewRequest(http.MethodPost, tc.target, body)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			tc.handler(app, w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for unknown field, got %v", w.Code)
+			}
+			var resp map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to unmarshal error body: %v", err)
+			}
+			if !strings.Contains(resp["error"], "targt") {
+				t.Fatalf("error %q does not name the unknown field", resp["error"])
+			}
+		})
 	}
 }
 

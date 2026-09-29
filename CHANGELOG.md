@@ -49,6 +49,15 @@ workflow refuses to publish a tag that has no section below.
 
 ### Changed
 
+- `GET /api/status` answers `400` naming the field when `logs_after` or
+  `pings_after` is not a non-negative integer. It previously fell back to a
+  full snapshot, so a client stuck on a bad cursor never learned why its
+  incremental view stopped advancing. Omitting a cursor still returns the
+  documented full snapshot.
+- `/api/ping` and `/api/httpgen` apply the same `target`-only allowlist to
+  the query string they already applied to the form body. A misspelled
+  query parameter now answers `400` instead of being dropped while the
+  request starts a generator with a defaulted target.
 - `deploy/migrate.sh --help` lists its exit codes, matching every binary in
   the project: 0 on a completed migration, 1 on a runtime error, 2 on an
   argument or configuration error.

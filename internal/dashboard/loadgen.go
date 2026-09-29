@@ -123,7 +123,12 @@ func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, labe
 	if !parseFormPOST(w, r, label) {
 		return "", nil, false
 	}
-	if !rejectUnknownPostFormFields(w, r, loadgenFormKeySet, label) {
+	// Both endpoints take target from either the form body or the query
+	// string (the dashboard UI uses the query string, curl uses the body),
+	// so the allowlist covers r.Form, which is the merge of the two.
+	// Without this a typo'd query parameter is dropped silently while the
+	// same typo in the body is a 400.
+	if !rejectUnknownFormFields(w, r, loadgenFormKeySet, label) {
 		return "", nil, false
 	}
 	target = r.FormValue("target")

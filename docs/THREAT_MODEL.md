@@ -27,20 +27,25 @@ covered by the dependency review, not here. Every claim below carries a
 
 Network listeners and endpoints:
 
-- Dashboard HTTP server, default `:8080`, exposed as a ClusterIP Service
-  (`internal/dashboard/server.go:207`, `internal/dashboard/server.go:256`,
-  `deploy/dashboard.yaml:182`). Routes: `GET /healthz`, `GET /readyz`,
+- Dashboard HTTP server, default `:8080`
+  (`internal/dashboard/server.go:128`, `internal/dashboard/server.go:225`).
+  `deploy/dashboard.yaml` ships no Service, so the default install is reached
+  by `kubectl port-forward` only; `deploy/monitoring.yaml` adds a ClusterIP
+  `katamaran-dashboard-metrics` Service on 8080, applied only where a
+  Prometheus Operator is installed, and that Service does reach the UI
+  (`deploy/monitoring.yaml:30`).
+  Routes: `GET /healthz`, `GET /readyz`,
   `GET /metrics`, `GET /{$}`, four `/assets/*` handlers, `GET /api/status`,
   `/api/pods`, `/api/nodes`, `/api/history`, and the state-changing
   `POST /api/migrate`, `/api/migrate/stop`, `/api/ping`, `/api/ping/stop`,
-  `/api/httpgen`, `/api/httpgen/stop` (`internal/dashboard/server.go:259`).
+  `/api/httpgen`, `/api/httpgen/stop` (`internal/dashboard/server.go:273`).
 - Manager observability server, plain HTTP: `GET /healthz`, `GET /readyz`,
   `GET /metrics`, `GET /debug/vars` (`cmd/katamaran-mgr/debug.go:44`).
 - Admission webhook server, HTTPS with an in-memory self-signed cert:
   `POST /admit`, `GET /healthz` (`cmd/katamaran-mgr/webhook.go:138`,
   `cmd/katamaran-mgr/webhook.go:161`).
 - Dashboard debug routes, behind `--enable-debug`: `/debug/pprof/` and
-  `/debug/vars` (`internal/dashboard/server.go:279`).
+  `/debug/vars` (`internal/dashboard/server.go:336`).
 
 IPC and host sockets:
 
@@ -68,12 +73,12 @@ Inputs from outside the trust boundary:
 - QEMU JSON responses over the QMP socket (`internal/qmp/client.go:219`).
 - Source pod logs and `/proc/<pid>/cmdline` captured from another pod
   (`internal/migration/cmdlinefetch.go:114`,
-  `internal/katamaran/cli.go:153`).
-- Environment: `KATAMARAN_MIGRATION_IMAGE` (`internal/dashboard/server.go:169`,
+  `internal/katamaran/cli.go:181`).
+- Environment: `KATAMARAN_MIGRATION_IMAGE` (`internal/dashboard/server.go:174`,
   `cmd/katamaran-mgr/main.go:173`), `KATAMARAN_ALLOWED_NAMESPACES`
   (`internal/dashboard/server.go:185`),
   `KATAMARAN_POD_WAIT_TIMEOUT`
-  (`cmd/katamaran-mgr/main.go:207`), `KATAMARAN_MIGRATION_ID`
+  (`cmd/katamaran-mgr/main.go:339`), `KATAMARAN_MIGRATION_ID`
   (`internal/katamaran/cli.go:213`), `KATAMARAN_SHIM_LISTENER_FD`,
   `KATAMARAN_SHIM_SOCKET_PATH`, `KUBECONFIG`, `KUBERNETES_SERVICE_HOST`,
   `KUBERNETES_SERVICE_PORT` (`internal/migration/podresolve.go:301`).
@@ -291,22 +296,22 @@ Present in code:
   and same-origin-only asset sourcing (`internal/dashboard/middleware.go:222`).
 - Target screening for the load generators, with DNS revalidation in the
   dialer and redirects disabled
-  (`internal/dashboard/validation.go:61`, `internal/dashboard/loadgen.go:275`).
+  (`internal/dashboard/validation.go:61`, `internal/dashboard/loadgen.go:278`).
   Does not cover RFC1918 or in-cluster service addresses.
 - Shell-safe validation of every migrate form field and an allowlist of
   accepted form keys (`internal/dashboard/migrate.go:86`,
-  `internal/dashboard/validation.go:152`,
+  `internal/dashboard/validation.go:155`,
   `internal/orchestrator/validation.go:20`).
 - Exact image allowlist for privileged Jobs
   (`internal/dashboard/migrate.go:103`, `cmd/katamaran-mgr/main.go:173`).
 - HTTP server timeouts and header size caps on the dashboard and manager
-  servers (`internal/dashboard/server.go:209`, `cmd/katamaran-mgr/debug.go:19`).
+  servers (`internal/dashboard/server.go:223`, `cmd/katamaran-mgr/debug.go:19`).
 - Bounded webhook request body and bounded pod-log scanning
   (`cmd/katamaran-mgr/webhook.go:176`,
   `internal/migration/cmdlinefetch.go:20`).
 - Non-root, read-only root filesystem, dropped capabilities and
   `RuntimeDefault` seccomp on the manager and dashboard workloads
-  (`deploy/manager.yaml:168`, `deploy/dashboard.yaml:143`).
+  (`deploy/manager.yaml:198`, `deploy/dashboard.yaml:197`).
 - Leader election so only one manager patches the webhook CA bundle
   (`deploy/manager.yaml:43`).
 - Panic recovery and per-request logging with a validated request ID
@@ -397,18 +402,18 @@ namespace, with no other privilege, can:
 - Delete a pod in its own namespace after migration with
   `spec.sourceCleanup: delete` (`internal/controller/reconciler.go:552`).
 - Choose the encapsulation of the unencrypted migration tunnel
-  (`internal/orchestrator/validation.go:76`).
+  (`cmd/katamaran-mgr/main.go:281`).
 
 A caller who can reach the dashboard, without any credentials, can:
 
 - Trigger a migration of any pod it can name to any node it can name
   (`POST /api/migrate`, `internal/dashboard/migrate.go:74`). The pod list
   endpoint supplies the inventory to do this
-  (`internal/dashboard/server.go:268`).
+  (`internal/dashboard/server.go:441`).
 - Enumerate every pod and node in the cluster (`/api/pods`, `/api/nodes`).
 - Use the load generator to probe cluster-internal services for open ports and
   to generate sustained traffic against a chosen target
-  (`internal/dashboard/loadgen.go:134`).
+  (`internal/dashboard/loadgen.go:150`).
 - Read the migration history, including the node pairs and images used
   (`/api/history`).
 

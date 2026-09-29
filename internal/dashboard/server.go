@@ -480,19 +480,34 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	rawLogs := q.Get("logs_after")
 	rawPings := q.Get("pings_after")
-	logsAfter, logsDelta := parseStatusCursor(rawLogs)
-	pingsAfter, pingsDelta := parseStatusCursor(rawPings)
-	// Surface malformed cursors so client bugs are diagnosable; behavior
-	// stays unchanged (a bad cursor falls back to the full snapshot).
-	if rawLogs != "" && !logsDelta {
-		slog.Debug("Ignoring malformed logs_after cursor", "logs_after", rawLogs, "request_id", requestIDFromContext(r.Context()))
+	// A cursor this endpoint cannot parse is a client bug, so it is rejected
+	// like any other invalid field rather than silently answered with the
+	// full snapshot: a client stuck on a rejected value would otherwise keep
+	// asking and never learn why its incremental view is not advancing.
+	cursors := []struct {
+		name   string
+		raw    string
+		after  int64
+		active bool
+	}{
+		{name: "logs_after", raw: rawLogs},
+		{name: "pings_after", raw: rawPings},
 	}
-	if rawPings != "" && !pingsDelta {
-		slog.Debug("Ignoring malformed pings_after cursor", "pings_after", rawPings, "request_id", requestIDFromContext(r.Context()))
+	for i := range cursors {
+		if cursors[i].raw == "" {
+			continue
+		}
+		after, ok := parseStatusCursor(cursors[i].raw)
+		if !ok {
+			slog.Warn("Status request rejected: malformed cursor", "field", cursors[i].name, "value", cursors[i].raw, "request_id", requestIDFromContext(r.Context()))
+			jsonError(w, fmt.Sprintf("Invalid value for %s (expected a non-negative integer cursor)", cursors[i].name), http.StatusBadRequest)
+			return
+		}
+		cursors[i].after, cursors[i].active = after, true
 	}
 
 	a.migrationMutex.Lock()
-	logView, logsNext, logsReset := cursorWindow(a.migrationOutput, a.migrationLogSeq, logsAfter, logsDelta)
+	logView, logsNext, logsReset := cursorWindow(a.migrationOutput, a.migrationLogSeq, cursors[0].after, cursors[0].active)
 	logs := make([]string, len(logView))
 	copy(logs, logView)
 	status := a.isMigrating
@@ -517,7 +532,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.loadgenMutex.Lock()
-	pingView, pingsNext, pingsReset := cursorWindow(a.pingLog, a.pingSeq, pingsAfter, pingsDelta)
+	pingView, pingsNext, pingsReset := cursorWindow(a.pingLog, a.pingSeq, cursors[1].after, cursors[1].active)
 	pings := make([]PingData, len(pingView))
 	copy(pings, pingView)
 	loadgenRunning := a.loadgenRunning

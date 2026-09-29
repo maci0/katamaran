@@ -40,10 +40,10 @@ A web UI for orchestrating katamaran live migrations, visualizing ping latency (
 | `/api/nodes` | GET | List of nodes labeled `katacontainers.io/kata-runtime=true`: `[{name, internal_ip}]`. Backs the Dest Node dropdown. |
 | `/api/migrate` | POST | Start migration. See the form-field table below. Answers `202 Accepted` with `{"message","migration_id"}`. |
 | `/api/migrate/stop` | POST | Cancel running migration. Always `200 OK` with `{"message","stopped","migration_id"}`; `stopped` is false when nothing was running, so the call is safe to repeat. |
-| `/api/status` | GET | JSON status for the UI, including migration state, counters, `history`, `logs`, `logs_next`, `logs_reset`, `pings`, `pings_next`, and `pings_reset`. Accepts `logs_after` and `pings_after` cursors for incremental polling. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
+| `/api/status` | GET | JSON status for the UI, including migration state, counters, `history`, `logs`, `logs_next`, `logs_reset`, `pings`, `pings_next`, and `pings_reset`. Accepts `logs_after` and `pings_after` cursors for incremental polling; a cursor that is not a non-negative integer answers `400` naming the field, so a client bug is visible instead of being answered with a silently stale view. `migration_progress` is `{phase, ram_transferred, ram_total, downtime_ms}` while a migration is running and after it completes (until the next run starts). |
 | `/api/history` | GET | Completed migrations, newest first |
 | `/api/ping` | POST | Start continuous ping (5/sec) to target. Accepts `target=<host-or-ip>` via form body or query string. |
-| `/api/ping/stop` | POST | Stop active ping/loadgen. Same handler and response as `/api/httpgen/stop`; either path stops whichever generator is running. |
+| `/api/ping/stop` | POST | Stop active ping/loadgen. Same handler and response as `/api/httpgen/stop`; either path stops whichever generator is running. Answers `200 OK` with `{"message","stopped","loadgen_type"}`; `stopped` is false when nothing was running, so the call is safe to repeat. |
 | `/api/httpgen` | POST | Start HTTP load generator (5 req/sec) to target. Accepts `target=<host-or-ip[:port]>` via form body or query string. |
 | `/api/httpgen/stop` | POST | Stop active ping/loadgen. Same handler and response as `/api/ping/stop`; either path stops whichever generator is running. |
 | `/metrics` | GET | Prometheus text-format operational metrics |
@@ -67,7 +67,7 @@ explicit mode, which requires the source-side fields.
 | `downtime` | optional | optional | Integer milliseconds, 1 to 60000. Defaults to the orchestrator value when omitted. |
 | `auto_downtime` | optional | optional | Literal `true` or `false`; anything else is `400`. |
 | `shared_storage` | optional | optional | Literal `true` or `false`; anything else is `400`. |
-| `replay_cmdline` | optional | ignored in legacy mode | Literal `true` or `false`; anything else is `400`. Requires pod-picker mode: the source QEMU PID the cmdline is read from is resolved from `source_pod_*`, so legacy explicit-source requests are rejected with `400`. |
+| `replay_cmdline` | optional | rejected | Literal `true` or `false`; anything else is `400`. Requires pod-picker mode: the source QEMU PID the cmdline is read from is resolved from `source_pod_*`, so a legacy explicit-source request answers `400`. |
 | `tunnel_mode` | optional | optional | One of `ipip`, `gre`, `none`; anything else is `400`. |
 
 Non-2xx responses:
@@ -84,7 +84,7 @@ API conventions:
 
 - State-changing `/api/*` endpoints accept `application/x-www-form-urlencoded` request bodies. Empty-body calls may pass parameters in the query string only where the endpoint description says so.
 - JSON responses set `Cache-Control: no-store`; errors use `{"error":"..."}` and may include endpoint-specific fields such as `migration_id`, `loadgen_type`, or `allow`.
-- Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values.
+- Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values. `/api/ping` and `/api/httpgen` take `target` from the body or the query string and apply the same one-field allowlist to both.
 - List endpoints (`/api/pods`, `/api/nodes`, `/api/history`, and the `logs`, `pings`, and `history` arrays in `/api/status`) answer `[]` on an empty result, never `null`, so clients can iterate them without a nil check.
 - A wrong method on a known `/api/*` path answers `405` with an `Allow` header and the same `{"error":...}` envelope; an unknown `/api/*` path answers `404`.
 
