@@ -218,6 +218,41 @@ func TestShouldDenyPodCreate_AdoptionPodBypassesEvenWithMatchingMark(t *testing.
 	}
 }
 
+// Expiry is driven through the registry's injected clock, not by reaching
+// into expiresAt: a run that replays a script advances time instead of
+// sleeping out the 5-minute TTL, so the same sequence of marks and queries
+// produces the same answers every time.
+func TestPendingAdoption_ExpiresOnInjectedClock(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reg := newPendingAdoptionRegistry()
+	reg.now = func() time.Time { return now }
+
+	uid := types.UID("rs-1")
+	reg.Mark(uid, "mig-abc")
+	if got := reg.MigrationFor(uid); got != "mig-abc" {
+		t.Fatalf("MigrationFor before TTL = %q, want mig-abc", got)
+	}
+
+	// Expiry is strict: an entry is still live at exactly expiresAt and
+	// lapses the moment the clock passes it.
+	now = now.Add(pendingAdoptionTTL)
+	if got := reg.MigrationFor(uid); got != "mig-abc" {
+		t.Fatalf("MigrationFor at TTL = %q, want mig-abc", got)
+	}
+
+	now = now.Add(time.Second)
+	if got := reg.MigrationFor(uid); got != "" {
+		t.Fatalf("MigrationFor past TTL = %q, want empty", got)
+	}
+
+	// A re-Mark after expiry re-arms the window from the new current time.
+	reg.Mark(uid, "mig-def")
+	if got := reg.MigrationFor(uid); got != "mig-def" {
+		t.Fatalf("MigrationFor after re-Mark = %q, want mig-def", got)
+	}
+}
+
 func TestShouldDenyPodCreate_NilSafe(t *testing.T) {
 	t.Parallel()
 	var r *Reconciler

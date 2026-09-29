@@ -17,6 +17,12 @@
 // The Request type is mode-agnostic: callers can specify either an explicit
 // QMP socket path (legacy) or a pod identity (modern, lets the source job
 // resolve sandbox/PID/IP at runtime). See Request.SourcePod in types.go.
+//
+// Determinism: poll's tickers, deadlines and status timestamps all come from
+// the time package, so a test that wraps the call in a testing/synctest
+// bubble virtualizes them, and a scripted apiserver then replays byte for
+// byte (see replay_test.go). Migration IDs are the one input that bubble
+// cannot virtualize: native.ids is the seam that injects a scripted source.
 package orchestrator
 
 import (

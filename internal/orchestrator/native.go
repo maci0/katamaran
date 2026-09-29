@@ -57,6 +57,7 @@ type native struct {
 	client         kubernetes.Interface
 	namespace      string
 	podWaitTimeout time.Duration // default for firstSourcePod; overridden by Request.PodWaitTimeoutSeconds
+	ids            idSource      // migration ID minting; newID unless a test injects one
 
 	mu       sync.Mutex
 	inflight map[MigrationID]*nativeRun
@@ -145,6 +146,7 @@ func newFromClient(c kubernetes.Interface) *native {
 		client:         c,
 		namespace:      DefaultJobNamespace,
 		podWaitTimeout: defaultPodWaitTimeout,
+		ids:            newID,
 		inflight:       map[MigrationID]*nativeRun{},
 	}
 }
@@ -290,7 +292,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		return "", err
 	}
 
-	id := newID()
+	id := n.ids()
 	cmdlinePath := cmdlinePathFor(id)
 	srcExtra := sourceExtraArgs(req)
 	destExtra := buildExtraArgs(req)

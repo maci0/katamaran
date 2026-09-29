@@ -45,13 +45,18 @@ const pendingAdoptionTTL = 5 * time.Minute
 
 // pendingAdoptionRegistry is the data store the webhook consults. It
 // is keyed by RS UID so the per-Pod webhook check is O(1).
+//
+// now is the clock expiry runs on. It defaults to time.Now so a run that
+// replays a script can drive expiry from an injected clock instead of
+// sleeping out the TTL; nothing else in the registry reads the wall clock.
 type pendingAdoptionRegistry struct {
 	mu      sync.Mutex
+	now     func() time.Time
 	entries map[types.UID]pendingAdoption
 }
 
 func newPendingAdoptionRegistry() *pendingAdoptionRegistry {
-	return &pendingAdoptionRegistry{entries: map[types.UID]pendingAdoption{}}
+	return &pendingAdoptionRegistry{now: time.Now, entries: map[types.UID]pendingAdoption{}}
 }
 
 // Mark records that the RS identified by uid is in the source-deleted-
@@ -66,7 +71,7 @@ func (p *pendingAdoptionRegistry) Mark(uid types.UID, migrationID string) {
 	// map doesn't accumulate stale entries for controllers that are never
 	// re-queried. MigrationFor only prunes the single UID it reads, so a
 	// reconciler that Marks and then crashes would otherwise leak forever.
-	now := time.Now()
+	now := p.now()
 	for k, e := range p.entries {
 		if now.After(e.expiresAt) {
 			delete(p.entries, k)
@@ -91,7 +96,7 @@ func (p *pendingAdoptionRegistry) MigrationFor(uid types.UID) string {
 	if !ok {
 		return ""
 	}
-	if time.Now().After(e.expiresAt) {
+	if p.now().After(e.expiresAt) {
 		delete(p.entries, uid)
 		return ""
 	}

@@ -15,3 +15,10 @@ func newID() MigrationID {
 	}
 	return MigrationID(hex.EncodeToString(b[:]))
 }
+
+// idSource mints migration IDs. Production uses newID (crypto/rand, since
+// the ID names cluster-visible Jobs and must not collide across concurrent
+// migrations). Deterministic runs substitute a scripted source: crypto/rand
+// is the one input synctest cannot virtualize, so an injected source is
+// what makes a replayed Apply produce the same Job names, byte for byte.
+type idSource func() MigrationID
