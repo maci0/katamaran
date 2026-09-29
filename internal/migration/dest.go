@@ -59,24 +59,10 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// replay mode the spawn below fetches the cmdline from the apiserver,
 	// copies a multi-hundred-MB nvdimm image, creates the tap device,
 	// starts virtiofsd and launches QEMU; none of that should happen only
-	// to fail on a regex-level config error afterwards.
-	if cfg.MultifdChannels < 0 {
-		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
-	}
-	if cfg.TapIface != "" {
-		if err := validateTapIface(cfg.TapIface); err != nil {
-			return fmt.Errorf("validating tap interface: %w", err)
-		}
-	}
-	if cfg.TapNetns != "" {
-		if err := validateTapNetns(cfg.TapNetns); err != nil {
-			return fmt.Errorf("validating tap netns: %w", err)
-		}
-	}
-	if !cfg.SharedStorage {
-		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
-			return fmt.Errorf("validating drive IDs: %w", err)
-		}
+	// to fail on a regex-level config error afterwards. The CLI runs the
+	// same check so a bad value exits 2 rather than reaching this point.
+	if err := ValidateDestConfig(cfg); err != nil {
+		return err
 	}
 
 	// If a captured source cmdline is supplied, spawn the destination QEMU

@@ -21,7 +21,11 @@
 #     [--multifd-channels <n>] \
 #     [--log-level debug|info|warn|error] \
 #     [--log-format text|json] \
-#     [--context <kubectl-context>]
+#     [--context <kubectl-context>] \
+#     [--help]
+#
+# Exit codes: 0 migration completed, 1 runtime error, 2 argument error.
+# Run with --help for the full flag list.
 
 set -euo pipefail
 
@@ -132,6 +136,11 @@ usage() {
         echo ""
         echo "Other:"
         echo "  --help, -h              Show this help message"
+        echo ""
+        echo "Exit codes:"
+        echo "  0   Migration completed successfully"
+        echo "  1   Runtime error (kubectl or envsubst missing, job did not become ready, a job wait failed)"
+        echo "  2   Argument or configuration error"
         echo ""
         echo "Environment variables:"
         echo "  KATAMARAN_KEEP_JOBS=true   Keep migration jobs after completion (skip cleanup)"

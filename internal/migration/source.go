@@ -118,7 +118,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// fatal because replay-mode dest jobs cannot start QEMU without the cmdline.
 	if cfg.EmitCmdlineTo != "" {
 		if resolvedQEMUPID == 0 {
-			return fmt.Errorf("--emit-cmdline-to requires pod-mode (--pod-name) so the QEMU PID can be resolved")
+			return fmt.Errorf("no running QEMU process found in source pod %s/%s, so --emit-cmdline-to cannot resolve a PID",
+				cfg.PodNamespace, cfg.PodName)
 		}
 		if err := captureSourceCmdline(resolvedQEMUPID, cfg.EmitCmdlineTo); err != nil {
 			return fmt.Errorf("capture source QEMU cmdline: %w", err)
@@ -164,16 +165,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	if cfg.TunnelMode == "" {
 		cfg.TunnelMode = TunnelModeIPIP
 	}
-	if cfg.TunnelMode != TunnelModeIPIP && cfg.TunnelMode != TunnelModeGRE && cfg.TunnelMode != TunnelModeNone {
-		return fmt.Errorf("invalid tunnel mode: %q", cfg.TunnelMode)
-	}
-	if cfg.MultifdChannels < 0 {
-		return fmt.Errorf("multifd channels must be non-negative, got %d", cfg.MultifdChannels)
-	}
-	if !cfg.SharedStorage {
-		if err := validateDriveIDs(cfg.DriveIDs); err != nil {
-			return fmt.Errorf("validating drive IDs: %w", err)
-		}
+	// The CLI runs the same check so a bad value exits 2 without a QMP dial.
+	if err := ValidateSourceConfig(cfg); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout+storageSyncTimeout)

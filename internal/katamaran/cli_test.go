@@ -341,6 +341,49 @@ func TestRun_DestBadQMPSocket(t *testing.T) {
 	}
 }
 
+// A rejected configuration value is an argument error, not a failed
+// migration: a script that tells exit 1 (retry) from exit 2 (fix the
+// command line) depends on the distinction.
+func TestRun_InvalidConfigExitsTwo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"BadTap", []string{"--mode", "dest", "--tap", "tap0;tap1"}, "--tap"},
+		{"BadTapNetns", []string{"--mode", "dest", "--tap", "tap0", "--tap-netns", "/proc/1/ns/../net"}, "--tap-netns"},
+		{"BadDriveID", []string{"--mode", "dest", "--drive-id", "disk;0"}, "--drive-id"},
+		{"NegativeMultifdDest", []string{"--mode", "dest", "--multifd-channels", "-1"}, "--multifd-channels"},
+		{"NegativeMultifdSource", []string{"--mode", "source", "--multifd-channels", "-1"}, "--multifd-channels"},
+		{"DuplicateDriveID", []string{"--mode", "dest", "--drive-id", "disk0,disk0"}, "duplicate drive ID"},
+		{"CmdlineWithoutPod", []string{
+			"--mode", "source", "--dest-ip", "10.0.0.1", "--vm-ip", "10.244.1.5",
+			"--emit-cmdline-to", "/tmp/cmdline",
+		}, "--emit-cmdline-to requires pod mode"},
+		{"BadTunnelMode", []string{
+			"--mode", "source", "--dest-ip", "10.0.0.1", "--vm-ip", "10.244.1.5",
+			"--tunnel-mode", "vxlan",
+		}, "invalid --tunnel-mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), tt.args, &stdout, &stderr)
+			if code != 2 {
+				t.Fatalf("exit code %d, want 2 for a rejected flag value; stderr: %s", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("expected error mentioning %q, got: %s", tt.want, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "Usage:") {
+				t.Fatalf("config error should print the usage banner, got: %s", stderr.String())
+			}
+		})
+	}
+}
+
 func TestRun_DestIgnoredSourceFlags(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	// Migration will fail (bad socket), but the warning should still be printed.

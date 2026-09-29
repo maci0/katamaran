@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -178,8 +179,11 @@ func TestRunDestination_NegativeMultifd(t *testing.T) {
 		DriveIDs:        []string{"drive-virtio-disk0"},
 		MultifdChannels: -1,
 	})
-	if err == nil || !strings.Contains(err.Error(), "multifd channels must be non-negative") {
+	if err == nil || !strings.Contains(err.Error(), "--multifd-channels must be non-negative") {
 		t.Fatalf("RunDestination error = %v, want multifd validation error", err)
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("RunDestination error = %v, want it to wrap ErrInvalidConfig", err)
 	}
 }
 

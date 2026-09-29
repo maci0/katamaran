@@ -49,6 +49,9 @@ workflow refuses to publish a tag that has no section below.
 
 ### Changed
 
+- `deploy/migrate.sh --help` lists its exit codes, matching every binary in
+  the project: 0 on a completed migration, 1 on a runtime error, 2 on an
+  argument or configuration error.
 - `make lint-shell` also enables ShellCheck's `add-default-case` and
   `quote-safe-variables`.
 - The dashboard's `/api` route table is now a single declaration. The 405
@@ -103,6 +106,12 @@ workflow refuses to publish a tag that has no section below.
   GNU-only bare `-i`, which BSD sed rejects.
 - `/proc` paths are built with `filepath.Join` rather than string
   concatenation, matching the rest of the tree.
+- A rejected `katamaran` flag value exits 2, the documented argument-error
+  code, instead of 1. `--tap`, `--tap-netns`, `--drive-id`,
+  `--multifd-channels`, and `--emit-cmdline-to` were validated inside the
+  migration, after the run had started, so a typo looked to a script like a
+  failed migration. The checks are now shared between the CLI and the
+  migration package and run before anything starts.
 - `scripts/build-minikube-modules.sh` no longer pipes the container build
   into `grep | head`. A build whose output matched nothing failed the
   script under `pipefail`, and a real build failure printed none of its

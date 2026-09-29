@@ -160,7 +160,7 @@ The repository includes:
 - `internal/orchestrator/templates/job-source.yaml` (canonical source Job template, embedded into the binaries)
 - `deploy/migrate.sh` (legacy shell wrapper that renders the templates above)
 
-`deploy/migrate.sh` renders the canonical templates with `envsubst`, starts destination job first, waits for readiness, starts source job, then collects logs. It waits for each Job to complete for the `activeDeadlineSeconds` declared in the template it just applied, so a multi-hour storage sync or RAM migration is never reported as a failure while its Job is still running.
+`deploy/migrate.sh` renders the canonical templates with `envsubst`, starts destination job first, waits for readiness, starts source job, then collects logs. It waits for each Job to complete for the `activeDeadlineSeconds` declared in the template it just applied, so a multi-hour storage sync or RAM migration is never reported as a failure while its Job is still running. Exit codes: 0 on a completed migration, 1 on a runtime error, 2 on an argument or configuration error.
 
 ### Required inputs
 

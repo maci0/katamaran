@@ -142,6 +142,14 @@ func usageError(stderr io.Writer, format string, args ...any) int {
 	return 2
 }
 
+// configUsageError reports a rejected configuration value from the
+// migration package. Its errors carry the ErrInvalidConfig sentinel, which
+// the caller has already established; only the flag-specific part is worth
+// showing.
+func configUsageError(stderr io.Writer, err error) int {
+	return usageError(stderr, "%s", strings.TrimPrefix(err.Error(), migration.ErrInvalidConfig.Error()+": "))
+}
+
 // Run contains all CLI logic: flag parsing, validation, and migration execution.
 // It is separate from cmd/katamaran so validation paths can be tested without os.Exit.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -223,9 +231,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		slog.SetDefault(slog.Default().With("migration_id", mid))
 	}
 
-	if *multifdChannels < 0 {
-		return usageError(stderr, "--multifd-channels must be non-negative, got %d", *multifdChannels)
-	}
 	if mode == roleSource && (*autoDowntimeFloor < 0 || *autoDowntimeFloor > migration.MaxDowntimeMS) {
 		return usageError(stderr, "--auto-downtime-floor-ms must be between 0 and %d, got %d", migration.MaxDowntimeMS, *autoDowntimeFloor)
 	}
@@ -269,8 +274,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if *podNS != "" && *podName != "" {
 			sourcePodRef = *podNS + "/" + *podName
 		}
-		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
-		err = migration.RunDestination(ctx, migration.DestConfig{
+		cfg := migration.DestConfig{
 			QMPSocket:            *qmpSocket,
 			TapIface:             *tapIface,
 			TapNetns:             *tapNetns,
@@ -282,8 +286,34 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			ReplayCmdlineFile:    *replayCmdline,
 			ReplayCmdlineFromPod: *replayCmdlineFromPod,
 			SourcePodRef:         sourcePodRef,
-		})
+		}
+		// The migration package re-checks this; running it here is what
+		// turns a bad --tap, --tap-netns, --drive-id, or --multifd-channels
+		// into the documented exit 2 instead of a failed migration (1).
+		if verr := migration.ValidateDestConfig(cfg); verr != nil {
+			return configUsageError(stderr, verr)
+		}
+		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
+		err = migration.RunDestination(ctx, cfg)
 	case roleSource:
+		cfg := migration.SourceConfig{
+			QMPSocket:           *qmpSocket,
+			DriveIDs:            strings.Split(*driveID, ","),
+			SharedStorage:       *sharedStorage,
+			TunnelMode:          migration.TunnelMode(*tunnelMode),
+			DowntimeLimitMS:     *downtimeLimit,
+			AutoDowntime:        *autoDowntime,
+			AutoDowntimeFloorMS: *autoDowntimeFloor,
+			CNIConvergenceDelay: *cniConvergenceDelay,
+			MultifdChannels:     *multifdChannels,
+			PodName:             *podName,
+			PodNamespace:        *podNS,
+			EmitCmdlineTo:       *emitCmdlineTo,
+			Out:                 stdout,
+		}
+		if verr := migration.ValidateSourceConfig(cfg); verr != nil {
+			return configUsageError(stderr, verr)
+		}
 		if *destIP == "" {
 			return usageError(stderr, "--dest-ip is required")
 		}
@@ -326,32 +356,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// runtime, so we can't validate IP family vs --dest-ip here. The
 		// resolver enforces it itself before opening the migration
 		// listener.
-		tm := migration.TunnelMode(*tunnelMode)
-		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
-			return usageError(stderr, "invalid --tunnel-mode %q (valid: ipip, gre, none)", *tunnelMode)
-		}
 		if *downtimeLimit < 1 || *downtimeLimit > migration.MaxDowntimeMS {
 			return usageError(stderr, "--downtime must be between 1 and %d, got %d", migration.MaxDowntimeMS, *downtimeLimit)
 		}
+		cfg.DestIP = parsedDest
+		cfg.VMIP = parsedVM
 
 		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())
-		err = migration.RunSource(ctx, migration.SourceConfig{
-			QMPSocket:           *qmpSocket,
-			DestIP:              parsedDest,
-			VMIP:                parsedVM,
-			DriveIDs:            strings.Split(*driveID, ","),
-			SharedStorage:       *sharedStorage,
-			TunnelMode:          tm,
-			DowntimeLimitMS:     *downtimeLimit,
-			AutoDowntime:        *autoDowntime,
-			AutoDowntimeFloorMS: *autoDowntimeFloor,
-			CNIConvergenceDelay: *cniConvergenceDelay,
-			MultifdChannels:     *multifdChannels,
-			PodName:             *podName,
-			PodNamespace:        *podNS,
-			EmitCmdlineTo:       *emitCmdlineTo,
-			Out:                 stdout,
-		})
+		err = migration.RunSource(ctx, cfg)
 	}
 
 	if err != nil {

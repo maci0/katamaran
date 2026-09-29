@@ -92,12 +92,16 @@ func TestRunSource_ConfigValidation(t *testing.T) {
 		name string
 		cfg  SourceConfig
 		want string
+		// badConfig marks the cases ValidateSourceConfig owns, so the error
+		// must carry the sentinel the CLI turns into exit 2.
+		badConfig bool
 	}{
-		{"InvalidDestIP", func() SourceConfig { c := base; c.DestIP = netip.Addr{}; return c }(), "invalid destination address"},
-		{"InvalidVMIP", func() SourceConfig { c := base; c.VMIP = netip.Addr{}; return c }(), "invalid VM address"},
-		{"FamilyMismatch", func() SourceConfig { c := base; c.VMIP = netip.MustParseAddr("fd00::1"); return c }(), "address families must match"},
-		{"InvalidTunnelMode", func() SourceConfig { c := base; c.TunnelMode = TunnelMode("vxlan"); return c }(), "invalid tunnel mode"},
-		{"NegativeMultifd", func() SourceConfig { c := base; c.MultifdChannels = -1; return c }(), "multifd channels must be non-negative"},
+		{"InvalidDestIP", func() SourceConfig { c := base; c.DestIP = netip.Addr{}; return c }(), "invalid destination address", false},
+		{"InvalidVMIP", func() SourceConfig { c := base; c.VMIP = netip.Addr{}; return c }(), "invalid VM address", false},
+		{"FamilyMismatch", func() SourceConfig { c := base; c.VMIP = netip.MustParseAddr("fd00::1"); return c }(), "address families must match", false},
+		{"InvalidTunnelMode", func() SourceConfig { c := base; c.TunnelMode = TunnelMode("vxlan"); return c }(), `invalid --tunnel-mode "vxlan"`, true},
+		{"NegativeMultifd", func() SourceConfig { c := base; c.MultifdChannels = -1; return c }(), "--multifd-channels must be non-negative", true},
+		{"BadDriveID", func() SourceConfig { c := base; c.SharedStorage = false; c.DriveIDs = []string{"bad;id"}; return c }(), "--drive-id", true},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +110,9 @@ func TestRunSource_ConfigValidation(t *testing.T) {
 			err := RunSource(context.Background(), tt.cfg)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("RunSource error = %v, want containing %q", err, tt.want)
+			}
+			if got := errors.Is(err, ErrInvalidConfig); got != tt.badConfig {
+				t.Fatalf("errors.Is(err, ErrInvalidConfig) = %t, want %t; err = %v", got, tt.badConfig, err)
 			}
 		})
 	}

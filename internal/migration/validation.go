@@ -1,10 +1,84 @@
 package migration
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrInvalidConfig marks a configuration value the caller got wrong, as
+// opposed to a failure that happened while running with a valid
+// configuration. The CLI matches on it to keep exit code 2 (argument error)
+// apart from exit code 1 (migration failed).
+var ErrInvalidConfig = errors.New("invalid configuration")
+
+// ValidateSourceConfig checks the source-mode values a caller supplies,
+// before any side effect. The tunnel addresses are not checked here: in pod
+// mode the VM address comes from the apiserver at run time, so RunSource
+// validates it once resolved.
+func ValidateSourceConfig(cfg SourceConfig) error {
+	if err := validateMultifdChannels(cfg.MultifdChannels); err != nil {
+		return err
+	}
+	if cfg.EmitCmdlineTo != "" && cfg.PodName == "" {
+		return fmt.Errorf("%w: --emit-cmdline-to requires pod mode (--pod-name) so the QEMU PID can be resolved", ErrInvalidConfig)
+	}
+	if err := validateDrives(cfg.DriveIDs, cfg.SharedStorage); err != nil {
+		return err
+	}
+	return validateTunnelMode(cfg.TunnelMode)
+}
+
+// ValidateDestConfig checks the dest-mode values a caller supplies, before
+// any side effect.
+func ValidateDestConfig(cfg DestConfig) error {
+	if err := validateMultifdChannels(cfg.MultifdChannels); err != nil {
+		return err
+	}
+	if cfg.TapIface != "" {
+		if err := validateTapIface(cfg.TapIface); err != nil {
+			return fmt.Errorf("%w: --tap: %w", ErrInvalidConfig, err)
+		}
+	}
+	if cfg.TapNetns != "" {
+		if err := validateTapNetns(cfg.TapNetns); err != nil {
+			return fmt.Errorf("%w: --tap-netns: %w", ErrInvalidConfig, err)
+		}
+	}
+	return validateDrives(cfg.DriveIDs, cfg.SharedStorage)
+}
+
+// validateMultifdChannels rejects a negative channel count. Zero disables
+// multifd and is valid.
+func validateMultifdChannels(channels int) error {
+	if channels < 0 {
+		return fmt.Errorf("%w: --multifd-channels must be non-negative, got %d", ErrInvalidConfig, channels)
+	}
+	return nil
+}
+
+// validateTunnelMode accepts the three supported encapsulations plus the
+// empty value, which RunSource fills in with the IPIP default.
+func validateTunnelMode(mode TunnelMode) error {
+	switch mode {
+	case "", TunnelModeIPIP, TunnelModeGRE, TunnelModeNone:
+		return nil
+	}
+	return fmt.Errorf("%w: invalid --tunnel-mode %q (valid: ipip, gre, none)", ErrInvalidConfig, mode)
+}
+
+// validateDrives checks the drive IDs, which only matter when the storage
+// is mirrored over NBD.
+func validateDrives(ids []string, sharedStorage bool) error {
+	if sharedStorage {
+		return nil
+	}
+	if err := validateDriveIDs(ids); err != nil {
+		return fmt.Errorf("%w: --drive-id: %w", ErrInvalidConfig, err)
+	}
+	return nil
+}
 
 // validIfaceName matches Linux network interface names. IFNAMSIZ is 16 (15 usable
 // chars). Allows alphanumerics, dots, hyphens, underscores, colons, and @ (VLAN).
