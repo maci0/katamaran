@@ -1,0 +1,25 @@
+# Lints the hand-written dashboard JS with the exact biome version named in
+# biome.json's $schema, so a bump of the $schema cannot leave CI or a release
+# on the previous release. biome.json is the single source of truth; there is
+# no package.json or lockfile governing this download.
+#
+# The runner-provided node is used, matching the `node --test` step in
+# `make test`.
+name: Lint dashboard JS
+description: Run biome at the version pinned in biome.json's $schema
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve pinned biome version
+      shell: bash
+      run: |
+        version=$(sed -n 's|.*biomejs.dev/schemas/\([^/]*\)/.*|\1|p' biome.json)
+        if [ -z "$version" ]; then
+          echo "could not read the pinned biome version from biome.json" >&2
+          exit 1
+        fi
+        echo "BIOME_VERSION=${version}" >> "$GITHUB_ENV"
+    - name: Lint
+      shell: bash
+      run: 'npx --yes "@biomejs/biome@${BIOME_VERSION}" lint'

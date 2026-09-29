@@ -33,6 +33,7 @@ Makefile
 coverage.out
 *_cover.out
 *.log
+.scratch/
 *.orig
 *.patch
 .env*

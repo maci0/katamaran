@@ -41,17 +41,7 @@ jobs:
           path: ~/go/bin/govulncheck
           key: govulncheck-${{ runner.os }}-${{ env.GOVULNCHECK_VERSION }}
       - name: Vulnerability check
-        # Install + run govulncheck directly. The previous
-        # golang/govulncheck-action runs a nested actions/checkout that
-        # conflicts with the outer actions/checkout v6's persistent
-        # credentials, producing a `remote: Duplicate header:
-        # "Authorization"` HTTP 400. Direct invocation bypasses the
-        # nested checkout entirely. No untrusted input is interpolated.
-        run: |
-          if [ ! -x "$HOME/go/bin/govulncheck" ]; then
-            go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          fi
-          "$HOME/go/bin/govulncheck" ./...
+        uses: ./.github/actions/govulncheck
       - name: Unit tests
         run: make test
       - name: Fuzz seeds
@@ -96,22 +86,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Resolve pinned biome version
-        id: biome
-        # biome.json's $schema is the single source of truth for the linter
-        # version, so bumping it cannot leave CI on the previous release.
-        run: |
-          version=$(sed -n 's|.*biomejs.dev/schemas/\([^/]*\)/.*|\1|p' biome.json)
-          if [ -z "$version" ]; then
-            echo "could not read the pinned biome version from biome.json" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - name: Lint dashboard JS
-        # Runner-provided node, same as the `node --test` step in `make test`.
-        # Pinned exactly: no lockfile governs this download, and biome.json's
-        # $schema names this version, so local and CI cannot drift.
-        run: npx --yes "@biomejs/biome@${{ steps.biome.outputs.version }}" lint
+        uses: ./.github/actions/lint-js
 
   dependency-review:
     # Surface known-vulnerable / license-incompatible deps newly introduced

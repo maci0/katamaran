@@ -74,11 +74,13 @@ jobs:
           path: ~/go/bin/govulncheck
           key: govulncheck-${{ runner.os }}-${{ env.GOVULNCHECK_VERSION }}
       - name: Vulnerability check
-        run: |
-          if [ ! -x "$HOME/go/bin/govulncheck" ]; then
-            go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          fi
-          "$HOME/go/bin/govulncheck" ./...
+        uses: ./.github/actions/govulncheck
+      - name: Lint dashboard JS
+        # The release gate is `make check` plus repro-check; lint-js is part
+        # of that gate and has no other presence in this workflow, so without
+        # this step a tag could publish images whose dashboard JS never met
+        # the linter CI enforces.
+        uses: ./.github/actions/lint-js
       - name: Build all binaries
         run: make -j4 all
       # Byte-identical binaries are a release invariant (AGENTS.md). A build

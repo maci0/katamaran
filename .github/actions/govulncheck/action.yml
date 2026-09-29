@@ -1,0 +1,25 @@
+# Installs the pinned govulncheck once (restored from the caller's cache when
+# present) and scans ./... .
+#
+# The golang/govulncheck-action runs a nested actions/checkout whose
+# persistent credentials collide with the outer checkout's, producing
+# `remote: Duplicate header: "Authorization"` HTTP 400. Direct invocation
+# avoids the nested checkout entirely and passes no untrusted input.
+#
+# Callers set GOVULNCHECK_VERSION in the job env and cache ~/go/bin/govulncheck
+# under a key derived from that version, so a bump installs a fresh binary.
+name: Govulncheck
+description: Run govulncheck at the version pinned in GOVULNCHECK_VERSION
+
+runs:
+  using: composite
+  steps:
+    - name: Install govulncheck if the cached binary is missing
+      shell: bash
+      run: |
+        if [ ! -x "$HOME/go/bin/govulncheck" ]; then
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+        fi
+    - name: Scan
+      shell: bash
+      run: '"$HOME/go/bin/govulncheck" ./...'
