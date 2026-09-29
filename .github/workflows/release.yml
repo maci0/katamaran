@@ -81,6 +81,10 @@ jobs:
           "$HOME/go/bin/govulncheck" ./...
       - name: Build all binaries
         run: make -j4 all
+      # Byte-identical binaries are a release invariant (AGENTS.md). A build
+      # that reads host state would otherwise be published to GHCR silently.
+      - name: Reproducible build check
+        run: make repro-check
       - name: Unit tests
         run: make test
       - name: Fuzz seeds

@@ -61,6 +61,6 @@ if [[ "${KEEP_LOGS}" == "false" ]]; then
     rm -f /tmp/katamaran-*.log 2>/dev/null || true
 fi
 rm -f /tmp/kata-cfg-override.toml 2>/dev/null || true
-rm -f katamaran.tar 2>/dev/null || true
+rm -f "${PROJECT_ROOT}"/katamaran.tar "${PROJECT_ROOT}"/mgr.tar "${PROJECT_ROOT}"/dashboard.tar "${PROJECT_ROOT}"/factory.tar 2>/dev/null || true
 
 log "Cleanup complete."

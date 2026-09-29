@@ -205,11 +205,21 @@ RUN mkdir -p /out && \\
     ls -la /out/
 DOCKERFILE
 
-"${CE}" build \
+# Keep the full build log on disk: the filtered view below is a progress
+# aid, and piping the engine straight into grep|head loses the real error
+# (and fails the script whenever the output matches nothing, because
+# `set -o pipefail` sees grep's exit status).
+BUILD_LOG="${BUILD_DIR}/build.log"
+if ! "${CE}" build \
     --build-arg "KVER=${KVER}" \
     -t minikube-modules-builder \
     -f "${BUILD_DIR}/Dockerfile" \
-    "${BUILD_DIR}" 2>&1 | grep -E "^(Step|Successfully|  LD |  CC |  Built|  WARNING|---)" | head -40
+    "${BUILD_DIR}" >"${BUILD_LOG}" 2>&1; then
+    echo "ERROR: container build failed; full log:" >&2
+    tail -40 "${BUILD_LOG}" >&2
+    exit 1
+fi
+grep -E "^(Step|Successfully|  LD |  CC |  Built|  WARNING|---)" "${BUILD_LOG}" | head -40 || true
 
 echo ">>> Extracting built modules..."
 CONTAINER_ID=$("${CE}" create minikube-modules-builder)

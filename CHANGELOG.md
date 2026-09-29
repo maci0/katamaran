@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the UI with `kubectl port-forward -n kube-system
   svc/katamaran-dashboard-metrics 8080:8080`.
 
+- The release pipeline runs `make repro-check` in its verify job. A build
+  that reads host state is now caught before images are pushed to GHCR
+  rather than shipped silently.
+
+- `scripts/e2e.sh` builds the katamaran image with `make image` instead of
+  invoking the container engine directly, matching the katamaran-mgr path
+  it already used. Both images are built with the same flags and both
+  archives land in the repository root instead of the caller's cwd.
+
+### Fixed
+
+- `scripts/build-minikube-modules.sh` no longer pipes the container build
+  into `grep | head`. A build whose output matched nothing failed the
+  script under `pipefail`, and a real build failure printed none of its
+  own error. The full log is kept and the last 40 lines are shown on
+  failure.
+
 ### Security
 
 - Cmdline replay no longer lets a captured source QEMU argv name a host path

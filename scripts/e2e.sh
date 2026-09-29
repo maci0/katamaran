@@ -407,17 +407,17 @@ kubectl --context "${CTX}" label node "${NODE1}" katamaran-role=source --overwri
 kubectl --context "${CTX}" label node "${NODE2}" katamaran-role=dest --overwrite
 
 log "Building and deploying katamaran..."
-${CE} build -t localhost/katamaran:dev .
-rm -f katamaran.tar
-${CE} save localhost/katamaran:dev -o katamaran.tar
+# Same target the katamaran-mgr path below uses, so both images are built
+# with identical flags and land at the same place in the tree.
+(cd "${PROJECT_ROOT}" && CE="${CE}" make image) >/dev/null
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
-    minikube -p "${PROFILE}" image load katamaran.tar
+    minikube -p "${PROFILE}" image load "${PROJECT_ROOT}/katamaran.tar"
 else
     if [[ "${CE}" == "podman" ]]; then
-        KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive katamaran.tar --name "${PROFILE}"
+        KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "${PROJECT_ROOT}/katamaran.tar" --name "${PROFILE}"
     else
-        kind load image-archive katamaran.tar --name "${PROFILE}"
+        kind load image-archive "${PROJECT_ROOT}/katamaran.tar" --name "${PROFILE}"
     fi
 fi
 
@@ -784,7 +784,7 @@ elif [[ "${METHOD}" == "crd" ]]; then
     STORAGE_BOOL="true"
     [[ "${STORAGE}" == "local" ]] && STORAGE_BOOL="false"
     log "Building + loading katamaran-mgr image..."
-    (cd "${PROJECT_ROOT}" && make mgr) >/dev/null
+    (cd "${PROJECT_ROOT}" && CE="${CE}" make mgr) >/dev/null
     if [[ "${PROVIDER}" == "minikube" ]]; then
         minikube --profile "${PROFILE}" image load "${PROJECT_ROOT}/mgr.tar" >/dev/null
     else

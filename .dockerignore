@@ -14,10 +14,15 @@ scripts/
 docs/
 bin/
 out/
+# `make repro-check` leaves two full copies of bin/ behind; without these
+# they land in the build context and bust cache on every COPY . . step.
+.repro-a/
+.repro-b/
 *.qcow2
 *.img
 *.iso
 *.tar
+*.tar.tmp
 kata_test_rsa*
 README.md
 demo/
