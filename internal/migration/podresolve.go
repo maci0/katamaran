@@ -344,11 +344,10 @@ var (
 	apiserverHost = ""
 	apiserverPort = ""
 
-	// Backoff durations used by LookupPodIP between successive attempts.
-	// Var-not-const so tests can collapse them to ~ms.
-	lookupBackoff1 = 1 * time.Second
-	lookupBackoff2 = 2 * time.Second
-	lookupBackoff3 = 4 * time.Second
+	// Backoff durations slept by LookupPodIP between successive attempts: one
+	// entry per retry, so the slice length is the retry budget (and no entry
+	// can go unread). Var-not-const so tests can collapse them to ~ms.
+	lookupBackoffs = []time.Duration{1 * time.Second, 2 * time.Second}
 )
 
 // resolveAPIServerHostPort returns the apiserver host:port. It prefers the
@@ -432,8 +431,8 @@ func newInClusterAPIClient() (*inClusterAPIClient, error) {
 // apiserver endpoint from $KUBERNETES_SERVICE_HOST / $KUBERNETES_SERVICE_PORT.
 //
 // If the pod's status.podIP is empty (e.g. the pod is still being scheduled),
-// LookupPodIP retries up to three times with backoffs of 1s, 2s, 4s. After
-// the third empty response it returns a clear error.
+// LookupPodIP makes one attempt plus two retries, sleeping 1s then 2s
+// between them. After the last empty response it returns a clear error.
 //
 // Any non-2xx response or transport error during a single attempt is treated
 // as a transient failure and aborts the call immediately (no retry): the
@@ -456,9 +455,8 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 	endpoint := fmt.Sprintf("https://%s/api/v1/namespaces/%s/pods/%s",
 		net.JoinHostPort(host, port), url.PathEscape(ns), url.PathEscape(name))
 
-	backoffs := []time.Duration{lookupBackoff1, lookupBackoff2, lookupBackoff3}
-	const attempts = 3
-	for i := 0; i < attempts; i++ {
+	// One attempt, then one retry per backoff entry.
+	for i := 0; i <= len(lookupBackoffs); i++ {
 		ip, err := lookupPodIPOnce(ctx, api.http, endpoint, api.token)
 		if err != nil {
 			return "", err
@@ -466,10 +464,10 @@ func LookupPodIP(ctx context.Context, ns, name string) (string, error) {
 		if ip != "" {
 			return ip, nil
 		}
-		// Empty IP: sleep before next attempt unless this was the last.
-		if i < attempts-1 {
-			slog.Debug("Pod has no IP yet; will retry", "pod", ns+"/"+name, "attempt", i+1, "backoff", backoffs[i])
-			timer := time.NewTimer(backoffs[i])
+		// Empty IP: sleep before the next attempt unless this was the last.
+		if i < len(lookupBackoffs) {
+			slog.Debug("Pod has no IP yet; will retry", "pod", ns+"/"+name, "attempt", i+1, "backoff", lookupBackoffs[i])
+			timer := time.NewTimer(lookupBackoffs[i])
 			select {
 			case <-ctx.Done():
 				timer.Stop()

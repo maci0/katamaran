@@ -294,7 +294,7 @@ func TestValidTarget(t *testing.T) {
 		{strings.Repeat("a", maxTargetLen+1), false}, // exceeds length limit
 	}
 	for _, tt := range tests {
-		if _, got := safeTargetIPs(tt.target); got != tt.want {
+		if _, got := safeTargetIPs(t.Context(), tt.target); got != tt.want {
 			t.Errorf("safeTargetIPs(%q) ok = %v, want %v", tt.target, got, tt.want)
 		}
 	}
@@ -305,7 +305,7 @@ func TestValidTarget_UnresolvableHostname(t *testing.T) {
 	// Unresolvable hostnames must be rejected (fail closed) to prevent
 	// SSRF bypass via names that resolve differently at connect time.
 	// RFC 2606: .invalid TLD is guaranteed to never resolve.
-	if ips, ok := safeTargetIPs("nonexistent-host.invalid"); ok {
+	if ips, ok := safeTargetIPs(t.Context(), "nonexistent-host.invalid"); ok {
 		t.Errorf("safeTargetIPs should reject unresolvable hostnames, got %v", ips)
 	}
 }

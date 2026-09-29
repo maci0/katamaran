@@ -47,6 +47,10 @@ const (
 	// newlines (malicious or buggy). 4 MiB is far above any legitimate
 	// QMP message (~10 KiB typical).
 	maxLineSize = 4 * 1024 * 1024
+
+	// slowCommandThreshold is the round-trip time above which a successful
+	// command is logged at Warn instead of Debug.
+	slowCommandThreshold = 1 * time.Second
 )
 
 // Client is a minimal synchronous client for the QEMU Machine Protocol.
@@ -97,6 +101,24 @@ func (c *Client) readLine() ([]byte, error) {
 			continue
 		}
 		return nil, fmt.Errorf("reading QMP line: %w", err)
+	}
+}
+
+// interruptOnCancel returns a release func that unblocks pending IO on conn
+// by collapsing its deadline to now as soon as ctx is cancelled, without
+// destroying the connection. The release func must be called before the
+// caller clears the deadline itself: it waits for an already-fired callback
+// so the two cannot race and undo the shortened deadline.
+func interruptOnCancel(ctx context.Context, conn net.Conn, setDeadline func(time.Time) error) func() {
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = setDeadline(time.Now())
+		close(callbackDone)
+	})
+	return func() {
+		if !stop() {
+			<-callbackDone
+		}
 	}
 }
 
@@ -256,20 +278,8 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 	// rather than closing the connection. This preserves the socket for deferred
 	// cleanup commands (migrate-cancel, block-job-cancel) that run after the main
 	// context is cancelled.
-	//
-	// callbackDone synchronizes the context.AfterFunc callback with our deferred
-	// SetDeadline(time.Time{}) clear, because without it, the defer could race and undo
-	// the deadline we just set to interrupt the read.
-	callbackDone := make(chan struct{})
-	stopCancel := context.AfterFunc(ctx, func() {
-		_ = conn.SetDeadline(time.Now())
-		close(callbackDone)
-	})
-	defer func() {
-		if !stopCancel() {
-			<-callbackDone
-		}
-	}()
+	release := interruptOnCancel(ctx, conn, conn.SetDeadline)
+	defer release()
 
 	cmdStart := time.Now()
 	slog.Debug("QMP execute", "cmd", cmd, "socket", c.socket)
@@ -315,7 +325,7 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		}
 
 		elapsed := time.Since(cmdStart)
-		if elapsed >= 1*time.Second {
+		if elapsed >= slowCommandThreshold {
 			slog.Warn("Slow QMP command", "cmd", cmd, "socket", c.socket, "elapsed", elapsed.Round(time.Millisecond))
 		} else {
 			slog.Debug("QMP command completed", "cmd", cmd, "socket", c.socket, "elapsed", elapsed.Round(time.Millisecond))
@@ -365,18 +375,9 @@ func (c *Client) WaitForEvent(ctx context.Context, eventName string, timeout tim
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 	// On context cancellation, shorten the read deadline instead of closing the
-	// connection, same strategy as Execute(). callbackDone prevents the deferred
-	// SetReadDeadline(time.Time{}) from racing with the cancellation callback.
-	callbackDone := make(chan struct{})
-	stopCancel := context.AfterFunc(ctx, func() {
-		_ = conn.SetReadDeadline(time.Now())
-		close(callbackDone)
-	})
-	defer func() {
-		if !stopCancel() {
-			<-callbackDone
-		}
-	}()
+	// connection, same strategy as Execute().
+	release := interruptOnCancel(ctx, conn, conn.SetReadDeadline)
+	defer release()
 
 	eventWaitStart := time.Now()
 	for {

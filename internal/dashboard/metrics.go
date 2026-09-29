@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -14,24 +15,44 @@ import (
 	"github.com/maci0/katamaran/internal/buildinfo"
 )
 
+// Metric names are declared once and used both to register the expvar and
+// to write the Prometheus exposition. A literal repeated in both places can
+// drift apart silently: expvar.Int still answers under the registered name
+// while the scrape publishes the other one.
+const (
+	metricHTTPRequests          = "dashboard_http_requests_total"
+	metricHTTPServerErrors      = "dashboard_http_server_errors_total"
+	metricHTTPSlowRequests      = "dashboard_http_slow_requests_total"
+	metricHTTPRequestDurationMS = "dashboard_http_request_duration_ms_total"
+	metricReadinessFailures     = "dashboard_readiness_failures_total"
+	metricCSRFRejections        = "dashboard_csrf_rejections_total"
+
+	metricMigrationsActive      = "dashboard_migrations_active"
+	metricMigrationApplyErrors  = "dashboard_migration_apply_errors_total"
+	metricMigrationDurationMS   = "dashboard_migration_duration_ms_total"
+	metricMigrationWatchErrors  = "dashboard_migration_watch_errors_total"
+	metricMigrationWatchLost    = "dashboard_migration_watch_lost_total"
+	metricMigrationWorkerPanics = "dashboard_migration_worker_panics_total"
+)
+
 var (
-	dashboardHTTPRequestsTotal          = expvar.NewInt("dashboard_http_requests_total")
-	dashboardHTTPServerErrorsTotal      = expvar.NewInt("dashboard_http_server_errors_total")
-	dashboardHTTPSlowRequestsTotal      = expvar.NewInt("dashboard_http_slow_requests_total")
-	dashboardHTTPRequestDurationMSTotal = expvar.NewInt("dashboard_http_request_duration_ms_total")
+	dashboardHTTPRequestsTotal          = expvar.NewInt(metricHTTPRequests)
+	dashboardHTTPServerErrorsTotal      = expvar.NewInt(metricHTTPServerErrors)
+	dashboardHTTPSlowRequestsTotal      = expvar.NewInt(metricHTTPSlowRequests)
+	dashboardHTTPRequestDurationMSTotal = expvar.NewInt(metricHTTPRequestDurationMS)
 	dashboardHTTPResponsesByStatusClass = expvar.NewMap("dashboard_http_responses_by_status_class")
 	dashboardHTTPRequestDurationBuckets = expvar.NewMap("dashboard_http_request_duration_ms_buckets")
-	dashboardReadinessFailuresTotal     = expvar.NewInt("dashboard_readiness_failures_total")
-	dashboardCSRFRejectionsTotal        = expvar.NewInt("dashboard_csrf_rejections_total")
+	dashboardReadinessFailuresTotal     = expvar.NewInt(metricReadinessFailures)
+	dashboardCSRFRejectionsTotal        = expvar.NewInt(metricCSRFRejections)
 
-	dashboardMigrationsActive           = expvar.NewInt("dashboard_migrations_active")
-	dashboardMigrationApplyErrorsTotal  = expvar.NewInt("dashboard_migration_apply_errors_total")
-	dashboardMigrationDurationMSTotal   = expvar.NewInt("dashboard_migration_duration_ms_total")
+	dashboardMigrationsActive           = expvar.NewInt(metricMigrationsActive)
+	dashboardMigrationApplyErrorsTotal  = expvar.NewInt(metricMigrationApplyErrors)
+	dashboardMigrationDurationMSTotal   = expvar.NewInt(metricMigrationDurationMS)
 	dashboardMigrationDurationMSBuckets = expvar.NewMap("dashboard_migration_duration_ms_buckets")
 	dashboardMigrationResultsByOutcome  = expvar.NewMap("dashboard_migration_results_by_outcome")
-	dashboardMigrationWatchErrorsTotal  = expvar.NewInt("dashboard_migration_watch_errors_total")
-	dashboardMigrationWatchLostTotal    = expvar.NewInt("dashboard_migration_watch_lost_total")
-	dashboardMigrationWorkerPanicsTotal = expvar.NewInt("dashboard_migration_worker_panics_total")
+	dashboardMigrationWatchErrorsTotal  = expvar.NewInt(metricMigrationWatchErrors)
+	dashboardMigrationWatchLostTotal    = expvar.NewInt(metricMigrationWatchLost)
+	dashboardMigrationWorkerPanicsTotal = expvar.NewInt(metricMigrationWorkerPanics)
 )
 
 func recordHTTPRequest(status int, duration time.Duration) {
@@ -71,6 +92,10 @@ func statusClass(status int) string {
 	}
 }
 
+// durationBucket labels a request by how long it took. The last two labels
+// name slowRequestThreshold itself rather than a hardcoded 5s, so a change to
+// the threshold cannot leave the histogram labelling buckets the bound no
+// longer uses.
 func durationBucket(duration time.Duration) string {
 	switch {
 	case duration < 100*time.Millisecond:
@@ -80,10 +105,19 @@ func durationBucket(duration time.Duration) string {
 	case duration < time.Second:
 		return "lt_1s"
 	case duration < slowRequestThreshold:
-		return "lt_5s"
+		return "lt_" + bucketBoundLabel(slowRequestThreshold)
 	default:
-		return "gte_5s"
+		return "gte_" + bucketBoundLabel(slowRequestThreshold)
 	}
+}
+
+// bucketBoundLabel renders a bucket boundary as the Prometheus label
+// fragment used in durationBucket ("5s", "1500ms").
+func bucketBoundLabel(d time.Duration) string {
+	if d%time.Second == 0 {
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 }
 
 // recordMigrationDuration records the wall-clock duration of a completed
@@ -124,22 +158,22 @@ func serveDashboardMetrics(w http.ResponseWriter, _ *http.Request) {
 		}
 	}()
 
-	writePromMetric(bw, "dashboard_http_requests_total", "Dashboard HTTP requests served, excluding health and metrics endpoints.", "counter", dashboardHTTPRequestsTotal.String())
-	writePromMetric(bw, "dashboard_http_server_errors_total", "Dashboard HTTP responses with status code >= 500.", "counter", dashboardHTTPServerErrorsTotal.String())
-	writePromMetric(bw, "dashboard_http_slow_requests_total", "Dashboard HTTP requests slower than the configured slow request threshold.", "counter", dashboardHTTPSlowRequestsTotal.String())
-	writePromMetric(bw, "dashboard_http_request_duration_ms_total", "Sum of observed dashboard HTTP request durations in milliseconds.", "counter", dashboardHTTPRequestDurationMSTotal.String())
+	writePromMetric(bw, metricHTTPRequests, "Dashboard HTTP requests served, excluding health and metrics endpoints.", "counter", dashboardHTTPRequestsTotal.String())
+	writePromMetric(bw, metricHTTPServerErrors, "Dashboard HTTP responses with status code >= 500.", "counter", dashboardHTTPServerErrorsTotal.String())
+	writePromMetric(bw, metricHTTPSlowRequests, "Dashboard HTTP requests slower than the configured slow request threshold.", "counter", dashboardHTTPSlowRequestsTotal.String())
+	writePromMetric(bw, metricHTTPRequestDurationMS, "Sum of observed dashboard HTTP request durations in milliseconds.", "counter", dashboardHTTPRequestDurationMSTotal.String())
 	writePromMapMetric(bw, "dashboard_http_responses_total", "Dashboard HTTP responses by status class.", "status_class", dashboardHTTPResponsesByStatusClass)
 	writePromMapMetric(bw, "dashboard_http_request_duration_ms_bucket_total", "Dashboard HTTP request duration bucket counts.", "bucket", dashboardHTTPRequestDurationBuckets)
-	writePromMetric(bw, "dashboard_readiness_failures_total", "Dashboard readiness checks that failed because the orchestrator was unavailable.", "counter", dashboardReadinessFailuresTotal.String())
-	writePromMetric(bw, "dashboard_csrf_rejections_total", "Dashboard requests rejected by the CSRF middleware (cross-origin/cross-site state-changing requests).", "counter", dashboardCSRFRejectionsTotal.String())
-	writePromMetric(bw, "dashboard_migrations_active", "Dashboard migrations currently running.", "gauge", dashboardMigrationsActive.String())
-	writePromMetric(bw, "dashboard_migration_apply_errors_total", "Dashboard migration submissions rejected by the orchestrator Apply call.", "counter", dashboardMigrationApplyErrorsTotal.String())
-	writePromMetric(bw, "dashboard_migration_duration_ms_total", "Sum of completed dashboard migration durations in milliseconds.", "counter", dashboardMigrationDurationMSTotal.String())
+	writePromMetric(bw, metricReadinessFailures, "Dashboard readiness checks that failed because the orchestrator was unavailable.", "counter", dashboardReadinessFailuresTotal.String())
+	writePromMetric(bw, metricCSRFRejections, "Dashboard requests rejected by the CSRF middleware (cross-origin/cross-site state-changing requests).", "counter", dashboardCSRFRejectionsTotal.String())
+	writePromMetric(bw, metricMigrationsActive, "Dashboard migrations currently running.", "gauge", dashboardMigrationsActive.String())
+	writePromMetric(bw, metricMigrationApplyErrors, "Dashboard migration submissions rejected by the orchestrator Apply call.", "counter", dashboardMigrationApplyErrorsTotal.String())
+	writePromMetric(bw, metricMigrationDurationMS, "Sum of completed dashboard migration durations in milliseconds.", "counter", dashboardMigrationDurationMSTotal.String())
 	writePromMapMetric(bw, "dashboard_migration_duration_ms_bucket_total", "Completed dashboard migration duration bucket counts.", "bucket", dashboardMigrationDurationMSBuckets)
 	writePromMapMetric(bw, "dashboard_migration_results_total", "Completed dashboard migrations by outcome.", "outcome", dashboardMigrationResultsByOutcome)
-	writePromMetric(bw, "dashboard_migration_watch_errors_total", "Dashboard migrations where opening the orchestrator watch stream failed.", "counter", dashboardMigrationWatchErrorsTotal.String())
-	writePromMetric(bw, "dashboard_migration_watch_lost_total", "Dashboard migrations whose watch stream closed before a terminal status.", "counter", dashboardMigrationWatchLostTotal.String())
-	writePromMetric(bw, "dashboard_migration_worker_panics_total", "Recovered panics in the dashboard migration worker goroutine.", "counter", dashboardMigrationWorkerPanicsTotal.String())
+	writePromMetric(bw, metricMigrationWatchErrors, "Dashboard migrations where opening the orchestrator watch stream failed.", "counter", dashboardMigrationWatchErrorsTotal.String())
+	writePromMetric(bw, metricMigrationWatchLost, "Dashboard migrations whose watch stream closed before a terminal status.", "counter", dashboardMigrationWatchLostTotal.String())
+	writePromMetric(bw, metricMigrationWorkerPanics, "Recovered panics in the dashboard migration worker goroutine.", "counter", dashboardMigrationWorkerPanicsTotal.String())
 }
 
 func writePromMetric(w io.Writer, name, help, kind, value string) {

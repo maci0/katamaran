@@ -100,7 +100,10 @@ func lookupSafeTargetIPs(ctx context.Context, host string) ([]net.IP, error) {
 // rejected: unresolvable hostnames fail closed here to prevent SSRF bypass
 // via names that the Go resolver cannot resolve but the target process
 // (ping, HTTP client) might resolve differently.
-func safeTargetIPs(target string) ([]net.IP, bool) {
+//
+// ctx bounds the DNS lookup only; it is the caller's request context so a
+// client that disconnects mid-lookup cancels the resolver query.
+func safeTargetIPs(ctx context.Context, target string) ([]net.IP, bool) {
 	if len(target) > maxTargetLen+len(":65535") {
 		return nil, false
 	}
@@ -133,9 +136,9 @@ func safeTargetIPs(target string) ([]net.IP, bool) {
 	if strings.Contains(host, "..") {
 		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), targetDNSTimeout)
+	lookupCtx, cancel := context.WithTimeout(ctx, targetDNSTimeout)
 	defer cancel()
-	ips, err := lookupSafeTargetIPs(ctx, host)
+	ips, err := lookupSafeTargetIPs(lookupCtx, host)
 	if err != nil {
 		// Distinguish "DNS is broken" from "target blocked" in the logs:
 		// both fail closed identically, but an operator chasing a

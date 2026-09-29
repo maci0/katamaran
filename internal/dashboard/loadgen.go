@@ -132,7 +132,7 @@ func (a *App) validateLoadgenTarget(w http.ResponseWriter, r *http.Request, labe
 		jsonError(w, "Missing required field: target", http.StatusBadRequest)
 		return "", nil, false
 	}
-	ips, ok = safeTargetIPs(target)
+	ips, ok = safeTargetIPs(r.Context(), target)
 	if !ok {
 		slog.Warn("Rejected invalid target", "target", target, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Invalid value for target", http.StatusBadRequest)

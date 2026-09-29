@@ -300,22 +300,18 @@ func setupAPIServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	}
 
 	prevToken, prevCA, prevHost, prevPort := tokenPath, caPath, apiserverHost, apiserverPort
-	prevB1, prevB2, prevB3 := lookupBackoff1, lookupBackoff2, lookupBackoff3
+	prevBackoffs := lookupBackoffs
 	tokenPath = tokenFile
 	caPath = caFile
 	apiserverHost = u.Hostname()
 	apiserverPort = u.Port()
-	lookupBackoff1 = time.Millisecond
-	lookupBackoff2 = time.Millisecond
-	lookupBackoff3 = time.Millisecond
+	lookupBackoffs = []time.Duration{time.Millisecond, time.Millisecond}
 	t.Cleanup(func() {
 		tokenPath = prevToken
 		caPath = prevCA
 		apiserverHost = prevHost
 		apiserverPort = prevPort
-		lookupBackoff1 = prevB1
-		lookupBackoff2 = prevB2
-		lookupBackoff3 = prevB3
+		lookupBackoffs = prevBackoffs
 	})
 
 	return srv
@@ -323,7 +319,7 @@ func setupAPIServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 
 func TestLookupPodIP_RetryUntilSuccess(t *testing.T) {
 	// Not t.Parallel(): this test mutates package-level vars (tokenPath,
-	// caPath, apiserverHost, lookupBackoff*) via setupAPIServer, and the
+	// caPath, apiserverHost, lookupBackoffs) via setupAPIServer, and the
 	// other LookupPodIP test does the same. Running them in parallel races.
 
 	var calls atomic.Int32

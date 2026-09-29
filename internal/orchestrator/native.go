@@ -141,6 +141,19 @@ func newFromRestConfig(cfg *rest.Config) (*native, error) {
 
 const defaultPodWaitTimeout = 60 * time.Second
 
+// jobPollInterval is the cadence of every controller-side poll loop over Job
+// and Pod state: the source log tail, the dest pod wait, and poll's own Job
+// inspection. One cadence keeps poll's sourceFailGrace reasoning (a tick of
+// staleness must stay well inside the grace window) true for all three.
+const jobPollInterval = 2 * time.Second
+
+// logScannerInitBuf is the initial capacity of the reused log-line scanner
+// buffer, and logScannerMaxBuf its hard cap.
+const (
+	logScannerInitBuf = 64 * 1024
+	logScannerMaxBuf  = 1024 * 1024
+)
+
 func newFromClient(c kubernetes.Interface) *native {
 	return &native{
 		client:         c,
@@ -489,10 +502,10 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		logStreamTTL = time.Minute
 	)
 	seen := map[string]bool{} // dedupe identical marker lines across reconnects
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(jobPollInterval)
 	defer ticker.Stop()
 	// Reused scanner buffer: avoids allocating 64KB per (re)connect over multi-hour migrations.
-	scanBuf := make([]byte, 0, 64*1024)
+	scanBuf := make([]byte, 0, logScannerInitBuf)
 	send := func(u StatusUpdate) bool {
 		select {
 		case <-ctx.Done():
@@ -544,7 +557,7 @@ func (n *native) tailProgress(ctx context.Context, id MigrationID, run *nativeRu
 		// single string + slice; the backfill can be hundreds of KB on
 		// chatty migrations.
 		scanner := bufio.NewScanner(stream)
-		scanner.Buffer(scanBuf, 1024*1024)
+		scanner.Buffer(scanBuf, logScannerMaxBuf)
 		done := false
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -739,7 +752,7 @@ func (n *native) scrapeResultMarker(ctx context.Context, srcJob string) (downtim
 	defer func() { _ = stream.Close() }()
 	const marker = migration.ResultMarker
 	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, logScannerInitBuf), logScannerMaxBuf)
 	for scanner.Scan() {
 		line := scanner.Text()
 		i := strings.Index(line, marker)
@@ -843,7 +856,7 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 		fail(fmt.Errorf("locate source pod: %w", err))
 		return
 	}
-	patched, err := injectReplayFromPod(destJob, n.namespace, srcPod)
+	patched, err := injectReplayFromPod(destJob, PodRef{Namespace: n.namespace, Name: srcPod})
 	if err != nil {
 		slog.Error("Cmdline replay failed: patching dest job command", "migration_id", id, "dest_job", destJob.Name, "error", err)
 		fail(fmt.Errorf("inject --replay-cmdline-from-pod: %w", err))
@@ -863,18 +876,18 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 // command. The render path doesn't know the source pod name (it's only
 // resolved after the source Job creates its pod), so this final argv
 // patch happens here.
-func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job, error) {
+func injectReplayFromPod(destJob *batchv1.Job, srcPod PodRef) (*batchv1.Job, error) {
 	if destJob == nil || len(destJob.Spec.Template.Spec.Containers) == 0 {
 		return nil, fmt.Errorf("dest job has no containers")
 	}
 	// Defense-in-depth: the ref is interpolated into a /bin/sh -c command
 	// string, so both halves must pass the same DNS-1123 validation the
 	// dest side applies when it later parses and URL-escapes the value.
-	if !migration.ValidateDNSLabel(ns) {
-		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", ns)
+	if !migration.ValidateDNSLabel(srcPod.Namespace) {
+		return nil, fmt.Errorf("invalid source pod namespace %q: must be a DNS-1123 label", srcPod.Namespace)
 	}
-	if !migration.ValidateDNSSubdomain(srcPod) {
-		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 subdomain", srcPod)
+	if !migration.ValidateDNSSubdomain(srcPod.Name) {
+		return nil, fmt.Errorf("invalid source pod name %q: must be a DNS-1123 subdomain", srcPod.Name)
 	}
 	out := destJob.DeepCopy()
 	cs := out.Spec.Template.Spec.Containers
@@ -890,7 +903,7 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 			return nil, fmt.Errorf("katamaran container has empty command")
 		}
 		last := len(cs[i].Command) - 1
-		cs[i].Command[last] += fmt.Sprintf(" --replay-cmdline-from-pod %s/%s", ns, srcPod)
+		cs[i].Command[last] += fmt.Sprintf(" --replay-cmdline-from-pod %s/%s", srcPod.Namespace, srcPod.Name)
 		return out, nil
 	}
 	return nil, fmt.Errorf("no katamaran container in dest job")
@@ -939,7 +952,7 @@ func (n *native) waitForJobPod(ctx context.Context, jobName, desc string, reqTim
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastListErr error
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(jobPollInterval)
 	defer ticker.Stop()
 	for {
 		// Watch-cache read: this loop re-lists every 2s while waiting for a
@@ -1040,7 +1053,7 @@ func (n *native) Resume(ctx context.Context, id MigrationID, req Request) (bool,
 	if err != nil {
 		return false, fmt.Errorf("render dest job: %w", err)
 	}
-	patched, err := injectReplayFromPod(destJob, n.namespace, srcPod)
+	patched, err := injectReplayFromPod(destJob, PodRef{Namespace: n.namespace, Name: srcPod})
 	if err != nil {
 		return false, fmt.Errorf("inject replay flag: %w", err)
 	}
@@ -1102,9 +1115,8 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			slog.Error("poll panic", "migration_id", id, "panic", rec, "stack", string(debug.Stack()))
 		}
 	}()
-	const interval = 2 * time.Second
 	const sourceFailGrace = 90 * time.Second // how long to wait for dest after source dies
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(jobPollInterval)
 	defer ticker.Stop()
 	// Serve both Job GETs from the apiserver watch cache: unset
 	// ResourceVersion makes every Get a quorum read against etcd, which at

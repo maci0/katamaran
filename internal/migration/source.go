@@ -158,14 +158,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 
 	cfg.DestIP = cfg.DestIP.Unmap()
 	cfg.VMIP = cfg.VMIP.Unmap()
-	if !cfg.DestIP.IsValid() {
-		return fmt.Errorf("invalid destination address: %s", cfg.DestIP)
-	}
-	if !cfg.VMIP.IsValid() {
-		return fmt.Errorf("invalid VM address: %s", cfg.VMIP)
-	}
-	if cfg.DestIP.Is4() != cfg.VMIP.Is4() {
-		return fmt.Errorf("destination (%s) and VM (%s) address families must match", cfg.DestIP, cfg.VMIP)
+	if err := validateTunnelAddrs(cfg.DestIP, cfg.VMIP); err != nil {
+		return err
 	}
 	if cfg.TunnelMode == "" {
 		cfg.TunnelMode = TunnelModeIPIP
@@ -234,20 +228,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	downtimeLimitMS := cfg.DowntimeLimitMS
 
 	if !cfg.SharedStorage {
-		defer func() {
-			if len(mirrorJobIDs) > 0 {
-				cctx, ccancel := cleanupCtx(ctx)
-				defer ccancel()
-				for _, jid := range mirrorJobIDs {
-					if _, cancelErr := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
-						Device: jid,
-						Force:  true,
-					}); cancelErr != nil {
-						slog.Warn("Deferred block job cancel failed", "job_id", jid, "error", cancelErr)
-					}
-				}
-			}
-		}()
+		// Safety net for every early return above the explicit cancel below.
+		defer func() { cancelMirrorJobs(ctx, client, mirrorJobIDs) }()
 
 		for _, driveID := range cfg.DriveIDs {
 			jobID := "mirror-" + driveID
@@ -441,16 +423,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	migrationActive = false
 
 	if !cfg.SharedStorage {
-		cctx, ccancel := cleanupCtx(ctx)
-		defer ccancel()
-		for _, jid := range mirrorJobIDs {
-			if _, err := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
-				Device: jid,
-				Force:  true,
-			}); err != nil {
-				slog.Warn("Failed to cancel block job", "job_id", jid, "error", err)
-			}
-		}
+		cancelMirrorJobs(ctx, client, mirrorJobIDs)
 		mirrorJobIDs = nil
 		slog.Info("Storage mirrors cancelled")
 	}
@@ -648,6 +621,27 @@ func migrationTerminalError(status qmp.MigrateStatus, errorDesc string) (bool, e
 	return false, nil
 }
 
+// cancelMirrorJobs force-cancels every drive-mirror block job. Best-effort:
+// each failure is logged and the remaining jobs are still cancelled, since a
+// leftover block job keeps the source QEMU from releasing the device. The
+// calls run on a cleanup context so the cancel still works after the
+// migration context is cancelled.
+func cancelMirrorJobs(ctx context.Context, client *qmp.Client, jobIDs []string) {
+	if len(jobIDs) == 0 {
+		return
+	}
+	cctx, ccancel := cleanupCtx(ctx)
+	defer ccancel()
+	for _, jid := range jobIDs {
+		if _, err := client.Execute(cctx, "block-job-cancel", qmp.BlockJobCancelArgs{
+			Device: jid,
+			Force:  true,
+		}); err != nil {
+			slog.Warn("Failed to cancel block job", "job_id", jid, "error", err)
+		}
+	}
+}
+
 // waitForStorageSync polls query-block-jobs until ALL drive-mirror jobs reach
 // the "ready" state, indicating full synchronization. Fails if any job
 // disappears, never appears within jobAppearTimeout, or reaches a terminal
@@ -800,7 +794,7 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client, out io.Wr
 				// The socket answered with garbage: a protocol fault, not a
 				// handover stall. Fail loudly instead of waiting out the grace
 				// window on a broken connection.
-				return qmp.MigrateInfo{}, fmt.Errorf("unmarshaling migration status: %v", err)
+				return qmp.MigrateInfo{}, fmt.Errorf("unmarshaling migration status: %w", err)
 			}
 			if ctx.Err() != nil {
 				slog.Warn("Migration timed out during completion wait", "last_status", prevStatus)

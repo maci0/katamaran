@@ -192,7 +192,7 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 		cancelStream()
 		if err != nil {
 			lastFetchErr = err
-			logPodLogFetchRetry("pod-log fetch attempt failed", attempt, "error", err)
+			logPodLogRetry("pod-log fetch attempt failed", attempt, "error", err)
 		} else if b64 := markers[CmdlineB64Marker]; b64 != "" {
 			if len(b64) > maxMarkerB64Size {
 				return "", fmt.Errorf("KATAMARAN_CMDLINE_B64 marker too large: %d bytes (max %d)", len(b64), maxMarkerB64Size)
@@ -204,7 +204,7 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 			slog.Info("Decoded source QEMU cmdline from pod log", "attempt", attempt, "bytes", len(decoded))
 			return writeCmdlineTempFile(decoded)
 		} else {
-			logPodLogMarkerMissing(attempt, bytesScanned)
+			logPodLogRetry("pod-log fetch returned no marker yet", attempt, "bytes_scanned", bytesScanned)
 		}
 		// Retry after a short pause. Either the pod isn't up yet (404),
 		// the stream ended without the marker (limitBytes exhausted), or
@@ -221,22 +221,19 @@ func fetchCmdlineFromPodLog(ctx context.Context, ref string) (string, error) {
 	}
 }
 
-func logPodLogFetchRetry(message string, attempt int, attrs ...any) {
+// podLogRetryLogEvery is the Warn cadence for the repeated pod-log fetch
+// attempts: warn on the first attempt and every Nth one after it, Debug for
+// the rest, so a long fetch loop cannot flood the log while its first failure
+// still surfaces.
+const podLogRetryLogEvery = 15
+
+func logPodLogRetry(message string, attempt int, attrs ...any) {
 	attrs = append([]any{"attempt", attempt}, attrs...)
-	if attempt == 1 || attempt%15 == 0 {
+	if attempt == 1 || attempt%podLogRetryLogEvery == 0 {
 		slog.Warn(message, attrs...)
 		return
 	}
 	slog.Debug(message, attrs...)
-}
-
-func logPodLogMarkerMissing(attempt int, bytesScanned int64) {
-	attrs := []any{"attempt", attempt, "bytes_scanned", bytesScanned}
-	if attempt%15 == 0 {
-		slog.Warn("pod-log fetch returned no marker yet", attrs...)
-		return
-	}
-	slog.Debug("pod-log fetch returned no marker yet", attrs...)
 }
 
 // fetchVMConfigFromPodLog retrieves the VMConfig emitted by the source
@@ -250,12 +247,11 @@ func fetchVMConfigFromPodLog(ctx context.Context, ref string) (vmConfig, agentCo
 	}
 	defer pc.client.CloseIdleConnections()
 
+	// A fetch error does not discard markers the scan did recover; decode()
+	// below turns each absent or malformed marker into a nil slice.
 	markers, _, err := scanPodLogMarkers(ctx, pc.client, pc.endpoint, pc.token, VMConfigB64Marker, AgentConfigB64Marker)
 	if err != nil {
 		slog.Warn("Failed to fetch source pod log for VMConfig", "error", err)
-		if len(markers) == 0 {
-			return nil, nil
-		}
 	}
 
 	decode := func(name, b64 string) []byte {

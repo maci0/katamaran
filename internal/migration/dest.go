@@ -45,8 +45,6 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// One migration runs per process, so mutating the default logger is safe.
 	if cfg.DestPodName != "" {
 		slog.SetDefault(slog.Default().With("role", "dest", "dest_pod", cfg.DestPodName, "namespace", cfg.DestPodNamespace))
-	}
-	if cfg.DestPodName != "" {
 		_, res, err := resolvePodSandbox(ctx, cfg.DestPodNamespace, cfg.DestPodName)
 		if err != nil {
 			return err

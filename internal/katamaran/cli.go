@@ -133,6 +133,15 @@ Examples:
 `)
 }
 
+// usageError prints a validation failure followed by the usage text and
+// returns the argument-error exit code. Every flag validation in Run funnels
+// through here so the message shape and the exit code cannot drift apart.
+func usageError(stderr io.Writer, format string, args ...any) int {
+	_, _ = fmt.Fprintf(stderr, "Error: "+format+"\n\n", args...)
+	printUsage(stderr)
+	return 2
+}
+
 // Run contains all CLI logic: flag parsing, validation, and migration execution.
 // It is separate from cmd/katamaran so validation paths can be tested without os.Exit.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -184,9 +193,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if fs.NArg() > 0 {
-		_, _ = fmt.Fprintf(stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	seenFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { seenFlags[f.Name] = true })
@@ -203,18 +210,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch mode {
 	case roleSource, roleDest:
 	case "":
-		_, _ = fmt.Fprintf(stderr, "Error: --mode is required (valid: source, dest)\n\n")
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "--mode is required (valid: source, dest)")
 	default:
-		_, _ = fmt.Fprintf(stderr, "Error: invalid --mode %q (valid: source, dest)\n\n", *modeFlag)
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "invalid --mode %q (valid: source, dest)", *modeFlag)
 	}
 	if err := logging.SetupLogger(stderr, *logFormat, *logLevel, "katamaran"); err != nil {
-		_, _ = fmt.Fprintf(stderr, "Error: %v\n\n", err)
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "%v", err)
 	}
 	// Propagate migration ID from the dashboard's environment variable
 	// into all log entries for cross-component correlation.
@@ -223,19 +224,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *multifdChannels < 0 {
-		_, _ = fmt.Fprintf(stderr, "Error: --multifd-channels must be non-negative, got %d\n\n", *multifdChannels)
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "--multifd-channels must be non-negative, got %d", *multifdChannels)
 	}
 	if mode == roleSource && (*autoDowntimeFloor < 0 || *autoDowntimeFloor > migration.MaxDowntimeMS) {
-		_, _ = fmt.Fprintf(stderr, "Error: --auto-downtime-floor-ms must be between 0 and %d, got %d\n\n", migration.MaxDowntimeMS, *autoDowntimeFloor)
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "--auto-downtime-floor-ms must be between 0 and %d, got %d", migration.MaxDowntimeMS, *autoDowntimeFloor)
 	}
 	if mode == roleSource && *cniConvergenceDelay < 0 {
-		_, _ = fmt.Fprintf(stderr, "Error: --cni-convergence-delay must be non-negative, got %s\n\n", *cniConvergenceDelay)
-		printUsage(stderr)
-		return 2
+		return usageError(stderr, "--cni-convergence-delay must be non-negative, got %s", *cniConvergenceDelay)
 	}
 
 	// Warn about mode-irrelevant flags and conflicting flag combinations.
@@ -262,19 +257,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// and the resolver overrides it (including the well-known
 		// destDefaultQMPSocket placeholder) when a dest pod is supplied.
 		if seenFlags["dest-pod-name"] != seenFlags["dest-pod-namespace"] {
-			_, _ = fmt.Fprintf(stderr, "Error: --dest-pod-name and --dest-pod-namespace must be supplied together\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--dest-pod-name and --dest-pod-namespace must be supplied together")
 		}
 		if seenFlags["pod-name"] != seenFlags["pod-namespace"] {
-			_, _ = fmt.Fprintf(stderr, "Error: --pod-name and --pod-namespace must be supplied together\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--pod-name and --pod-namespace must be supplied together")
 		}
 		if *replayCmdline != "" && *replayCmdlineFromPod != "" {
-			_, _ = fmt.Fprintf(stderr, "Error: --replay-cmdline and --replay-cmdline-from-pod are mutually exclusive\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--replay-cmdline and --replay-cmdline-from-pod are mutually exclusive")
 		}
 		var sourcePodRef string
 		if *podNS != "" && *podName != "" {
@@ -296,9 +285,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		})
 	case roleSource:
 		if *destIP == "" {
-			_, _ = fmt.Fprintf(stderr, "Error: --dest-ip is required\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--dest-ip is required")
 		}
 		// Mode selection: pod mode requires both pod flags; legacy mode requires
 		// --vm-ip (and uses --qmp's default if not explicitly set). Mixing the
@@ -306,46 +293,33 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		visitedPodName := seenFlags["pod-name"]
 		visitedPodNS := seenFlags["pod-namespace"]
 		if visitedPodName != visitedPodNS {
-			_, _ = fmt.Fprintf(stderr, "Error: --pod-name and --pod-namespace must be supplied together\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--pod-name and --pod-namespace must be supplied together")
 		}
 		hasPod := *podName != "" && *podNS != ""
 		if hasPod && (seenFlags["vm-ip"] || seenFlags["qmp"]) {
-			_, _ = fmt.Fprintf(stderr, "Error: --pod-name/--pod-namespace cannot be combined with --qmp or --vm-ip\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--pod-name/--pod-namespace cannot be combined with --qmp or --vm-ip")
 		}
 		if !hasPod && *vmIP == "" {
-			_, _ = fmt.Fprintf(stderr, "Error: source mode requires either (--vm-ip [+ --qmp]) or (--pod-name + --pod-namespace)\n\n")
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "source mode requires either (--vm-ip [+ --qmp]) or (--pod-name + --pod-namespace)")
 		}
 		hasExplicit := !hasPod
 
-		var parsedDest, parsedVM netip.Addr
-		var err1 error
-		parsedDest, err1 = netip.ParseAddr(*destIP)
+		var parsedVM netip.Addr
+		var err2 error
+		parsedDest, err1 := netip.ParseAddr(*destIP)
 		if err1 != nil {
-			_, _ = fmt.Fprintf(stderr, "Error: invalid --dest-ip %q: %v\n\n", *destIP, err1)
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "invalid --dest-ip %q: %v", *destIP, err1)
 		}
 		parsedDest = parsedDest.Unmap()
 		if hasExplicit {
-			var err2 error
 			parsedVM, err2 = netip.ParseAddr(*vmIP)
 			if err2 != nil {
-				_, _ = fmt.Fprintf(stderr, "Error: invalid --vm-ip %q: %v\n\n", *vmIP, err2)
-				printUsage(stderr)
-				return 2
+				return usageError(stderr, "invalid --vm-ip %q: %v", *vmIP, err2)
 			}
 			parsedVM = parsedVM.Unmap()
 			if parsedDest.Is4() != parsedVM.Is4() {
-				_, _ = fmt.Fprintf(stderr, "Error: --dest-ip and --vm-ip address family mismatch (%s vs %s)\n\n",
+				return usageError(stderr, "--dest-ip and --vm-ip address family mismatch (%s vs %s)",
 					migration.IPFamily(parsedDest), migration.IPFamily(parsedVM))
-				printUsage(stderr)
-				return 2
 			}
 		}
 		// In pod mode the VM IP is resolved inside the source binary at
@@ -354,14 +328,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// listener.
 		tm := migration.TunnelMode(*tunnelMode)
 		if tm != migration.TunnelModeIPIP && tm != migration.TunnelModeGRE && tm != migration.TunnelModeNone {
-			_, _ = fmt.Fprintf(stderr, "Error: invalid --tunnel-mode %q (valid: ipip, gre, none)\n\n", *tunnelMode)
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "invalid --tunnel-mode %q (valid: ipip, gre, none)", *tunnelMode)
 		}
 		if *downtimeLimit < 1 || *downtimeLimit > migration.MaxDowntimeMS {
-			_, _ = fmt.Fprintf(stderr, "Error: --downtime must be between 1 and %d, got %d\n\n", migration.MaxDowntimeMS, *downtimeLimit)
-			printUsage(stderr)
-			return 2
+			return usageError(stderr, "--downtime must be between 1 and %d, got %d", migration.MaxDowntimeMS, *downtimeLimit)
 		}
 
 		slog.Info("katamaran starting", "version", buildinfo.Version, "mode", string(mode), "pid", os.Getpid())

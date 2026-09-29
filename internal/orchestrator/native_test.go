@@ -131,7 +131,7 @@ func TestInjectReplayFromPod_AppendsFlag(t *testing.T) {
 			},
 		},
 	}
-	patched, err := injectReplayFromPod(job, "default", "vm-a-pod-xyz")
+	patched, err := injectReplayFromPod(job, PodRef{Namespace: "default", Name: "vm-a-pod-xyz"})
 	if err != nil {
 		t.Fatalf("injectReplayFromPod: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestInjectReplayFromPod_NoKatamaranContainer(t *testing.T) {
 			},
 		},
 	}
-	if _, err := injectReplayFromPod(job, "default", "vm-a-pod"); err == nil {
+	if _, err := injectReplayFromPod(job, PodRef{Namespace: "default", Name: "vm-a-pod"}); err == nil {
 		t.Fatal("expected error when no katamaran container exists")
 	}
 }
@@ -193,7 +193,7 @@ func TestInjectReplayFromPod_RejectsInvalidRef(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			job := newJob()
-			got, err := injectReplayFromPod(job, tt.ns, tt.pod)
+			got, err := injectReplayFromPod(job, PodRef{Namespace: tt.ns, Name: tt.pod})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
 			}

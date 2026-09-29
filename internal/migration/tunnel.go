@@ -39,6 +39,23 @@ func generateTunnelName() (string, error) {
 	return tunnelPrefix + hex.EncodeToString(b[:]), nil // "mig-" (4) + 10 hex = 14 chars
 }
 
+// validateTunnelAddrs checks that both endpoints are valid addresses of the
+// same family. RunSource and setupTunnel both need this, and the two must
+// agree: the source validates before migrating, the tunnel again before
+// touching the host stack.
+func validateTunnelAddrs(dest, vm netip.Addr) error {
+	if !dest.IsValid() {
+		return fmt.Errorf("invalid destination address: %s", dest)
+	}
+	if !vm.IsValid() {
+		return fmt.Errorf("invalid VM address: %s", vm)
+	}
+	if dest.Is4() != vm.Is4() {
+		return fmt.Errorf("destination (%s) and VM (%s) address families must match", dest, vm)
+	}
+	return nil
+}
+
 // setupTunnel creates an IP tunnel to the destination node and installs
 // a host route for the VM IP through it. This ensures packets arriving at the
 // (now-stale) source during CNI convergence are forwarded to the destination.
@@ -52,15 +69,8 @@ func generateTunnelName() (string, error) {
 // tunnel is cleaned up before returning the error to prevent resource leaks.
 func setupTunnel(ctx context.Context, dest, vm netip.Addr, tunnelMode TunnelMode, tunnelName string) error {
 	tunnelStart := time.Now()
-	if !dest.IsValid() {
-		return fmt.Errorf("invalid destination address: %s", dest)
-	}
-	if !vm.IsValid() {
-		return fmt.Errorf("invalid VM address: %s", vm)
-	}
-
-	if dest.Is4() != vm.Is4() {
-		return fmt.Errorf("destination (%s) and VM (%s) address families must match", dest, vm)
+	if err := validateTunnelAddrs(dest, vm); err != nil {
+		return err
 	}
 
 	destStr := dest.String()

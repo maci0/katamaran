@@ -41,6 +41,15 @@ const (
 	// QEMU monitor socket to under /run/vc/vm/<sandbox>/.
 	extraMonitorSocketName = "extra-monitor.sock"
 
+	// vhostFsSocketName is the per-sandbox filename Kata binds virtiofsd's
+	// vhost socket to. Replay must wipe a stale one before launching QEMU
+	// and then wait for the new virtiofsd to bind it.
+	vhostFsSocketName = "vhost-fs.sock"
+
+	// consoleSocketName is the per-sandbox serial console socket, wiped
+	// alongside the other sockets when reusing a dest sandbox directory.
+	consoleSocketName = "console.sock"
+
 	// DefaultTapIface is the standard Kata tap interface name inside the
 	// sandbox netns. Cmdline replay pre-creates it and injects it into a
 	// fd-stripped tap -netdev; callers that configure a different interface

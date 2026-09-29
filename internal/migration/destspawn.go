@@ -47,9 +47,9 @@ var (
 	// destReplaySocketPollInterval is the polling cadence for the QMP socket.
 	destReplaySocketPollInterval = 1 * time.Second
 
-	// destReplayVirtiofsdSettleDelay gives virtiofsd a beat to bind its
-	// UNIX socket before QEMU connects.
-	destReplayVirtiofsdSettleDelay = 2 * time.Second
+	// destReplayVirtiofsdSocketWait is how long startVirtiofsd waits for the
+	// spawned virtiofsd to bind its UNIX socket before QEMU tries to use it.
+	destReplayVirtiofsdSocketWait = 5 * time.Second
 
 	// destReplaySleep is the fixed wait the source uses (in replay mode) for
 	// the dest QEMU to be up, instead of TCP-probing. See source.go for why
@@ -551,7 +551,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	// Wipe stale sockets from prior failed attempts so waitForSocket doesn't
 	// return immediately on a leftover file. The dest sandbox dir is reused
 	// across restart attempts of the dest job pod.
-	for _, name := range []string{extraMonitorSocketName, "vhost-fs.sock", "console.sock"} {
+	for _, name := range []string{extraMonitorSocketName, vhostFsSocketName, consoleSocketName} {
 		_ = os.Remove(filepath.Join(dstSandboxDir, name))
 	}
 	sharedDir := filepath.Join(kataSharedSandboxRoot, dstSandboxID, "shared")
@@ -575,7 +575,7 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 
 	// Start virtiofsd. e2e.sh:518 nohups the daemon; we use exec.Cmd with
 	// detached stdio + Setpgid so the process survives our exit if needed.
-	vhostSock := filepath.Join(dstSandboxDir, "vhost-fs.sock")
+	vhostSock := filepath.Join(dstSandboxDir, vhostFsSocketName)
 	if err := startVirtiofsd(ctx, vhostSock, sharedDir); err != nil {
 		return fmt.Errorf("start virtiofsd: %w", err)
 	}
@@ -690,7 +690,7 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 	if err := spawnDetachedProcess(destReplayVirtiofsd, args); err != nil {
 		return err
 	}
-	if err := waitForSocket(ctx, socketPath, destReplayVirtiofsdSettleDelay+3*time.Second); err != nil {
+	if err := waitForSocket(ctx, socketPath, destReplayVirtiofsdSocketWait); err != nil {
 		return fmt.Errorf("virtiofsd socket %s did not appear: %w", socketPath, err)
 	}
 	return nil
