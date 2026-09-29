@@ -557,9 +557,14 @@ func spawnReplayedQEMU(ctx context.Context, cfg *DestConfig) error {
 	}
 	// Wipe stale sockets from prior failed attempts so waitForSocket doesn't
 	// return immediately on a leftover file. The dest sandbox dir is reused
-	// across restart attempts of the dest job pod.
+	// across restart attempts of the dest job pod. A removal that fails
+	// leaves a dead socket path that waitForSocket would report as ready, so
+	// surface it instead of starting QEMU against a socket nobody serves.
 	for _, name := range []string{extraMonitorSocketName, vhostFsSocketName, consoleSocketName} {
-		_ = os.Remove(filepath.Join(dstSandboxDir, name))
+		p := filepath.Join(dstSandboxDir, name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale socket %s: %w", p, err)
+		}
 	}
 	sharedDir := filepath.Join(kataSharedSandboxRoot, dstSandboxID, "shared")
 	if err := os.MkdirAll(sharedDir, 0o755); err != nil {

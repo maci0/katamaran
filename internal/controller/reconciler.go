@@ -550,6 +550,12 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 		}
 	}
 	if req.SourceCleanup != "" && req.SourceCleanup != "none" {
+		if req.SourcePod != nil && r.Discoverer == nil {
+			// Otherwise the source pod survives a successful migration holding
+			// a dead VM, with no signal beyond the startup-time warning.
+			slog.Warn("Source cleanup requested but no discoverer is configured; source pod is left in place",
+				"source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "source_cleanup", req.SourceCleanup)
+		}
 		if req.SourcePod != nil && r.Discoverer != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()

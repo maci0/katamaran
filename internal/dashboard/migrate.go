@@ -238,8 +238,10 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 	a.migrationsStarted++
 	dashboardMigrationsActive.Add(1)
 	// Use context.Background() so the migration process survives after
-	// the HTTP response is sent (r.Context() cancels on response write).
-	ctx, cancel := context.WithCancel(context.Background())
+	// the HTTP response is sent (r.Context() cancels on response write),
+	// bounded by migrateRunTimeout so a stalled apiserver cannot wedge the
+	// dashboard permanently.
+	ctx, cancel := context.WithTimeout(context.Background(), migrateRunTimeout)
 	a.migrationCancel = cancel
 	a.migrationMutex.Unlock()
 
@@ -454,6 +456,15 @@ func humanBytes(n int64) string {
 		return fmt.Sprintf("%d B", n)
 	}
 }
+
+// migrateRunTimeout bounds a dashboard-initiated migration end to end.
+// Without a deadline, a wedged apiserver leaves the poll loop blocked
+// forever, isMigrating never clears, and every later /api/migrate is
+// rejected with 409 for the life of the process. Sized above the migration's
+// own budget (storageSyncTimeout + migrationTimeout, the same sum the Jobs'
+// activeDeadlineSeconds must exceed) with headroom for Job startup and CNI
+// convergence.
+const migrateRunTimeout = 4 * time.Hour
 
 // migrateStopTimeout bounds the Orchestrator.Stop call in handleMigrateStop.
 // Two Job deletes against the apiserver normally finish in well under a

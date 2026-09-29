@@ -1004,7 +1004,9 @@ func (n *native) waitForJobPod(ctx context.Context, jobName, desc string, reqTim
 		select {
 		case <-deadline.Done():
 			if lastListErr != nil {
-				return "", fmt.Errorf("waiting for %s of job %s: %w (last list error: %v)", desc, jobName, deadline.Err(), lastListErr)
+				// Join so the operator can inspect both causes; lastListErr is
+				// the only evidence of why the pod list kept failing.
+				return "", fmt.Errorf("waiting for %s of job %s: %w", desc, jobName, errors.Join(deadline.Err(), lastListErr))
 			}
 			return "", fmt.Errorf("waiting for %s of job %s: %w", desc, jobName, deadline.Err())
 		case <-ticker.C:

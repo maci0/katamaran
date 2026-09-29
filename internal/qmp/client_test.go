@@ -1141,8 +1141,10 @@ func TestReadLine_MaxLineSizeGuard(t *testing.T) {
 func TestReadLine_MaxLineSizeGuardBeforeNewline(t *testing.T) {
 	t.Parallel()
 
+	// A trailing well-formed line models the queue that still holds the tail
+	// of the oversized message.
 	c := &Client{
-		r: bufio.NewReader(bytes.NewBufferString(strings.Repeat("x", maxLineSize+1) + "\n")),
+		r: bufio.NewReader(bytes.NewBufferString(strings.Repeat("x", maxLineSize+1) + "\n" + `{"return":{}}` + "\n")),
 	}
 	_, err := c.readLine()
 	if err == nil {
@@ -1150,5 +1152,28 @@ func TestReadLine_MaxLineSizeGuardBeforeNewline(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected size guard error containing 'exceeds', got: %v", err)
+	}
+	if !errors.Is(err, ErrDesynced) {
+		t.Fatalf("oversized line must report ErrDesynced, got: %v", err)
+	}
+
+	// The latch must hold: reading the tail of the oversized message would
+	// return garbage, so every later read fails fast instead.
+	if _, err := c.readLine(); !errors.Is(err, ErrDesynced) {
+		t.Fatalf("expected ErrDesynced on the read after an oversized line, got: %v", err)
+	}
+}
+
+func TestExecute_RefusesDesyncedClient(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	defer server.Close()
+	c := &Client{conn: client, r: bufio.NewReader(client), desynced: true}
+	defer c.Close()
+
+	_, err := c.Execute(context.Background(), "query-migrate", nil)
+	if !errors.Is(err, ErrDesynced) {
+		t.Fatalf("expected ErrDesynced without writing to a desynced stream, got: %v", err)
 	}
 }

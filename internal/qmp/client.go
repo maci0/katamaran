@@ -53,14 +53,20 @@ const (
 	slowCommandThreshold = 1 * time.Second
 )
 
+// ErrDesynced reports that the QMP stream is no longer framed correctly and
+// every later command would read the tail of the message that caused the
+// desync. The only recovery is Close, which the caller already defers.
+var ErrDesynced = errors.New("QMP stream desynchronized")
+
 // Client is a minimal synchronous client for the QEMU Machine Protocol.
 type Client struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	r      *bufio.Reader
-	events []response // Buffered events received during synchronous command execution.
-	buf    []byte     // Unprocessed partial line data from timeouts.
-	socket string     // Socket path for diagnostic logging.
+	mu       sync.Mutex
+	conn     net.Conn
+	r        *bufio.Reader
+	events   []response // Buffered events received during synchronous command execution.
+	buf      []byte     // Unprocessed partial line data from timeouts.
+	socket   string     // Socket path for diagnostic logging.
+	desynced bool       // Stream framing is lost; see ErrDesynced.
 }
 
 // bufferEvent adds an asynchronous event to the internal queue.
@@ -79,13 +85,24 @@ func (c *Client) bufferEvent(ev response) {
 // It safely accumulates partial reads across errors (e.g., timeouts), preventing data loss.
 // The accumulation buffer is capped at maxLineSize to prevent unbounded memory growth
 // from a misbehaving QEMU that sends data without newlines.
+//
+// An oversized line is unrecoverable: the fragment has already been consumed
+// from the reader while the rest of that line stays queued, so every later
+// read returns its tail. The client is latched into the desynced state and
+// subsequent calls fail fast with ErrDesynced instead of looping.
 func (c *Client) readLine() ([]byte, error) {
 	for {
+		if c.isDesynced() {
+			return nil, ErrDesynced
+		}
 		frag, err := c.r.ReadSlice('\n')
 		if len(frag) > 0 {
 			if len(c.buf)+len(frag) > maxLineSize {
+				c.mu.Lock()
+				c.desynced = true
 				c.buf = nil
-				return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding", maxLineSize)
+				c.mu.Unlock()
+				return nil, fmt.Errorf("QMP line exceeds %d bytes, discarding: %w", maxLineSize, ErrDesynced)
 			}
 			if len(c.buf) == 0 && err == nil {
 				return frag, nil
@@ -120,6 +137,13 @@ func interruptOnCancel(ctx context.Context, conn net.Conn, setDeadline func(time
 			<-callbackDone
 		}
 	}
+}
+
+// isDesynced reports whether the stream framing has been lost.
+func (c *Client) isDesynced() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.desynced
 }
 
 // isTimeout reports whether err is (or wraps) a network timeout.
@@ -249,6 +273,13 @@ func (c *Client) Execute(ctx context.Context, cmd string, args Args) (json.RawMe
 
 	if conn == nil {
 		return nil, fmt.Errorf("executing QMP command %q: connection is closed", cmd)
+	}
+
+	// Refuse to write into a stream whose framing is already lost: the reply
+	// would be read out of the tail of a previous oversized message, and the
+	// caller's retry loop would spin for the whole migration budget.
+	if c.isDesynced() {
+		return nil, fmt.Errorf("executing QMP command %q: %w", cmd, ErrDesynced)
 	}
 
 	req := request{

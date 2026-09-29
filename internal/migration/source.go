@@ -136,7 +136,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}()
 		// Marker line consumed by deploy/migrate.sh, printed on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
-		fmt.Fprintf(out, "%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo)
+		// Both cmdline markers are load-bearing: without them the dest only
+		// discovers the gap after the guest is paused, so fail here instead.
+		if err := writeMarker(out, "%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo); err != nil {
+			return fmt.Errorf("emitting %s marker: %w", CmdlineAtMarker, err)
+		}
 		// Also emit the cmdline file's contents as a single base64 line on
 		// stdout. The dest binary scrapes the source pod's log via the
 		// apiserver (--replay-cmdline-from-pod), avoiding a separate file
@@ -144,7 +148,9 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if cmdlineBytes, err := os.ReadFile(cfg.EmitCmdlineTo); err != nil {
 			slog.Warn("Failed to read captured cmdline for KATAMARAN_CMDLINE_B64; in-pod-log replay will fail", "error", err, "path", cfg.EmitCmdlineTo)
 		} else {
-			fmt.Fprintf(out, "%s%s\n", CmdlineB64Marker, base64.StdEncoding.EncodeToString(cmdlineBytes))
+			if err := writeMarker(out, "%s%s\n", CmdlineB64Marker, base64.StdEncoding.EncodeToString(cmdlineBytes)); err != nil {
+				return fmt.Errorf("emitting %s marker: %w", CmdlineB64Marker, err)
+			}
 		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
 	}
@@ -296,8 +302,10 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// came from the RTT calculation; on RTT failure the --downtime
 	// fallback is programmed and auto stays false so consumers don't
 	// mistake spec.downtimeMS for an auto-derived limit.
-	fmt.Fprintf(out, "%s applied_ms=%d rtt_ms=%d auto=%t\n",
-		DowntimeLimitMarker, downtimeLimitMS, rttMS, downtimeFromRTT)
+	if err := writeMarker(out, "%s applied_ms=%d rtt_ms=%d auto=%t\n",
+		DowntimeLimitMarker, downtimeLimitMS, rttMS, downtimeFromRTT); err != nil {
+		slog.Warn("Failed to emit downtime limit marker; orchestrator will not stamp spec.downtimeMS", "error", err)
+	}
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
 		DowntimeLimit:   int64(downtimeLimitMS),
@@ -345,6 +353,11 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		err = client.WaitForEvent(ctx, "STOP", migrationPollInterval)
 		if err == nil {
 			break // Success: VM stopped.
+		}
+		// A desynchronized stream never recovers on its own, so retrying
+		// would burn the whole migration budget against a dead connection.
+		if errors.Is(err, qmp.ErrDesynced) {
+			return fmt.Errorf("waiting for STOP: %w", err)
 		}
 
 		var netErr net.Error
@@ -394,15 +407,19 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// traffic is now buffered/redirected, so the downtime window is open. The
 	// orchestrator scrapes this from the pod log and surfaces it as the
 	// PhaseCutover status update.
-	fmt.Fprintf(out, "%sphase=cutover\n", PhaseMarker)
+	if err := writeMarker(out, "%sphase=cutover\n", PhaseMarker); err != nil {
+		slog.Warn("Failed to emit cutover marker; orchestrator will not surface PhaseCutover", "error", err)
+	}
 	slog.Info("Waiting for migration to complete")
 
 	info, migrationErr := waitForMigrationComplete(ctx, client, out)
 
 	if migrationErr == nil && info.Status == qmp.MigrateStatusCompleted {
 		slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
-		fmt.Fprintf(out, "%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
-			ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
+		if err := writeMarker(out, "%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+			ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total); err != nil {
+			slog.Warn("Failed to emit result marker; orchestrator will not record the migration result", "error", err)
+		}
 	}
 
 	if migrationErr != nil {
@@ -814,8 +831,10 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client, out io.Wr
 				// Stable, parser-friendly progress marker the orchestrator
 				// scrapes from pod logs to surface RAM transfer progress
 				// without depending on slog's text/json layout.
-				fmt.Fprintf(out, "%sstatus=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
-					ProgressMarker, info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
+				if err := writeMarker(out, "%sstatus=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
+					ProgressMarker, info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining); err != nil {
+					slog.Warn("Failed to emit progress marker; orchestrator will not see RAM transfer progress", "error", err)
+				}
 				prevStatus = info.Status
 				lastLoggedRemaining = info.RAM.Remaining
 			}
@@ -829,6 +848,17 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client, out io.Wr
 		case <-ticker.C:
 		}
 	}
+}
+
+// writeMarker emits one parser-friendly marker line on out and reports write
+// failures. The marker channel is the sole way the orchestrator and the dest
+// binary learn what the source did, so a lost write is a silent failure unless
+// the caller acts on it.
+func writeMarker(out io.Writer, format string, args ...any) error {
+	if _, err := fmt.Fprintf(out, format, args...); err != nil {
+		return fmt.Errorf("writing migration marker: %w", err)
+	}
+	return nil
 }
 
 // emitVMConfig reads the source sandbox's persist.json and emits the
@@ -868,8 +898,14 @@ func emitVMConfig(qemuPID int, out io.Writer) {
 		}
 		vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		agentCfg := persist.Config.KataAgentConfig
-		fmt.Fprintf(out, "%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg))
-		fmt.Fprintf(out, "%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg))
+		if err := writeMarker(out, "%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg)); err != nil {
+			slog.Warn("Failed to emit VMConfig marker; factory VM adoption will fall back to cold start", "error", err)
+			return
+		}
+		if err := writeMarker(out, "%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg)); err != nil {
+			slog.Warn("Failed to emit agent config marker; factory VM adoption may fail", "error", err)
+			return
+		}
 		slog.Info("Emitted VMConfig for factory adoption", "sandbox", e.Name(), "size", len(vmCfg))
 		return
 	}

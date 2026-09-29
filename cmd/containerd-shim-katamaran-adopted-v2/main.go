@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -293,6 +294,14 @@ func runServer(logFn func(format string, args ...any)) error {
 	logFn("ttrpc server starting")
 
 	go func() {
+		// A panic inside any ttrpc handler would otherwise take down the whole
+		// shim process, losing the adopted VM's control plane while QEMU keeps
+		// running. Recover per-goroutine and log the stack.
+		defer func() {
+			if rec := recover(); rec != nil {
+				logFn("ttrpc Serve panic: %v\n%s", rec, debug.Stack())
+			}
+		}()
 		if err := srv.Serve(context.Background(), listener); err != nil && !errors.Is(err, ttrpc.ErrServerClosed) {
 			logFn("ttrpc Serve: %v", err)
 		}
@@ -411,7 +420,11 @@ func (s *adoptedTaskService) Create(_ context.Context, req *taskAPI.CreateTaskRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.id = req.ID
-	sandboxID := readAdoptedSandboxID(req.Bundle)
+	sandboxID, err := readAdoptedSandboxID(req.Bundle)
+	if err != nil {
+		s.logFn("Create: reading adopted-sandbox-id from bundle %q: %v", req.Bundle, err)
+		return nil, fmt.Errorf("resolving adopted sandbox id: %w", err)
+	}
 	if sandboxID == "" {
 		sandboxID = defaultAdoptedSandboxID
 	}
@@ -544,9 +557,12 @@ func (s *adoptedTaskService) Delete(_ context.Context, _ *taskAPI.DeleteRequest)
 	exitCode := s.exitCode
 	exitedAt := s.exitedAt
 	s.mu.Unlock()
-	// Try to clean up the surviving cgroup. Best-effort.
+	// Try to clean up the surviving cgroup. Best-effort, but a leftover
+	// directory is picked up by the next pid lookup, so record the failure.
 	if pid > 0 {
-		_ = removeAdoptedCgroup(pid)
+		if err := removeAdoptedCgroup(pid); err != nil {
+			s.logFn("Delete: removing adopted cgroup for pid=%d: %v", pid, err)
+		}
 	}
 	if !exited {
 		exitedAt = time.Now()
@@ -597,6 +613,13 @@ func (s *adoptedTaskService) Pids(_ context.Context, _ *taskAPI.PidsRequest) (*t
 // Polling beats pidfd here because the shim must work across kernel
 // versions where pidfd_open isn't available without CGO.
 func (s *adoptedTaskService) watchExit() {
+	// A panic here would kill the shim, leaving containerd with a task it
+	// can no longer Wait on or Kill.
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.logFn("watchExit panic: %v\n%s", rec, debug.Stack())
+		}
+	}()
 	s.mu.Lock()
 	pid := s.qemuPid
 	s.mu.Unlock()
@@ -683,12 +706,15 @@ func lookupAdoptedQEMUPid(sandboxID string) (int, error) {
 
 // removeAdoptedCgroup attempts to rmdir the surviving cgroup tree
 // after QEMU is gone. cgroup v2 requires the directory to be empty.
+// A leftover directory is scanned by the next lookupAdoptedQEMUPid, so
+// removals that fail are reported rather than dropped.
 func removeAdoptedCgroup(qemuPid int) error {
 	// Walk adoptedCgroupRoot looking for a cgroup containing the pid.
 	entries, err := os.ReadDir(adoptedCgroupRoot)
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -710,9 +736,11 @@ func removeAdoptedCgroup(qemuPid int) error {
 		if otherAlive {
 			continue
 		}
-		_ = os.Remove(dir)
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("removing stale cgroup %s: %w", dir, err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // --- Unimplemented TTRPCTaskService methods. These are present so
@@ -899,14 +927,18 @@ func (a *v2Adapter) Shutdown(ctx context.Context, req *taskAPIv2.ShutdownRequest
 
 // readAdoptedSandboxID extracts the
 // `katamaran.io/adopted-sandbox-id` annotation from the OCI bundle
-// dir's config.json. Returns "" if absent or unreadable.
-func readAdoptedSandboxID(bundleDir string) string {
+// dir's config.json. An absent annotation returns "" with a nil error so
+// the caller can fall back to the default sandbox id; a config.json that
+// cannot be read is an error, because falling back would resolve some other
+// migration's QEMU.
+func readAdoptedSandboxID(bundleDir string) (string, error) {
 	if bundleDir == "" {
-		return ""
+		return "", nil
 	}
-	data, err := os.ReadFile(filepath.Join(bundleDir, "config.json"))
+	path := filepath.Join(bundleDir, "config.json")
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading OCI bundle config: %w", err)
 	}
 	// Decode only the annotations map: the full OCI runtime spec is large
 	// and a shim has no business modeling it, but the value still has to
@@ -918,7 +950,11 @@ func readAdoptedSandboxID(bundleDir string) string {
 		Annotations map[string]string `json:"annotations"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return ""
+		return "", fmt.Errorf("decoding OCI bundle config: %w", err)
 	}
-	return spec.Annotations[adoptedSandboxAnnotation]
+	value, ok := spec.Annotations[adoptedSandboxAnnotation]
+	if !ok {
+		return "", nil
+	}
+	return value, nil
 }

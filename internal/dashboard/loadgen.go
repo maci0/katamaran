@@ -187,9 +187,15 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				slog.Warn("Failed to terminate ping process", "target", pingTarget, "error", err, "request_id", reqID)
 			}
-			if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+			err := cmd.Wait()
+			switch {
+			case err != nil && ctx.Err() == nil:
 				slog.Warn("Ping command finished with error", "target", pingTarget, "error", err, "request_id", reqID)
-			} else {
+			case err != nil:
+				// We killed the process, so a non-zero exit is expected, but
+				// record the cause rather than logging a clean stop.
+				slog.Info("Ping load generator stopped", "target", pingTarget, "request_id", reqID, "exit", err.Error())
+			default:
 				slog.Info("Ping load generator stopped", "target", pingTarget, "request_id", reqID)
 			}
 		}()

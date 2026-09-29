@@ -112,6 +112,36 @@ workflow refuses to publish a tag that has no section below.
   migration, after the run had started, so a typo looked to a script like a
   failed migration. The checks are now shared between the CLI and the
   migration package and run before anything starts.
+- A QMP line above the 4 MiB cap now latches the client into a desynced
+  state and fails every later command with `qmp.ErrDesynced`. Previously the
+  oversized fragment was consumed while the rest of that line stayed queued,
+  so each subsequent read returned its tail and the source's STOP-poll loop
+  retried until the migration budget ran out.
+- The source migration binary checks every stdout marker write. A failed
+  `KATAMARAN_CMDLINE_AT` or `KATAMARAN_CMDLINE_B64` write now aborts the
+  migration at once instead of letting the dest side discover the gap five
+  minutes later, after the guest is paused; a failed progress, phase, result
+  or VMConfig marker is logged.
+- The dashboard bounds a migration it starts with `migrateRunTimeout`. A
+  wedged apiserver used to block the poll loop forever, leaving `isMigrating`
+  set and answering 409 to every later `POST /api/migrate`.
+- The adopted shim recovers from a panic in the ttrpc server and in the exit
+  watcher. Either one previously killed the process and left containerd
+  without a task to Wait on or Kill while QEMU kept running.
+- The adopted shim reports an unreadable OCI `config.json` instead of
+  falling back to `katamaran-dest`, which could hand it a different pod's
+  QEMU pid, and it logs cgroup removal failures that leave a directory the
+  next pid lookup scans.
+- The dest binary returns an error when a stale socket cannot be removed,
+  rather than letting `waitForSocket` report the dead path as ready.
+- The factory watcher no longer marks a migration metadata file as seen when
+  it fails to parse, so a transient read anomaly no longer hides that
+  migration from every later scan.
+- The controller logs when `spec.sourceCleanup` is requested but no discoverer
+  is configured, instead of silently leaving the source pod running after a
+  successful migration.
+- The orchestrator's job-scheduling timeout joins the last list error with the
+  deadline error, so `errors.Is` and `errors.As` see both causes.
 - `scripts/build-minikube-modules.sh` no longer pipes the container build
   into `grep | head`. A build whose output matched nothing failed the
   script under `pipefail`, and a real build failure printed none of its

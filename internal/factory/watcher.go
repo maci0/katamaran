@@ -130,9 +130,11 @@ func (w *Watcher) scan() {
 
 		var state MigrationState
 		if err := json.Unmarshal(data, &state); err != nil {
+			// Do not mark the path seen: a parse failure is a read anomaly,
+			// not proof the migration is handled, and marking it makes this
+			// migration invisible to every later scan.
 			errored = true
 			w.logTransient("Failed to parse migration metadata", "path", metaPath, "error", err)
-			w.seen[metaPath] = struct{}{}
 			continue
 		}
 
