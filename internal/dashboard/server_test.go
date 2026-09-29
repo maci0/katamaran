@@ -1402,6 +1402,21 @@ func TestMux_ServesVendoredAssets(t *testing.T) {
 			t.Fatalf("expected 404 for unregistered asset path, got %v", w.Code)
 		}
 	})
+
+	// The provenance record travels in the binary for auditors, not over the
+	// wire: newMux registers each vendored file by name, so nothing else under
+	// assets/ has a route to it.
+	t.Run("provenance manifests are not served", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range []string{assetChecksumsFile, assetProvenanceDoc} {
+			req := httptest.NewRequest(http.MethodGet, "/assets/"+name, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("GET /assets/%s = %d, want 404", name, w.Code)
+			}
+		}
+	})
 }
 
 // TestIndexHTML_VendoredAssetsOnly pins the dependency-vendoring contract of

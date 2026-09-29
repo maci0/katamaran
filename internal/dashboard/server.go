@@ -31,6 +31,10 @@ var indexHTML []byte
 // remote script execution from the dashboard origin and keeps the UI working
 // on air-gapped or egress-restricted clusters.
 //
+// assets/ also holds ATTRIBUTION.md and SHA256SUMS, the provenance record for
+// the bundles. newMux serves each file by explicit name, so neither manifest
+// is reachable over HTTP.
+//
 //go:embed assets
 var assetsFS embed.FS
 

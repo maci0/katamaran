@@ -21,6 +21,11 @@ the gate.
 - `cmd/containerd-shim-katamaran-adopted-v2` is experimental.
 - Dashboard assets are vendored under `internal/dashboard/assets/` and served
   same-origin. No CDN references, no remote script loads.
+- Every file under `internal/dashboard/assets/` is third-party code, so it
+  carries a digest in `assets/SHA256SUMS` and an origin, version, and license
+  entry in `assets/ATTRIBUTION.md`. Adding or bumping a bundle updates both;
+  `TestVendoredAssetsMatchSHA256SUMS` fails otherwise. `newMux` serves each
+  asset by name, so neither manifest has an HTTP route.
 - Every fuzz target added under `internal/` or `cmd/` gets a `fuzz-long` entry
   in the Makefile.
 - Edit Job manifests only in `internal/orchestrator/templates/`: Go embeds them

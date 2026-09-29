@@ -45,8 +45,21 @@ lint-shell:
 # excludes the vendored bundles under internal/dashboard/assets). The
 # formatter is off in biome.json: the checked-in file predates biome and
 # reformatting it is separate work.
-lint-js:
+lint-js: check-biome
 	biome lint
+
+# biome is the one gate tool no manifest governs: the repo ships no
+# package.json, so the linter comes from the local toolchain while CI fetches
+# the exact version named in biome.json's $schema. Say so when it is missing
+# instead of leaving "biome: command not found" as the only signal.
+check-biome:
+	@set -e; version=$$(sed -n 's|.*biomejs.dev/schemas/\([^/]*\)/.*|\1|p' biome.json); \
+	if [ -z "$$version" ]; then \
+		printf 'could not read the pinned biome version from biome.json\n' >&2; exit 1; fi; \
+	command -v biome >/dev/null 2>&1 || { \
+		printf 'biome not found on PATH; the dashboard lint requires %s:\n' "$$version" >&2; \
+		printf '  npx --yes "@biomejs/biome@%s" lint\n' "$$version" >&2; \
+		exit 1; }
 
 check:
 	go mod verify
