@@ -499,6 +499,16 @@ func TestSurviveContainerExit_HappyPath(t *testing.T) {
 	if err := os.WriteFile(qmpDir+"/pid", []byte("12345\n"), 0o644); err != nil {
 		t.Fatalf("seed pid: %v", err)
 	}
+	// The kernel populates every cgroup v2 directory with the marker file;
+	// the code probes it to tell a real cgroup from a plain directory on a
+	// cgroup v1 host.
+	sandboxDir := filepath.Join(root, filepath.Base(qmpDir))
+	if err := os.MkdirAll(sandboxDir, 0o755); err != nil {
+		t.Fatalf("seed cgroup dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sandboxDir, cgroupV2Marker), nil, 0o644); err != nil {
+		t.Fatalf("seed cgroup v2 marker: %v", err)
+	}
 
 	prev := adoptedCgroupRoot
 	adoptedCgroupRoot = root
@@ -513,6 +523,30 @@ func TestSurviveContainerExit_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(string(procs), "12345") {
 		t.Fatalf("cgroup.procs = %q, want it to contain pid 12345", procs)
+	}
+}
+
+// TestSurviveContainerExit_SkipsNonCgroupV2Tree pins the capability probe: on
+// a cgroup v1 host /sys/fs/cgroup is a tmpfs, so mkdir succeeds and the
+// cgroup.procs write would create a regular file the kernel ignores, logging
+// a successful re-parent that never happened. The write must be skipped.
+func TestSurviveContainerExit_SkipsNonCgroupV2Tree(t *testing.T) {
+	root := t.TempDir()
+	qmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(qmpDir, "pid"), []byte("12345\n"), 0o644); err != nil {
+		t.Fatalf("seed pid: %v", err)
+	}
+
+	prev := adoptedCgroupRoot
+	adoptedCgroupRoot = root
+	t.Cleanup(func() { adoptedCgroupRoot = prev })
+
+	surviveContainerExit(filepath.Join(qmpDir, "qmp.sock"))
+
+	sandboxID := filepath.Base(qmpDir)
+	procsPath := filepath.Join(root, sandboxID, "cgroup.procs")
+	if _, err := os.Stat(procsPath); !os.IsNotExist(err) {
+		t.Fatalf("cgroup.procs should not be created outside a cgroup v2 tree, stat err = %v", err)
 	}
 }
 

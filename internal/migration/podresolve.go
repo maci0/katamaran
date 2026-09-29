@@ -247,7 +247,7 @@ func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
 			continue // not a PID directory
 		}
 		// A read error means the process exited mid-scan or is unreadable; skip.
-		raw, rerr := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		raw, rerr := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
 		if rerr != nil {
 			continue
 		}

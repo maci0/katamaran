@@ -623,7 +623,7 @@ func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	_, err := os.Stat("/proc/" + strconv.Itoa(pid))
+	_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
 	return err == nil
 }
 
@@ -670,7 +670,7 @@ func lookupAdoptedQEMUPid(sandboxID string) (int, error) {
 		if err != nil {
 			continue
 		}
-		comm, err := os.ReadFile("/proc/" + pidStr + "/comm")
+		comm, err := os.ReadFile(filepath.Join("/proc", pidStr, "comm"))
 		if err != nil {
 			continue
 		}

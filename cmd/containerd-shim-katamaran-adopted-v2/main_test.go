@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/maci0/katamaran/internal/qmptest"
 )
 
 func TestValidAdoptedSandboxID(t *testing.T) {
@@ -74,7 +76,7 @@ func FuzzValidAdoptedSandboxID(f *testing.F) {
 // inherit it). Without this, every adopted pod leaves a stale .sock in
 // /run/containerd/s until the node reboots.
 func TestRemoveShimSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := qmptest.TempDir(t)
 	socketPath := filepath.Join(dir, "katamaran-test.sock")
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {

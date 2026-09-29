@@ -48,7 +48,7 @@ Improvements that harden existing functionality without adding new migration cap
 
 ### Test Reliability
 
-- **Fix QMP tests on macOS**: three QMP client tests fail on macOS due to Unix socket path length limits (`bind: invalid argument`). Use shorter temp dir paths or switch to abstract sockets on Linux with a fallback for Darwin.
+- ~~**Fix QMP tests on macOS**~~: Done. Fake QMP servers bind in a short `os.MkdirTemp` directory (`qmptest.TempDir`) instead of `t.TempDir()`, whose `/var/folders/...` names overrun Darwin's 104-byte `sun_path` limit. `qmptest.StartFakeQMP` fails with the offending path when a socket path would still exceed the limit.
 - **E2E `--method direct`**: currently accepted but exits as not implemented. Either implement direct-mode E2E (katamaran binary invoked outside of Kubernetes Jobs) or remove the flag.
 
 ---

@@ -222,7 +222,7 @@ func TestWriteMigrationMeta_EnrichesFromPersistJSON(t *testing.T) {
 	withKataSBSRoot(t, root)
 	writeSandboxPersist(t, root, "sb-dest", 12345, "destnode")
 
-	qmpDir := t.TempDir()
+	qmpDir := qmptest.TempDir(t)
 	sockPath := filepath.Join(qmpDir, extraMonitorSocketName)
 	l, err := net.Listen("unix", sockPath)
 	if err != nil {

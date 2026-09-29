@@ -380,7 +380,10 @@ func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 //  1. Read QEMU pid from <qmpDir>/pid (written by QEMU's -pidfile).
 //  2. Create /sys/fs/cgroup/katamaran-adopted/<sandbox-id> (host
 //     cgroup root is mounted into the dest container at /sys via the
-//     hostPath volume).
+//     hostPath volume). On a cgroup v1 host that mkdir succeeds on a
+//     tmpfs, so the directory is probed for cgroup.controllers before
+//     anything is written to it; without the probe the cgroup.procs
+//     write would create a regular file the kernel never reads.
 //  3. Write the QEMU pid into that cgroup's cgroup.procs file. The
 //     kernel atomically removes the pid from its current cgroup and
 //     places it in the new one.
@@ -418,6 +421,12 @@ func surviveContainerExit(qmpSocket string) {
 	}
 
 	procsPath := filepath.Join(cgroupDir, "cgroup.procs")
+	if !isCgroupV2Dir(cgroupDir) {
+		slog.Warn("Cannot re-parent QEMU: not a cgroup v2 hierarchy, VM will die at container exit",
+			"cgroup", cgroupDir, "missing_marker", cgroupV2Marker,
+			"hint", "the dest node must run the cgroup v2 unified hierarchy")
+		return
+	}
 	if err := os.WriteFile(procsPath, []byte(pid+"\n"), 0o644); err != nil {
 		slog.Warn("Cannot re-parent QEMU (cgroup.procs write failed): VM will die at container exit",
 			"path", procsPath, "pid", pid, "error", err)
@@ -469,7 +478,7 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		commBytes, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		commBytes, err := os.ReadFile(filepath.Join("/proc", e.Name(), "comm"))
 		if err != nil {
 			continue
 		}
@@ -501,6 +510,20 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 // host /sys/fs/cgroup tree, which the dest container mounts via its
 // hostPath sys volume.
 var adoptedCgroupRoot = adopt.CgroupRoot
+
+// cgroupV2Marker is the file every cgroup v2 directory carries (it lists the
+// controllers available to that cgroup). Its absence means the directory is
+// an ordinary directory, e.g. on a cgroup v1 host where /sys/fs/cgroup is a
+// tmpfs of per-controller trees: writing cgroup.procs there would create a
+// regular file that the kernel never sees, and the QEMU would stay in the
+// dying container cgroup with no error anywhere.
+const cgroupV2Marker = "cgroup.controllers"
+
+// isCgroupV2Dir reports whether dir is a directory in a cgroup v2 hierarchy.
+func isCgroupV2Dir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, cgroupV2Marker))
+	return err == nil
+}
 
 // writeMigrationMeta writes a migration-meta.json file next to the QMP socket.
 // The factory watcher picks this up and offers the VM to Kata shims via

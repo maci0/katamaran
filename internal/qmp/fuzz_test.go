@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/maci0/katamaran/internal/qmptest"
 )
 
 // FuzzResponseUnmarshal targets JSON unmarshaling of QMP responses,
@@ -129,7 +131,7 @@ func FuzzClientProtocol(f *testing.F) {
 			return
 		}
 
-		socketPath := filepath.Join(t.TempDir(), "qmp.sock")
+		socketPath := filepath.Join(qmptest.TempDir(t), "q.sock")
 		l, err := net.Listen("unix", socketPath)
 		if err != nil {
 			// Path may exceed sun_path limit (108) under deeply-nested

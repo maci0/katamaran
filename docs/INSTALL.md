@@ -9,6 +9,10 @@ This guide covers three install paths:
 ## Prerequisites
 
 - Linux host
+- cgroup v2 unified hierarchy on every node that runs a migration (the
+  adoption path re-parents the migrated QEMU through
+  `/sys/fs/cgroup/katamaran-adopted`; a cgroup v1 host cannot hold the
+  process outside the Job's cgroup)
 - Go 1.26+
 - Node (see `.node-version`), only for `make test`; the dashboard unit
   tests use the built-in Node test runner

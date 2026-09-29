@@ -90,6 +90,19 @@ workflow refuses to publish a tag that has no section below.
   flight aborted it. It now reaps only Jobs that reached a terminal
   condition and stops with an error when one is still running. Re-running
   after a finished migration is unchanged.
+- Fake QMP test servers bind in a short `os.MkdirTemp` directory
+  (`qmptest.TempDir`) instead of `t.TempDir()`. On macOS the long
+  `/var/folders/...` names overrun the 104-byte `sun_path` limit and the
+  listen failed with a bare `bind: invalid argument`. An over-long path is
+  now reported with the offending path.
+- The dest side probes for `cgroup.controllers` before writing
+  `cgroup.procs`. On a cgroup v1 host the mkdir succeeded on a tmpfs and
+  the write created a regular file the kernel ignores, logging a
+  re-parent that never happened; it now warns and skips the move.
+- `scripts/build-minikube-modules.sh` uses `sed -i.bak` instead of the
+  GNU-only bare `-i`, which BSD sed rejects.
+- `/proc` paths are built with `filepath.Join` rather than string
+  concatenation, matching the rest of the tree.
 - `scripts/build-minikube-modules.sh` no longer pipes the container build
   into `grep | head`. A build whose output matched nothing failed the
   script under `pipefail`, and a real build failure printed none of its

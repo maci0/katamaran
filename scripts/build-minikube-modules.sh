@@ -107,7 +107,9 @@ gunzip -f "${BUILD_DIR}/config.gz"
 enable_config() {
     local key="$1" val="$2"
     if grep -q "^${key}=" "${BUILD_DIR}/config" || grep -q "^# ${key} is not set" "${BUILD_DIR}/config"; then
-        sed -i "s/.*${key}.*/${key}=${val}/" "${BUILD_DIR}/config"
+        # -i with an explicit suffix: bare -i is a GNU extension and fails on BSD sed.
+        sed -i.bak "s/.*${key}.*/${key}=${val}/" "${BUILD_DIR}/config"
+        rm -f "${BUILD_DIR}/config.bak"
     else
         echo "${key}=${val}" >> "${BUILD_DIR}/config"
     fi

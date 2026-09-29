@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maci0/katamaran/internal/qmptest"
 )
 
 func TestLogWriterTruncatesAtUTF8Boundary(t *testing.T) {
@@ -606,7 +608,7 @@ func TestSpawnReplayedQEMU_TooFewArgs(t *testing.T) {
 
 func TestSpawnReplayedQEMU_HappyPath_StubbedSpawn(t *testing.T) {
 	// Not parallel: mutates package-level spawn / wait stubs and sandboxRoot.
-	tmpDir := t.TempDir()
+	tmpDir := qmptest.TempDir(t)
 
 	// Write a synthetic cmdline that mentions a fake source sandbox under a
 	// per-test sandboxRoot, plus a non-/dev/shm mem-path so the nvdimm copy
@@ -795,7 +797,7 @@ func createFakeSocket(path string) error {
 // which retry spawnReplayedQEMU against the same node-wide dirs.
 func TestSpawnReplayedQEMU_CleansUpNvdimmOnPreSpawnFailure(t *testing.T) {
 	// Not parallel: mutates package-level stubs and sandboxRoot.
-	tmpDir := t.TempDir()
+	tmpDir := qmptest.TempDir(t)
 
 	srcSandboxRoot := filepath.Join(tmpDir, "vm")
 	srcSandboxDir := filepath.Join(srcSandboxRoot, "src-uuid")

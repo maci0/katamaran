@@ -6,15 +6,48 @@ package qmptest
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+const (
+	// socketName is the fake QMP socket's file name. Kept short because the
+	// whole path has to fit in sockaddr_un.sun_path.
+	socketName = "q.sock"
+
+	// maxSocketPathLen is the shorter of the two sun_path limits the test
+	// suite can run into: 104 bytes on Darwin, 108 on Linux. A path over the
+	// limit makes net.Listen fail with a bare "bind: invalid argument", so
+	// the length is checked up front and reported with the offending path.
+	maxSocketPathLen = 100
+)
+
+// TempDir returns a short-lived directory suitable for holding a unix socket.
+// Darwin caps sockaddr_un.sun_path at 104 bytes and testing.T.TempDir lands
+// under /var/folders/... on macOS, which alone eats most of that budget, so
+// socket-bearing directories use a two-character os.MkdirTemp prefix instead.
+// Use it in place of t.TempDir() wherever the directory ends up in a socket
+// path; plain file trees can keep t.TempDir().
+func TempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "kq")
+	if err != nil {
+		t.Fatalf("create socket dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // StartFakeQMP creates a Unix listener that accepts one connection and runs handler.
 func StartFakeQMP(t *testing.T, handler func(conn net.Conn)) string {
 	t.Helper()
-	socketPath := filepath.Join(t.TempDir(), "qmp.sock")
+	socketPath := filepath.Join(TempDir(t), socketName)
+	if len(socketPath) >= maxSocketPathLen {
+		t.Fatalf("fake QMP socket path is %d bytes, over the %d-byte sun_path limit: %s",
+			len(socketPath), maxSocketPathLen, socketPath)
+	}
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
