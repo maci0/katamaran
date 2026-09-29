@@ -188,6 +188,8 @@ type cmdlineRewrite struct {
 //   - rw.srcNvdimmPath → rw.dstNvdimmPath (writable copy)
 //   - strip ,readonly=on / ,readonly=true on the nvdimm backend
 //   - drop existing -daemonize and -incoming <arg>
+//   - drop -monitor <arg> and -pidfile, drop a -chardev file backend, and
+//     repin every -qmp socket to the dest sandbox dir
 //   - append -incoming defer (QEMU runs in the foreground; see body for why)
 //
 // The returned slice is the QEMU argv (without argv[0], which is returned
@@ -221,12 +223,25 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 			// primary QMP via inherited fd=N (e.g. `unix:fd=3,server=on`),
 			// which has no replay analog because the receiving fork-exec
 			// chain doesn't carry that fd. The "extra" socket bound to
-			// path=... is the one we want to keep.
+			// path=... is the one we want to keep, repinned to the dest
+			// sandbox dir so the capture cannot place the monitor on a
+			// host path of its choosing.
 			if i+1 < len(args) && strings.Contains(args[i+1], "fd=") {
 				i++
 				continue
 			}
-			out = append(out, a)
+			if i+1 < len(args) {
+				out = append(out, a, pinQMPPath(args[i+1], rw.dstSandboxDir))
+				i++
+			}
+			continue
+		case "-monitor":
+			// A monitor is full control of the VM (quit, drive writes). With
+			// -qmp already present QEMU creates no default one, and the
+			// capture's -monitor socket would be a second, unvalidated
+			// attacker's-monitor bound at a source-chosen path. Drop it and
+			// its one argument.
+			i++
 			continue
 		case "-netdev":
 			// Strip fd= keys from the tap netdev (kata-shim passed those
@@ -262,6 +277,23 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 			}
 			i++
 			continue
+		case "-chardev":
+			// `-chardev file,path=<host path>` makes the privileged dest QEMU
+			// truncate and write a host file at a path the capture chooses.
+			// kata-shim only ever emits socket-backed chardevs, so dropping the
+			// file backend costs a real migration nothing and removes an
+			// arbitrary-host-file-write primitive.
+			if i+1 < len(args) && isFileChardev(args[i+1]) {
+				slog.Warn("Dropped captured -chardev file backend", "arg", args[i+1])
+				i++
+				continue
+			}
+		case "-pidfile":
+			// Same class: a capture-chosen host path the root QEMU writes.
+			// kata-shim does not pass -pidfile.
+			slog.Warn("Dropped captured -pidfile", "arg", a)
+			i++
+			continue
 		}
 
 		if rw.srcSandboxDir != "" && rw.dstSandboxDir != "" && strings.Contains(a, rw.srcSandboxDir) {
@@ -284,6 +316,49 @@ func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs
 	// (daemonized QEMU silently closes stderr after fork).
 	out = append(out, "-incoming", "defer")
 	return binary, out, nil
+}
+
+// isFileChardev reports whether a -chardev value names the file backend, whose
+// path= is a host path QEMU opens for writing rather than a socket.
+func isFileChardev(v string) bool {
+	backend, _, _ := strings.Cut(v, ",")
+	return strings.TrimSpace(backend) == "file"
+}
+
+// qmpUnixPrefix is the QEMU URI scheme every path-backed monitor uses.
+const qmpUnixPrefix = "unix:"
+
+// pinQMPPath rewrites a -qmp value so the monitor socket is created at
+// <dstSandboxDir>/<extraMonitorSocketName>, which is the same path
+// spawnReplayedQEMU waits for and hands back as cfg.QMPSocket.
+//
+// The captured argv comes from a source pod this project does not trust
+// (see the argv[0] pin below), and the dest job runs privileged with
+// hostPID, hostNetwork, and hostPath mounts of /run/vc. A capture carrying
+// `-qmp unix:path=/tmp/katamaran-cmdlines/evil.sock` would otherwise bind the
+// migrated VM's QMP monitor on the dest host, letting any other process on
+// the node drive the VM. Repinning also keeps replay working when the source
+// and dest sandbox dirs differ, which is exactly what the caller waits for.
+//
+// Non-unix transports (tcp:, vsock:, none) carry no host path and pass
+// through unchanged, as does a value with no address part.
+func pinQMPPath(v, dstSandboxDir string) string {
+	if dstSandboxDir == "" {
+		return v
+	}
+	addr, opts := v, ""
+	if comma := strings.IndexByte(v, ','); comma >= 0 {
+		addr, opts = v[:comma], v[comma:]
+	}
+	if _, ok := strings.CutPrefix(addr, qmpUnixPrefix); !ok {
+		return v
+	}
+	pinned := qmpUnixPrefix + "path=" + filepath.Join(dstSandboxDir, extraMonitorSocketName) + opts
+	if v == pinned {
+		return v
+	}
+	slog.Warn("Repinned captured -qmp socket to the dest sandbox dir", "was", v, "now", pinned)
+	return pinned
 }
 
 // stripFDKeys removes fd, fds, vhostfd, and vhostfds key=value pairs from a

@@ -249,8 +249,14 @@ func TestTransformCmdline_PathSubstitutions(t *testing.T) {
 		t.Fatalf("transformCmdline: %v", err)
 	}
 	joined := strings.Join(out, " ")
-	if !strings.Contains(joined, "/run/vc/vm/DST-UUID/qmp.sock") {
-		t.Fatalf("expected dst qmp socket path, got: %s", joined)
+	// -qmp is repinned rather than merely remapped: spawnReplayedQEMU waits
+	// on <dstDir>/extra-monitor.sock, so that is the only socket the capture
+	// may name.
+	if !strings.Contains(joined, "unix:path="+dstDir+"/"+extraMonitorSocketName) {
+		t.Fatalf("expected pinned dst qmp socket path, got: %s", joined)
+	}
+	if strings.Contains(joined, "/run/vc/vm/DST-UUID/qmp.sock") {
+		t.Fatalf("captured qmp socket name survived: %s", joined)
 	}
 	if !strings.Contains(joined, "/run/vc/vm/DST-UUID/vhost-fs.sock") {
 		t.Fatalf("expected dst vhost-fs socket path, got: %s", joined)
@@ -355,6 +361,98 @@ func TestTransformCmdline_StripsInheritedFDs(t *testing.T) {
 	}
 	if !strings.Contains(joined, "ifname=tap0_kata") || !strings.Contains(joined, "script=no,downscript=no") {
 		t.Fatalf("tap netdev defaults not added: %v", out)
+	}
+}
+
+// A capture from an untrusted source pod must not be able to place the
+// migrated VM's QMP monitor (or a second -monitor channel) on a path of its
+// choosing on the dest host, where any co-tenant process could connect to it.
+func TestTransformCmdline_RepinsQMPAndDropsMonitor(t *testing.T) {
+	t.Parallel()
+	dstDir := "/run/vc/vm/dst-uuid"
+	args := []string{
+		"/opt/kata/bin/qemu-system-x86_64",
+		"-qmp", "unix:path=/tmp/katamaran-cmdlines/evil.sock,server=on,wait=off",
+		"-qmp", "unix:/run/vc/vm/src-uuid/extra-monitor.sock,server=on,wait=off",
+		"-monitor", "unix:/tmp/katamaran-cmdlines/evil2.sock,server=on,wait=off",
+		"-name", "guest",
+	}
+	_, out, err := transformCmdline(args, cmdlineRewrite{dstSandboxDir: dstDir})
+	if err != nil {
+		t.Fatalf("transformCmdline: %v", err)
+	}
+	joined := strings.Join(out, " ")
+	if strings.Contains(joined, "katamaran-cmdlines") || strings.Contains(joined, "src-uuid") {
+		t.Fatalf("captured monitor path survived repin: %v", out)
+	}
+	if slices.Contains(out, "-monitor") || slices.Contains(out, "unix:/tmp/katamaran-cmdlines/evil2.sock,server=on,wait=off") {
+		t.Fatalf("captured -monitor survived: %v", out)
+	}
+	if got := strings.Count(joined, "path="+dstDir+"/"+extraMonitorSocketName); got != 2 {
+		t.Fatalf("expected both -qmp sockets repinned to the dest sandbox dir, got %d: %v", got, out)
+	}
+	if !strings.Contains(joined, "server=on,wait=off") {
+		t.Fatalf("qmp options lost during repin: %v", out)
+	}
+	if !slices.Contains(out, "-name") || !slices.Contains(out, "guest") {
+		t.Fatalf("unrelated argument dropped: %v", out)
+	}
+}
+
+// The dest QEMU runs privileged on the dest host, so a capture must not be
+// able to name a host path for it to write: a file-backed chardev or a
+// pidfile would be an arbitrary-file-overwrite as root.
+func TestTransformCmdline_DropsHostFileWriters(t *testing.T) {
+	t.Parallel()
+	dstDir := "/run/vc/vm/dst-uuid"
+	args := []string{
+		"/opt/kata/bin/qemu-system-x86_64",
+		"-chardev", "file,id=evil,path=/etc/cron.d/pwn",
+		"-chardev", "socket,id=charfs,path=/run/vc/vm/src-uuid/vhost-fs.sock",
+		"-pidfile", "/etc/cron.d/pid",
+		"-name", "guest",
+	}
+	_, out, err := transformCmdline(args, cmdlineRewrite{
+		srcSandboxDir: "/run/vc/vm/src-uuid",
+		dstSandboxDir: dstDir,
+	})
+	if err != nil {
+		t.Fatalf("transformCmdline: %v", err)
+	}
+	joined := strings.Join(out, " ")
+	if strings.Contains(joined, "/etc/cron.d") || strings.Contains(joined, "-pidfile") {
+		t.Fatalf("host file writer survived: %v", out)
+	}
+	if !strings.Contains(joined, "socket,id=charfs,path="+dstDir+"/vhost-fs.sock") {
+		t.Fatalf("socket chardev lost: %v", out)
+	}
+	if !slices.Contains(out, "guest") {
+		t.Fatalf("unrelated argument dropped: %v", out)
+	}
+}
+
+// A capture that names the dest socket exactly must pass through byte for
+// byte, and a non-unix transport has no host path to repin.
+func TestPinQMPPath(t *testing.T) {
+	t.Parallel()
+	dstDir := "/run/vc/vm/dst-uuid"
+	want := "unix:path=" + dstDir + "/" + extraMonitorSocketName + ",server=on,wait=off"
+	for _, tt := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"already pinned", want, want},
+		{"tcp transport", "tcp:0.0.0.0:4444,server=on,wait=off", "tcp:0.0.0.0:4444,server=on,wait=off"},
+		{"no transport prefix", "garbage", "garbage"},
+		{"no options", "unix:/tmp/evil.sock", "unix:path=" + dstDir + "/" + extraMonitorSocketName},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pinQMPPath(tt.in, dstDir); got != tt.want {
+				t.Fatalf("pinQMPPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

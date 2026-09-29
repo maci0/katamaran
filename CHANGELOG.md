@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the UI with `kubectl port-forward -n kube-system
   svc/katamaran-dashboard-metrics 8080:8080`.
 
+### Security
+
+- Cmdline replay no longer lets a captured source QEMU argv name a host path
+  on the destination node. Every `-qmp` socket is repinned to the dest sandbox
+  dir, `-monitor` and `-pidfile` are dropped, and a `-chardev file` backend is
+  dropped, closing a VM-monitor takeover and an arbitrary root file write in
+  the privileged dest job.
+
 ## [0.6.0] - 2026-09-28
 
 ### Changed
