@@ -605,7 +605,12 @@ func (r *Reconciler) handleMigrationOutcome(ctx context.Context, key types.Names
 			return
 		case <-timer.C:
 		}
-		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode, srcLabels, srcOwnerRefs); err != nil {
+		// The adoption pod's name is derived from the migration ID, so a
+		// second pass over the same migration (recovery re-running the
+		// outcome, a retried tick) finds it already there. That is the
+		// desired end state, not a failure: only escalate when the pod is
+		// genuinely absent.
+		if err := r.createAdoptionPod(adoptCtx, req, adoptName, destNode, srcLabels, srcOwnerRefs); err != nil && !apierrors.IsAlreadyExists(err) {
 			// The source pod may already be deleted at this point, so a
 			// failed adoption-pod create leaves the migrated VM with no
 			// owning workload: it survives only inside the dest job's

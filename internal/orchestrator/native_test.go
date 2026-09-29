@@ -1279,3 +1279,118 @@ func TestNative_Resume_CreatesDestWithReplayFromPod(t *testing.T) {
 		t.Fatalf("dest cmd missing --replay-cmdline-from-pod flag: %s", cmd)
 	}
 }
+
+// Apply runs a full storage sync and a QEMU handover against one live VM
+// that shares a node-global destination sandbox, so a second Apply for the
+// same source pod must join the running migration rather than submit a
+// second pair of Jobs.
+func TestNative_Apply_IdempotentPerSourcePod(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := newFromClient(cs)
+	ctx := context.Background()
+
+	first, err := n.Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	second, err := n.Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	if second != first {
+		t.Fatalf("duplicate Apply returned id %q, want the in-flight %q", second, first)
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("duplicate Apply created %d jobs, want 2: %+v", len(jobs.Items), jobs.Items)
+	}
+	for _, j := range jobs.Items {
+		if got := j.Labels[SourcePodLabel]; got != "vm-a" {
+			t.Fatalf("job %s source pod label = %q, want vm-a", j.Name, got)
+		}
+	}
+}
+
+// The guard must not lock a pod out forever: once the previous migration's
+// Jobs are terminal, migrating the same pod again is a legitimate new run.
+func TestNative_Apply_AllowsRemigrationAfterTerminalJob(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	n := newFromClient(cs)
+	ctx := context.Background()
+
+	first, err := n.Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	markJobComplete(t, cs, SourceJobName(first))
+	markJobComplete(t, cs, DestJobName(first))
+
+	second, err := n.Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	if second == first {
+		t.Fatal("re-migration after both Jobs are terminal must get a fresh id")
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 4 {
+		t.Fatalf("expected 4 jobs (both pairs from two distinct migrations), got %d", len(jobs.Items))
+	}
+}
+
+// A controller restart drops the in-process run but leaves the Jobs behind.
+// The re-dispatch must find them through the cluster and join, not submit a
+// second storage sync against the same VM.
+func TestNative_Apply_JoinsMigrationSubmittedByEarlierLeader(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	ctx := context.Background()
+
+	first, err := newFromClient(cs).Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	n2 := newFromClient(cs)
+	second, err := n2.Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("Apply after leader change: %v", err)
+	}
+	if second != first {
+		t.Fatalf("re-dispatch returned id %q, want the already-running %q", second, first)
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("re-dispatch created %d jobs, want 2: %+v", len(jobs.Items), jobs.Items)
+	}
+	// The joined migration must still be watchable, otherwise the caller
+	// patches the CR failed while the original migration runs on.
+	updates, err := n2.Watch(ctx, second)
+	if err != nil {
+		t.Fatalf("joined migration must be watchable, got %v", err)
+	}
+	DrainInBackground(updates)
+}
+
+func markJobComplete(t *testing.T, cs *fake.Clientset, name string) {
+	t.Helper()
+	ctx := context.Background()
+	job, err := cs.BatchV1().Jobs("kube-system").Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get job %s: %v", name, err)
+	}
+	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if _, err := cs.BatchV1().Jobs("kube-system").UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("mark job %s complete: %v", name, err)
+	}
+}

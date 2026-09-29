@@ -60,6 +60,10 @@ type native struct {
 
 	mu       sync.Mutex
 	inflight map[MigrationID]*nativeRun
+	// dedupMu serializes the duplicate-source-pod check against the first
+	// Job submit of an Apply (see createUnlessInFlight). Held only across
+	// that one List and one Create, never across a pod-scheduling wait.
+	dedupMu sync.Mutex
 }
 
 type nativeRun struct {
@@ -177,6 +181,89 @@ func (n *native) cleanupDestJob(ctx context.Context, destJobName, reason string)
 	}
 }
 
+// stampSourcePod records the migrated pod on the Job so inflightForSourcePod
+// can find it again. Called by both render helpers.
+func stampSourcePod(job *batchv1.Job, req Request) {
+	if v := sourcePodLabelValue(req); v != "" {
+		job.Labels[SourcePodLabel] = v
+	}
+}
+
+// createUnlessInFlight creates job unless a migration for req.SourcePod is
+// already running, in which case it returns that migration's ID and creates
+// nothing. The check and the create happen under one lock so two Apply
+// calls racing in the same process cannot both pass the check. It is the
+// first submit of every Apply branch, so once it returns the second Job
+// (or the staging goroutine) is already visible to any later Apply.
+func (n *native) createUnlessInFlight(ctx context.Context, req Request, job *batchv1.Job) (MigrationID, error) {
+	n.dedupMu.Lock()
+	defer n.dedupMu.Unlock()
+	id, found, err := n.inflightForSourcePod(ctx, req)
+	if err != nil || found {
+		return id, err
+	}
+	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return "", err
+	}
+	return "", nil
+}
+
+// joinInFlight attaches this process to the migration already running for
+// req.SourcePod under id, instead of starting a second set of Jobs against
+// the same live VM. The Jobs already exist in the cluster, so the only work
+// left is re-attaching the status watchers: when the migration was submitted
+// by an earlier leader those goroutines are gone and Watch(id) would fail,
+// and when it is still live startRun is a no-op.
+func (n *native) joinInFlight(id MigrationID, req Request) MigrationID {
+	slog.Info("Migration already in flight for source pod; joining the running migration", "migration_id", id, "source_pod", req.SourcePod.Name, "namespace", n.namespace)
+	n.startRun(id, SourceJobName(id), DestJobName(id), req, nil, nil, true)
+	return id
+}
+
+// inflightForSourcePod reports the ID of a still-running migration for
+// req.SourcePod, if any. It ignores Jobs that have reached a terminal
+// condition (that migration is over, and a later request for the same pod
+// name is a genuine new migration) and Jobs whose own
+// activeDeadlineSeconds has elapsed (the kubelet killed their pod, so nothing
+// is running and the guard would otherwise lock the pod out until the
+// Objects are garbage-collected). That bounds the guard's state: it only
+// ever sees Jobs the API server is already reaping via
+// ttlSecondsAfterFinished.
+func (n *native) inflightForSourcePod(ctx context.Context, req Request) (MigrationID, bool, error) {
+	podName := sourcePodLabelValue(req)
+	if podName == "" {
+		return "", false, nil
+	}
+	jobs, err := n.client.BatchV1().Jobs(n.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector:   SourcePodLabel + "=" + podName,
+		ResourceVersion: "0",
+	})
+	if err != nil {
+		// A guard that cannot read the cluster must not silently hand out a
+		// fresh migration ID: that is exactly the duplicate this prevents.
+		return "", false, fmt.Errorf("list jobs for source pod %s: %w", podName, err)
+	}
+	now := time.Now()
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if TerminalJobCondition(job) != "" {
+			continue
+		}
+		// A zero CreationTimestamp means the apiserver has not stamped the
+		// object yet; only apply the deadline rule to a Job we can date.
+		if created := job.CreationTimestamp.Time; !created.IsZero() {
+			if deadline := job.Spec.ActiveDeadlineSeconds; deadline != nil &&
+				now.Sub(created) > time.Duration(*deadline)*time.Second {
+				continue
+			}
+		}
+		if id := MigrationID(job.Labels[MigrationIDLabel]); id != "" {
+			return id, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // cleanupContext derives a fresh, bounded deadline that ignores the parent's
 // cancellation state but inherits its values, for compensating actions that
 // must run after the operation they compensate was itself aborted by that
@@ -187,6 +274,13 @@ func cleanupContext(parent context.Context) (context.Context, context.CancelFunc
 
 // Apply renders both Job manifests, submits them, and returns a fresh ID.
 // Status polling starts immediately in a goroutine.
+//
+// Apply is idempotent on the source pod: a second call while the first
+// migration for that pod is still running returns the in-flight migration's
+// ID and creates nothing. Both Jobs drive a full storage sync and a QEMU
+// handover against one live VM sharing one node-global destination sandbox,
+// so a second set of Jobs for the same pod is a second destructive copy, not
+// a redundant no-op.
 //
 // In ReplayCmdline mode the dest Job is held back until the source pod is
 // up; the dest binary then scrapes the KATAMARAN_CMDLINE_B64 marker from
@@ -229,8 +323,12 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 	if req.ReplayCmdline {
 		// Source first: it has to capture and emit the cmdline before the
 		// dest job can spawn QEMU with --replay-cmdline.
-		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
+		joined, err := n.createUnlessInFlight(ctx, req, srcJob)
+		if err != nil {
 			return "", fmt.Errorf("create source job: %w", err)
+		}
+		if joined != "" {
+			return n.joinInFlight(joined, req), nil
 		}
 		emitStarting(PhaseSrcStarting)
 		slog.Info("Migration source job created; destination waits for cmdline replay", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
@@ -239,8 +337,10 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		// will be scheduled by Kubernetes), wait for the pod to land on a
 		// node, resolve DestIP from that node, then create the source Job
 		// with the now-known DestIP.
-		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+		if joined, err := n.createUnlessInFlight(ctx, req, destJob); err != nil {
 			return "", fmt.Errorf("create dest job: %w", err)
+		} else if joined != "" {
+			return n.joinInFlight(joined, req), nil
 		}
 		emitStarting(PhaseDestStarting)
 		slog.Info("Auto-select: dest job created, waiting for scheduling", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace)
@@ -279,8 +379,10 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		slog.Info("Auto-select: migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "source_node", req.SourceNode, "dest_node", req.DestNode, "namespace", n.namespace)
 	} else {
 		// Dest first so the migrate-incoming listener is up before source connects.
-		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, destJob, metav1.CreateOptions{}); err != nil {
+		if joined, err := n.createUnlessInFlight(ctx, req, destJob); err != nil {
 			return "", fmt.Errorf("create dest job: %w", err)
+		} else if joined != "" {
+			return n.joinInFlight(joined, req), nil
 		}
 		emitStarting(PhaseDestStarting)
 		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
@@ -291,32 +393,47 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	}
 
+	n.startRun(id, srcJob.Name, destJob.Name, req, staged, destJob, true)
+	return id, nil
+}
+
+// startRun registers a run and launches its status watchers. A run already
+// registered under id is left alone, so a duplicate caller neither resets
+// the live run nor starts a second set of watchers on its update channel.
+// stageDestJob is nil on the join path: the staging goroutine belongs to
+// whoever submitted the source Job, and a duplicate must not run it again.
+func (n *native) startRun(id MigrationID, srcName, destName string, req Request, staged []StatusUpdate, stageDestJob *batchv1.Job, seedSubmitted bool) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	run := &nativeRun{
-		srcJob:                srcJob.Name,
-		destJob:               destJob.Name,
+		srcJob:                srcName,
+		destJob:               destName,
 		podWaitTimeoutSeconds: req.PodWaitTimeoutSeconds,
 		updates:               make(chan StatusUpdate, 8),
 		cancel:                cancel,
 		finished:              make(chan struct{}),
 	}
 	n.mu.Lock()
+	if _, exists := n.inflight[id]; exists {
+		n.mu.Unlock()
+		return
+	}
 	n.inflight[id] = run
 	n.mu.Unlock()
 
-	run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
+	if seedSubmitted {
+		run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
+	}
 	for _, u := range staged {
 		run.updates <- u
 	}
 
-	if req.ReplayCmdline {
+	if stageDestJob != nil && req.ReplayCmdline {
 		// Stage cmdline + create dest job in a goroutine so Apply returns
 		// promptly. Status updates flow through the same channel.
-		go n.stageThenStartDest(runCtx, id, run, destJob)
+		go n.stageThenStartDest(runCtx, id, run, stageDestJob)
 	}
 	go n.poll(runCtx, id, run)
 	go n.tailProgress(runCtx, id, run)
-	return id, nil
 }
 
 // tailProgress watches the source pod's logs for KATAMARAN_PROGRESS and

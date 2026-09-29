@@ -107,6 +107,31 @@ var ErrUnknownID = errors.New("unknown migration ID")
 // to a specific migration, allowing the controller to find them.
 const MigrationIDLabel = "katamaran.io/migration-id"
 
+// SourcePodLabel tags every Job of a migration with the name of the pod
+// being migrated. Apply uses it to find an in-flight migration for a pod
+// before submitting a second set of Jobs against the same VM, so a
+// duplicated request (dashboard retry, CR re-dispatch after a lost status
+// patch) joins the running migration instead of restarting it.
+const SourcePodLabel = "katamaran.io/source-pod"
+
+// maxLabelValueLen is the Kubernetes limit for a label value. Pod names
+// may be longer, so a source pod whose name does not fit is simply left
+// unlabeled and gets no duplicate-submission protection.
+const maxLabelValueLen = 63
+
+// sourcePodLabelValue returns the SourcePodLabel value for req, or "" when
+// the request has no source pod or its name is not a valid label value.
+func sourcePodLabelValue(req Request) string {
+	if req.SourcePod == nil {
+		return ""
+	}
+	name := req.SourcePod.Name
+	if name == "" || len(name) > maxLabelValueLen {
+		return ""
+	}
+	return name
+}
+
 // DrainInBackground consumes ch until it closes. Callers that abandon a
 // Watch stream early (error return, panic recovery) must keep draining:
 // once the buffered updates fill, the orchestrator's poll goroutine blocks

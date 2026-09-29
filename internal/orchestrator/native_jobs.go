@@ -31,7 +31,7 @@ var destJobTemplate []byte
 func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
 	// --vm-ip and (legacy) --qmp reach the source binary through EXTRA_ARGS
 	// (see sourceExtraArgs); the source template does not interpolate them.
-	return renderJob(sourceJobTemplate, map[string]string{
+	job, err := renderJob(sourceJobTemplate, map[string]string{
 		"NODE_NAME":              req.SourceNode,
 		"IMAGE":                  req.Image,
 		"DEST_IP":                req.DestIP,
@@ -39,6 +39,11 @@ func renderSourceJob(req Request, id MigrationID, extraArgs string) (*batchv1.Jo
 		"KATAMARAN_MIGRATION_ID": string(id),
 		"JOB_SUFFIX":             string(id),
 	})
+	if err != nil {
+		return nil, err
+	}
+	stampSourcePod(job, req)
+	return job, nil
 }
 
 func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job, error) {
@@ -55,6 +60,7 @@ func renderDestJob(req Request, id MigrationID, extraArgs string) (*batchv1.Job,
 	if err != nil {
 		return nil, err
 	}
+	stampSourcePod(job, req)
 
 	// Auto-select mode: DestNode is empty, so let Kubernetes schedule the
 	// dest pod using the source pod's constraints plus an anti-affinity
