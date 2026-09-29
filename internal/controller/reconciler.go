@@ -45,6 +45,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/maci0/katamaran/internal/adopt"
+	"github.com/maci0/katamaran/internal/migration"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
@@ -168,11 +169,10 @@ func NewReconciler(dyn dynamic.Interface, kube kubernetes.Interface, orch orches
 		PollInterval: 5 * time.Second,
 		// Must outlive every budget the migration Jobs themselves allow,
 		// or the watch dies mid-transfer and a healthy migration gets
-		// marked Failed. Worst case per the source binary: storage sync
-		// (2h) + RAM migration (1h) + dest replay startup wait (~1m) +
-		// CNI convergence delay (up to 10m), rounded up to 4h, which
-		// also covers the rendered Jobs' activeDeadlineSeconds.
-		StatusTimeout: 4 * time.Hour,
+		// marked Failed. Shares its value with the rendered Jobs'
+		// activeDeadlineSeconds (migration.JobActiveDeadline) so the
+		// two budgets cannot drift apart.
+		StatusTimeout: migration.JobActiveDeadline,
 		tracking:      map[types.NamespacedName]*track{},
 		pending:       newPendingAdoptionRegistry(),
 	}

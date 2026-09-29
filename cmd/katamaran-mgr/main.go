@@ -81,8 +81,9 @@ Exit codes:
 Environment variables:
   KATAMARAN_MIGRATION_IMAGE    Required trusted image for migration Jobs; spec.image must match exactly
   KATAMARAN_POD_WAIT_TIMEOUT   Overrides the --pod-wait-timeout default; an explicitly set
-                               flag wins (Go duration; per-CR spec.podWaitTimeoutSeconds
-                               wins over both)
+                               flag wins (Go duration, e.g. 90s or 5m; an invalid or
+                               non-positive value exits 2 rather than falling back to the
+                               default; per-CR spec.podWaitTimeoutSeconds wins over both)
 
 Examples:
   # Run in-cluster with leader election (default)
@@ -179,6 +180,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Resolved before any Kubernetes client is built so a malformed value
+	// fails at startup with the rest of the configuration errors, rather
+	// than after a successful apiserver connection.
+	resolvedPodWait, err := resolvePodWaitTimeout(fs, *podWaitTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+	*podWaitTimeout = resolvedPodWait
+
 	cfg, err := orchestrator.LoadRESTConfig(*kubeconfig)
 	if err != nil {
 		fail(err)
@@ -190,34 +202,6 @@ func main() {
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		fail(fmt.Errorf("kubernetes client: %w", err))
-	}
-
-	// Precedence: an explicit --pod-wait-timeout wins over the env var, which
-	// wins over the flag default; per-CR spec.podWaitTimeoutSeconds overrides
-	// all. Without the explicit-flag check the env var would silently clobber
-	// an operator's explicit --pod-wait-timeout, contradicting the documented
-	// precedence above.
-	podWaitTimeoutSetByFlag := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "pod-wait-timeout" {
-			podWaitTimeoutSetByFlag = true
-		}
-	})
-	if envPWT := os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT"); envPWT != "" {
-		switch {
-		case podWaitTimeoutSetByFlag:
-			slog.Debug("Ignoring KATAMARAN_POD_WAIT_TIMEOUT; --pod-wait-timeout was set explicitly",
-				"flag", podWaitTimeout.String(), "env", envPWT)
-		default:
-			switch d, perr := time.ParseDuration(envPWT); {
-			case perr != nil:
-				slog.Warn("Ignoring invalid KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT, "error", perr)
-			case d <= 0:
-				slog.Warn("Ignoring non-positive KATAMARAN_POD_WAIT_TIMEOUT", "value", envPWT)
-			default:
-				*podWaitTimeout = d
-			}
-		}
 	}
 
 	orch, err := orchestrator.New(*kubeconfig)
@@ -334,6 +318,41 @@ func main() {
 		},
 	})
 	slog.Info("katamaran-mgr shutting down")
+}
+
+// resolvePodWaitTimeout applies the documented precedence: an explicit
+// --pod-wait-timeout flag wins over KATAMARAN_POD_WAIT_TIMEOUT, which wins
+// over the flag's own default. The explicit-flag check is what keeps the env
+// var from clobbering a flag the operator set on purpose.
+//
+// A malformed or non-positive env value is an error, not a warning: left
+// unvalidated it silently runs on the 60s default, and a pod-wait budget too
+// short for the environment fails later as a migration that times out waiting
+// for its Job pod, with the real cause in a log line nobody is reading.
+func resolvePodWaitTimeout(fs *flag.FlagSet, flagValue time.Duration) (time.Duration, error) {
+	setByFlag := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "pod-wait-timeout" {
+			setByFlag = true
+		}
+	})
+	env := os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT")
+	if env == "" {
+		return flagValue, nil
+	}
+	if setByFlag {
+		slog.Debug("Ignoring KATAMARAN_POD_WAIT_TIMEOUT; --pod-wait-timeout was set explicitly",
+			"flag", flagValue.String(), "env", env)
+		return flagValue, nil
+	}
+	d, err := time.ParseDuration(env)
+	if err != nil {
+		return 0, fmt.Errorf("invalid KATAMARAN_POD_WAIT_TIMEOUT %q (expected a Go duration such as 90s or 5m): %w", env, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("KATAMARAN_POD_WAIT_TIMEOUT must be greater than 0, got %s", d)
+	}
+	return d, nil
 }
 
 func runReconciler(ctx context.Context, rec *controller.Reconciler) {

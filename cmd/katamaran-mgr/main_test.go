@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"net"
 	"net/http"
@@ -158,6 +159,53 @@ func TestValidListenAddr(t *testing.T) {
 			t.Parallel()
 			if got := validListenAddr(tt.addr); got != tt.want {
 				t.Fatalf("validListenAddr(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolvePodWaitTimeout(t *testing.T) {
+	const defaultTimeout = 60 * time.Second
+	tests := []struct {
+		name    string
+		env     string
+		args    []string
+		want    time.Duration
+		wantErr string
+	}{
+		{name: "unset keeps the flag default", want: defaultTimeout},
+		{name: "env overrides the default", env: "5m", want: 5 * time.Minute},
+		{name: "explicit flag beats env", env: "5m", args: []string{"--pod-wait-timeout=90s"}, want: 90 * time.Second},
+		{name: "explicit flag wins over a malformed env", env: "not-a-duration", args: []string{"--pod-wait-timeout=90s"}, want: 90 * time.Second},
+		{name: "malformed env is an error", env: "not-a-duration", wantErr: "KATAMARAN_POD_WAIT_TIMEOUT"},
+		{name: "unitless env is an error", env: "300", wantErr: "KATAMARAN_POD_WAIT_TIMEOUT"},
+		{name: "zero env is an error", env: "0s", wantErr: "must be greater than 0"},
+		{name: "negative env is an error", env: "-1m", wantErr: "must be greater than 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("KATAMARAN_POD_WAIT_TIMEOUT", tt.env)
+			fs := flag.NewFlagSet("katamaran-mgr", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			value := fs.Duration("pod-wait-timeout", defaultTimeout, "")
+			if err := fs.Parse(tt.args); err != nil {
+				t.Fatalf("Parse(%v): %v", tt.args, err)
+			}
+			got, err := resolvePodWaitTimeout(fs, *value)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("resolvePodWaitTimeout = %v, want error containing %q", got, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolvePodWaitTimeout: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolvePodWaitTimeout = %v, want %v", got, tt.want)
 			}
 		})
 	}

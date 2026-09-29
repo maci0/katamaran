@@ -355,6 +355,10 @@ var (
 // package-level overrides (set by tests) and otherwise falls back to the
 // standard $KUBERNETES_SERVICE_HOST / $KUBERNETES_SERVICE_PORT env vars
 // injected by the kubelet into every in-cluster pod.
+//
+// The port is validated as a number here because it is concatenated into the
+// request URL: a non-numeric value produces a "no such host" or TLS error
+// from the HTTP client that names neither the variable nor its value.
 func resolveAPIServerHostPort() (string, string, error) {
 	host := apiserverHost
 	if host == "" {
@@ -366,6 +370,9 @@ func resolveAPIServerHostPort() (string, string, error) {
 	}
 	if host == "" || port == "" {
 		return "", "", fmt.Errorf("KUBERNETES_SERVICE_HOST/PORT not set; not running in-cluster?")
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", "", fmt.Errorf("KUBERNETES_SERVICE_PORT %q is not a port number: %w", port, err)
 	}
 	return host, port, nil
 }

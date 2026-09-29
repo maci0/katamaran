@@ -271,9 +271,18 @@ The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/m
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `KATAMARAN_MIGRATION_ID` | Correlation ID added to all log entries (set by the dashboard, controller, or job wrapper) |
+| Variable | Set by | Description |
+|----------|--------|-------------|
+| `KATAMARAN_MIGRATION_IMAGE` | operator | **Required** by `katamaran-mgr` and `katamaran-dashboard`; the process refuses to start without it. The only image allowed to run as a privileged migration Job: every `spec.image` and every dashboard migrate request must match it exactly. |
+| `KATAMARAN_POD_WAIT_TIMEOUT` | operator | `katamaran-mgr` only. Go duration (`90s`, `5m`) for how long to wait for migration Job pods to appear. Overrides the `--pod-wait-timeout` default, loses to an explicitly set `--pod-wait-timeout`, and `spec.podWaitTimeoutSeconds` on a Migration CR wins over both. An invalid or non-positive value exits 2 rather than falling back to the 60s default. |
+| `KATAMARAN_ALLOWED_NAMESPACES` | operator | `katamaran-dashboard` only. Comma-separated DNS-1123 namespaces the dashboard may list pods from and migrate. Unset means every namespace in the cluster, which is only safe while the UI is reachable exclusively by cluster admins; the dashboard logs a warning at startup when it is unset. An invalid namespace name exits 2. |
+| `KATAMARAN_KEEP_JOBS` | operator | `deploy/migrate.sh` only. `true` keeps the migration Jobs after completion instead of deleting them, for post-mortem inspection. |
+| `KATAMARAN_MIGRATION_ID` | dashboard, controller, or job wrapper | Correlation ID added to all log entries. Not set by hand. |
+
+Every one of these is also listed in the `--help` output of the binary that
+reads it, and each is validated at startup: a malformed or missing required
+value exits 2 with a message naming the variable, rather than starting with a
+default that fails later.
 
 ## Validation Rules
 

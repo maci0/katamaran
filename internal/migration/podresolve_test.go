@@ -388,3 +388,41 @@ func TestLookupPodIP_FailureAfterRetries(t *testing.T) {
 		t.Errorf("server saw %d requests, want 3", got)
 	}
 }
+
+func TestResolveAPIServerHostPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		port    string
+		want    string
+		wantErr string
+	}{
+		{name: "in-cluster defaults", host: "10.96.0.1", port: "443", want: "443"},
+		{name: "non-numeric port is rejected", host: "10.96.0.1", port: "https", wantErr: "not a port number"},
+		{name: "empty port", host: "10.96.0.1", port: "", wantErr: "not set"},
+		{name: "empty host", host: "", port: "443", wantErr: "not set"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("KUBERNETES_SERVICE_HOST", tt.host)
+			t.Setenv("KUBERNETES_SERVICE_PORT", tt.port)
+			apiserverHost, apiserverPort = "", ""
+			host, port, err := resolveAPIServerHostPort()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("resolveAPIServerHostPort = %q/%q, want error containing %q", host, port, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveAPIServerHostPort: %v", err)
+			}
+			if host != tt.host || port != tt.want {
+				t.Fatalf("resolveAPIServerHostPort = %q/%q, want %q/%q", host, port, tt.host, tt.want)
+			}
+		})
+	}
+}

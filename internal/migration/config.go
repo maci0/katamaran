@@ -108,6 +108,21 @@ const (
 	// this window, the drive-mirror command likely failed silently.
 	jobAppearTimeout = 30 * time.Second
 
+	// JobActiveDeadline is the wall-clock budget the rendered source and dest
+	// Jobs carry as spec.activeDeadlineSeconds, and the budget the
+	// controller's StatusTimeout matches. Kubernetes kills a Job the moment
+	// it elapses, so a deadline shorter than the phases a migration can
+	// legitimately spend aborts a healthy transfer (storage sync alone runs
+	// up to storageSyncTimeout), while a controller StatusTimeout shorter
+	// than the deadline marks the CR Failed while its Job is still running.
+	// Both therefore derive from this one value.
+	//
+	// The two Job templates under internal/orchestrator/templates/ carry the
+	// same number as YAML (deploy/migrate.sh renders those files with
+	// envsubst, which cannot call into Go). TestJobDeadlineAgreesWithTemplates
+	// in internal/orchestrator fails if the YAML and this constant drift.
+	JobActiveDeadline = 4 * time.Hour
+
 	// DefaultMultifdChannels is the number of parallel TCP connections used
 	// for RAM migration. Multifd distributes page transfer across channels,
 	// improving throughput when per-connection bandwidth is limited (e.g.

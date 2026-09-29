@@ -118,6 +118,24 @@ workflow refuses to publish a tag that has no section below.
   fails when a module does not load. `scripts/build-minikube-iso.sh` is
   amd64-only upstream, so it now refuses to run on another host, and
   `scripts/e2e.sh` only offers the custom ISO on x86_64.
+- `KATAMARAN_POD_WAIT_TIMEOUT` on the mgr now fails at startup (exit 2)
+  when it is not a valid Go duration or is not positive, instead of
+  logging a warning and running on the 60s default. The resolution also
+  moved ahead of the Kubernetes client construction, so a bad value is
+  reported before any apiserver connection. An explicitly set
+  `--pod-wait-timeout` still wins over the variable, as documented.
+- `KUBERNETES_SERVICE_PORT` is validated as a number before it is
+  concatenated into the in-cluster apiserver URL. A non-numeric value
+  previously surfaced as a TLS or "no such host" error that named
+  neither the variable nor its value.
+- The rendered Jobs' `activeDeadlineSeconds` and the controller's
+  `StatusTimeout` now come from one constant, `migration.JobActiveDeadline`,
+  with a test that fails if either Job template drifts from it. A Job
+  deadline shorter than the constant silently truncates migrations the
+  controller still believes are running.
+- `docs/USAGE.md` documents all five runtime environment variables, with
+  which binary reads each and whether it is required, instead of only
+  `KATAMARAN_MIGRATION_ID`.
 - `deploy/monitoring.yaml` extraction. The metrics Services and
   ServiceMonitors moved out of `deploy/dashboard.yaml` so that manifest
   applies on a cluster without a Prometheus Operator, and the mgr's
