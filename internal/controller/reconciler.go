@@ -950,22 +950,6 @@ func nestedSpecInt(obj map[string]any, field string) int {
 	return int(v)
 }
 
-// patchStatus issues a JSON merge patch against the Migration's status
-// subresource. Errors are logged (by patchStatusUpdate) and returned to the
-// caller: while a migration is tracked, reconcile ticks skip it, so a lost
-// status write is not retried by the loop. Callers for which the persisted
-// state matters (dispatch's Submitted anchor) use patchStatusRetry.
-func (r *Reconciler) patchStatus(ctx context.Context, key types.NamespacedName, migrationID, phase, message, errStr string) error {
-	u := orchestrator.StatusUpdate{
-		Phase:   orchestrator.StatusPhase(phase),
-		Message: message,
-	}
-	if migrationID != "" {
-		u.ID = orchestrator.MigrationID(migrationID)
-	}
-	return r.patchStatusUpdate(ctx, key, u, errStr)
-}
-
 // statusPatchAttempts bounds the retry budget for status writes.
 // Backoff doubles from 500ms; the total wait is 15.5s.
 const statusPatchAttempts = 6
@@ -1044,6 +1028,10 @@ func shouldPatchStatusUpdate(u orchestrator.StatusUpdate, lastPatched orchestrat
 	return time.Since(lastPatchAt) >= progressPatchInterval
 }
 
+// patchStatusUpdate issues a JSON merge patch against the Migration's status
+// subresource. Callers whose persisted state must survive a controller restart
+// (dispatch's Submitted anchor) use patchStatusRetry instead, which retries
+// with backoff; every other caller tolerates a lost write.
 func (r *Reconciler) patchStatusUpdate(ctx context.Context, key types.NamespacedName, u orchestrator.StatusUpdate, errStr string) error {
 	status := map[string]any{
 		"phase":   string(u.Phase),

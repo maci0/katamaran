@@ -1450,7 +1450,10 @@ func TestPatchStatusUpdate_MissingEventTime(t *testing.T) {
 			rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
 			key := types.NamespacedName{Namespace: "default", Name: "event-time"}
 			before := time.Now().UTC().Truncate(time.Second)
-			if err := rec.patchStatus(context.Background(), key, "id-event-time", string(tc.phase), "", ""); err != nil {
+			if err := rec.patchStatusUpdate(context.Background(), key, orchestrator.StatusUpdate{
+				ID:    "id-event-time",
+				Phase: tc.phase,
+			}, ""); err != nil {
 				t.Fatal(err)
 			}
 			after := time.Now().UTC()
