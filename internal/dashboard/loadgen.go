@@ -235,8 +235,9 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 func (a *App) addPing(lat float64, errStr string) {
 	// Format the timestamp outside the mutex so the lock-hold time stays
 	// proportional to the slice/append work, not RFC3339Nano formatting.
-	// UTC for consistency with MigrationHistoryEntry's StartedAt/CompletedAt,
-	// so every timestamp this API emits is in the same timezone.
+	// UTC with sub-second precision, matching MigrationHistoryEntry's
+	// StartedAt/CompletedAt, so every timestamp this API emits carries the
+	// same zone and resolution.
 	ts := time.Now().UTC().Format(time.RFC3339Nano)
 	a.loadgenMutex.Lock()
 	defer a.loadgenMutex.Unlock()

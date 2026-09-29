@@ -541,8 +541,12 @@ func (a *App) setMigrationResult(result, errMsg string) {
 		MigrationID: a.migrationID,
 		Result:      result,
 		Error:       errMsg,
-		StartedAt:   a.migrationStart.UTC().Format(time.RFC3339),
-		CompletedAt: completedAt.UTC().Format(time.RFC3339),
+		// Sub-second precision, matching PingData: second-precision stamps
+		// disagree with DurationMS by up to a second, so a consumer
+		// recomputing elapsed time from the two stamps gets a different
+		// answer than the API reports.
+		StartedAt:   a.migrationStart.UTC().Format(time.RFC3339Nano),
+		CompletedAt: completedAt.UTC().Format(time.RFC3339Nano),
 		DurationMS:  durationMS,
 	}
 	if a.latestProgress != nil {

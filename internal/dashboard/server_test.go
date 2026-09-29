@@ -2350,6 +2350,13 @@ func TestSetMigrationResult_HistoryTimes(t *testing.T) {
 			if entry.DurationMS < sinceStart-100 || entry.DurationMS > sinceStart+100 {
 				t.Errorf("DurationMS = %d, want within 100ms of elapsed %d", entry.DurationMS, sinceStart)
 			}
+			// The stamps must carry sub-second precision: a consumer
+			// recomputing the interval from them has to land on DurationMS,
+			// not up to a second away from it. A 1ms slack covers the
+			// monotonic-vs-wall arithmetic between the two measurements.
+			if got := completedAt.Sub(startedAt).Milliseconds(); got-entry.DurationMS > 1 || entry.DurationMS-got > 1 {
+				t.Errorf("CompletedAt-StartedAt = %dms, want within 1ms of DurationMS = %d", got, entry.DurationMS)
+			}
 		})
 	}
 }
