@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -678,6 +679,52 @@ func TestHandlePingStart_ReapsAfterOutputEnds(t *testing.T) {
 	}
 }
 
+// TestHandlePingStart_RecordsCLocaleLatency drives the real ping handler with
+// a stub that only emits the C-locale latency line when LC_ALL=C, pinning the
+// subprocess locale contract that pingRe and ParseFloat depend on.
+func TestHandlePingStart_RecordsCLocaleLatency(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$LC_ALL\" != C ] || [ \"$LANG\" != C ]; then\n" +
+		"  echo 'unreachable from 10.0.0.1'\n" +
+		"  exec sleep 30\n" +
+		"fi\n" +
+		"echo '64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.123 ms'\n" +
+		"exec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, "ping"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	app := &App{}
+	t.Cleanup(app.stopLoadgen)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/ping?target=10.0.0.1", nil)
+	w := httptest.NewRecorder()
+	app.handlePingStart(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		app.loadgenMutex.Lock()
+		samples := slices.Clone(app.pingLog)
+		app.loadgenMutex.Unlock()
+		if len(samples) > 0 {
+			if samples[0].Error != "" {
+				t.Fatalf("latency sample error = %q, want none", samples[0].Error)
+			}
+			if samples[0].Latency != 0.123 {
+				t.Fatalf("latency = %v, want 0.123", samples[0].Latency)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no ping sample recorded")
+}
+
 func TestHandlePingStart_ValidTarget(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1246,8 +1293,8 @@ func TestMux_ServesHome(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("expected 200, got %v", w.Code)
 			}
-			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-				t.Errorf("Content-Type = %q, want text/html prefix", ct)
+			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want %q", ct, "text/html; charset=utf-8")
 			}
 			if method == http.MethodGet && w.Body.Len() == 0 {
 				t.Fatal("index body is empty")

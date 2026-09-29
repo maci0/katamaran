@@ -20,6 +20,17 @@ import (
 
 var pingRe = regexp.MustCompile(`time=([0-9.]+) ms`)
 
+// cLocaleEnv is the environment handed to the ping subprocess. iputils
+// renders both the latency line and the "Destination Host Unreachable" text
+// in the caller's locale: with LANG=zh_CN.UTF-8 it prints
+// "时间=0,123 毫秒", which pingRe never matches and whose comma decimal
+// separator ParseFloat rejects anyway, so every sample is recorded as a 0 ms
+// "Timeout/Unreachable". Pinning LC_ALL and LANG keeps the parsed form
+// locale-independent.
+func cLocaleEnv() []string {
+	return append(os.Environ(), "LC_ALL=C", "LANG=C")
+}
+
 var loadgenFormKeySet = formFieldSet("target")
 
 func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -162,6 +173,7 @@ func (a *App) handlePingStart(w http.ResponseWriter, r *http.Request) {
 		// dashboard pod holds.
 		interval := strconv.FormatFloat(pingInterval.Seconds(), 'f', -1, 64)
 		cmd := exec.CommandContext(ctx, "ping", "-i", interval, pingTarget)
+		cmd.Env = cLocaleEnv()
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			slog.Error("Failed to create ping stdout pipe", "target", pingTarget, "error", err, "request_id", reqID)

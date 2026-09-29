@@ -368,8 +368,12 @@ func (a *App) counterSnapshot() (started, succeeded, failed int64) {
 }
 
 // serveHome serves the dashboard's embedded index.html. Embedding removes
-// the CWD dependency that http.ServeFile would otherwise impose.
+// the CWD dependency that http.ServeFile would otherwise impose. The charset
+// is set explicitly instead of left to mime.TypeByExtension, which drops it
+// when the pod image has no /etc/mime.types entry for .html and leaves the
+// browser to guess the encoding of a document full of non-ASCII UI strings.
 func (a *App) serveHome(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", a.startTime, bytes.NewReader(indexHTML))
 }
 
