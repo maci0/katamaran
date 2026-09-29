@@ -667,6 +667,68 @@ func TestStageThenStartDest_EmitsDestStarting(t *testing.T) {
 	}
 }
 
+// TestStageThenStartDest_SecondPassKeepsSourceJob runs the staging goroutine
+// twice for the same migration ID. The second Create hits AlreadyExists, and
+// the pass must treat the existing dest Job as this same step already done:
+// reporting a failure here deletes the source Job and fails a live migration.
+func TestStageThenStartDest_SecondPassKeepsSourceJob(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		jobName, ok := jobNameFromPodListAction(action)
+		if !ok || !strings.HasPrefix(jobName, "katamaran-source-") {
+			return false, nil, nil
+		}
+		return true, &corev1.PodList{Items: []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName + "-pod",
+				Namespace: DefaultJobNamespace,
+				Labels:    map[string]string{"batch.kubernetes.io/job-name": jobName},
+			},
+		}}}, nil
+	})
+	n := newFromClient(cs)
+	id := MigrationID("replayid")
+	req := validRequest()
+	req.ReplayCmdline = true
+	destJob, err := renderDestJob(req, id, buildExtraArgs(req))
+	if err != nil {
+		t.Fatalf("renderDestJob: %v", err)
+	}
+	ctx := context.Background()
+	srcName := SourceJobName(id)
+	if _, err := cs.BatchV1().Jobs(DefaultJobNamespace).Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: srcName, Namespace: DefaultJobNamespace},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create source job: %v", err)
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		run := &nativeRun{
+			srcJob:   srcName,
+			destJob:  DestJobName(id),
+			updates:  make(chan StatusUpdate, 4),
+			cancel:   func() {},
+			finished: make(chan struct{}),
+		}
+		n.stageThenStartDest(ctx, id, run, destJob)
+		select {
+		case u := <-run.updates:
+			if u.Phase == PhaseFailed {
+				t.Fatalf("pass %d: staging reported failure %q", pass, u.Error)
+			}
+			if u.Phase != PhaseDestStarting {
+				t.Fatalf("pass %d: phase = %s, want %s", pass, u.Phase, PhaseDestStarting)
+			}
+		default:
+			t.Fatalf("pass %d: staging emitted no status update", pass)
+		}
+		if _, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(ctx, srcName, metav1.GetOptions{}); err != nil {
+			t.Fatalf("pass %d: source job was deleted: %v", pass, err)
+		}
+	}
+}
+
 // TestPhaseFromMarker covers KATAMARAN_PHASE validation. Only non-terminal
 // lifecycle phases may be surfaced from a log marker; terminal outcomes are
 // owned by the Job-condition poll's outcome matrix.

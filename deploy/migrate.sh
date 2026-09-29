@@ -395,6 +395,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# reap_finished_jobs removes leftover Jobs for this JOB_SUFFIX so the apply
+# below can submit fresh ones: a Job's pod template is immutable, so kubectl
+# apply cannot replace a Job that already exists. Only Jobs that have reached
+# a terminal condition are removed. A Job that is still running belongs to a
+# migration in progress, and deleting it would abort that migration, so a
+# re-run that collides with a live one stops here instead. Re-running after a
+# finished migration converges: its Jobs are terminal, so they are reaped and
+# the new migration starts.
+reap_finished_jobs() {
+    local job existing terminal
+    for job in "${DEST_JOB_NAME}" "${SOURCE_JOB_NAME}"; do
+        existing="$("${KUBECTL[@]}" -n kube-system get job "$job" --ignore-not-found -o name 2>/dev/null || true)"
+        if [[ -z "$existing" ]]; then
+            continue
+        fi
+        # Mirrors orchestrator.TerminalJobCondition: a Complete or Failed
+        # condition whose status is True. A condition present but not True
+        # means the Job is still running.
+        terminal="$("${KUBECTL[@]}" -n kube-system get job "$job" \
+            -o jsonpath='{.status.conditions[?(@.type=="Failed" && @.status=="True")].status}{.status.conditions[?(@.type=="Succeeded" && @.status=="True")].status}' \
+            2>/dev/null || true)"
+        if [[ -z "$terminal" ]]; then
+            echo "Error: job ${job} exists and has not finished." >&2
+            echo "A migration using JOB_SUFFIX=${JOB_SUFFIX} is still running; deleting it would abort that migration." >&2
+            echo "Wait for it to finish, or re-run with a distinct JOB_SUFFIX." >&2
+            exit 1
+        fi
+        echo ">>> Removing finished job ${job} left by a previous run..."
+        "${KUBECTL[@]}" -n kube-system delete job "$job" --ignore-not-found
+    done
+}
+
 dump_debug() {
     echo ""
     echo "=== DESTINATION LOGS ==="
@@ -411,7 +443,7 @@ dump_debug() {
 }
 
 echo ">>> Preparing migration..."
-"${KUBECTL[@]}" -n kube-system delete job "${DEST_JOB_NAME}" "${SOURCE_JOB_NAME}" --ignore-not-found
+reap_finished_jobs
 
 # Build dest-job EXTRA_ARGS once. In replay-cmdline mode we still set --tap
 # below so the dest can install the sch_plug qdisc on its own tap0_kata

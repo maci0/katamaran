@@ -223,6 +223,26 @@ func (n *native) createUnlessInFlight(ctx context.Context, req Request, job *bat
 	return "", nil
 }
 
+// createDestJobIfAbsent creates the dest Job unless one with the same name is
+// already there, reporting which of the two happened. Job names are derived
+// from the migration ID, so an existing Job is this same staging step that
+// already ran, not a different migration: a create that already succeeded
+// and a retried staging pass both land here, and both must continue against
+// the running Job rather than report a failure that would delete the source
+// Job out from under a live migration. The Get also covers a Create whose
+// response was lost after the API server persisted the object.
+func (n *native) createDestJobIfAbsent(ctx context.Context, job *batchv1.Job) (bool, error) {
+	_, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, job, metav1.CreateOptions{})
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsAlreadyExists(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("create dest job %s: %w", job.Name, err)
+	}
+}
+
 // joinInFlight attaches this process to the migration already running for
 // req.SourcePod under id, instead of starting a second set of Jobs against
 // the same live VM. The Jobs already exist in the cluster, so the only work
@@ -862,10 +882,18 @@ func (n *native) stageThenStartDest(ctx context.Context, id MigrationID, run *na
 		fail(fmt.Errorf("inject --replay-cmdline-from-pod: %w", err))
 		return
 	}
-	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, patched, metav1.CreateOptions{}); err != nil {
+	created, err := n.createDestJobIfAbsent(ctx, patched)
+	if err != nil {
 		slog.Error("Cmdline replay destination job create failed", "migration_id", id, "dest_job", destJob.Name, "namespace", n.namespace, "error", err)
 		fail(fmt.Errorf("create dest job: %w", err))
 		return
+	}
+	if !created {
+		// The dest Job was already there: this staging pass is a repeat of
+		// work already done, so the migration continues against the running
+		// Job rather than failing. Reporting failure here would delete the
+		// source Job out from under a live migration.
+		slog.Info("Destination job already present, resuming against it", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 	}
 	run.send(StatusUpdate{ID: id, Phase: PhaseDestStarting, When: time.Now()})
 	slog.Info("Replay-from-pod wired; destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
@@ -1057,11 +1085,10 @@ func (n *native) Resume(ctx context.Context, id MigrationID, req Request) (bool,
 	if err != nil {
 		return false, fmt.Errorf("inject replay flag: %w", err)
 	}
-	if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, patched, metav1.CreateOptions{}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("create dest job: %w", err)
+	if created, err := n.createDestJobIfAbsent(ctx, patched); err != nil {
+		return false, err
+	} else if !created {
+		return false, nil
 	}
 	slog.Info("Resume: destination job created", "migration_id", id, "source_pod", srcPod, "dest_job", destJob.Name, "namespace", n.namespace)
 	return true, nil

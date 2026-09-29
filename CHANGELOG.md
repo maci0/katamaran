@@ -78,6 +78,18 @@ workflow refuses to publish a tag that has no section below.
 
 ### Fixed
 
+- Replaying the `--replay-cmdline` dest Job submit no longer fails a live
+  migration. `stageThenStartDest` treated an `AlreadyExists` create as a hard
+  error, so a duplicated staging pass (or a create whose response was lost
+  after the API server persisted it) ran the failure path and deleted the
+  still-running source Job. It now reuses the existing dest Job, the same
+  rule `Resume` already applied.
+- `deploy/migrate.sh` no longer deletes a running migration when it is
+  re-run. The pre-flight cleanup removed both Jobs for the `JOB_SUFFIX`
+  unconditionally, so a second invocation targeting a migration still in
+  flight aborted it. It now reaps only Jobs that reached a terminal
+  condition and stops with an error when one is still running. Re-running
+  after a finished migration is unchanged.
 - `scripts/build-minikube-modules.sh` no longer pipes the container build
   into `grep | head`. A build whose output matched nothing failed the
   script under `pipefail`, and a real build failure printed none of its
