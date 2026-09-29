@@ -251,6 +251,7 @@ To ensure absolute safety during orchestration, `katamaran` implements strict co
 | **Kata Containers** | 3.x | QMP socket must be accessible |
 | **iproute2** | any | `tc` (sch_plug qdisc) + `ip tunnel` (IPIP/GRE/ip6tnl/ip6gre) |
 | **Go** | 1.26+ | Install system-wide |
+| **Node** | see `.node-version` | Only for `make test`; the dashboard unit tests use the built-in Node test runner |
 
 For CNI compatibility details (OVN-Kubernetes, Cilium, Calico, Flannel, and others), see [Networking: CNI Compatibility](#networking-cni-compatibility) under Kubernetes Integration.
 

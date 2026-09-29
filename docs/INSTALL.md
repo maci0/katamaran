@@ -10,6 +10,8 @@ This guide covers three install paths:
 
 - Linux host
 - Go 1.26+
+- Node (see `.node-version`), only for `make test`; the dashboard unit
+  tests use the built-in Node test runner
 - Root privileges on nodes where migration runs (`sudo`)
 - `iproute2` tools (`ip`, `tc`)
 - Kernel modules available on migration nodes:
@@ -36,10 +38,10 @@ From repository root:
 make
 ```
 
-Or manually:
+`make` builds every binary into `bin/`. For just the main one:
 
 ```bash
-go build -o bin/katamaran ./cmd/katamaran/
+make build
 ```
 
 Install globally on a host:
@@ -62,10 +64,12 @@ Build image:
 make image
 ```
 
-Or manually using podman/docker directly:
+Or manually using podman/docker directly (pass `VERSION` or the binary
+stamps itself `dev`):
 
 ```bash
-podman build -t localhost/katamaran:dev .
+podman build --build-arg VERSION="$(git describe --tags --always --dirty)" \
+  -t localhost/katamaran:dev .
 ```
 
 Sanity check:

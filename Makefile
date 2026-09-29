@@ -1,37 +1,25 @@
-.PHONY: all build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim check test smoke fuzz fuzz-long image dashboard mgr factory clean vet lint-shell help
+.PHONY: all build $(BUILD_TARGETS) check check-node test smoke fuzz fuzz-long repro-check image dashboard mgr factory clean vet lint-shell help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
-KATAMARAN_BINARY ?= bin/katamaran
+
+# Every binary is the main package of cmd/<name>/ and lands in bin/<name>, so
+# one pattern rule builds them all. Adding a command is one entry in
+# BINARIES, and no binary can pick up different build flags than the others.
+BINARIES := katamaran katamaran-dashboard katamaran-orchestrator katamaran-mgr \
+            katamaran-factory containerd-shim-katamaran-adopted-v2
+BUILD_TARGETS := $(addprefix build-,$(BINARIES))
 
 # Default target
-all: build build-dashboard build-orchestrator build-mgr build-factory build-adopted-shim
+all: $(BUILD_TARGETS)
 
-# Build the katamaran binary
-build:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o "$(KATAMARAN_BINARY)" ./cmd/katamaran/
+build: build-katamaran
 
-# Build the dashboard binary
-build-dashboard:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-dashboard ./cmd/katamaran-dashboard/
-
-# Build the orchestrator CLI (JSON-in / NDJSON-out wrapper around the
-# orchestrator package). Used by scripts and local orchestration workflows.
-build-orchestrator:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-orchestrator ./cmd/katamaran-orchestrator/
-
-# Build the Migration CRD controller binary.
-build-mgr:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-mgr ./cmd/katamaran-mgr/
-
-# Build the VM factory server binary.
-build-factory:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/katamaran-factory ./cmd/katamaran-factory/
-
-# Build the containerd v2 adoption shim (Approach E). See
-# cmd/containerd-shim-katamaran-adopted-v2/main.go package doc.
-build-adopted-shim:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o bin/containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
+# -buildvcs=false keeps host VCS state out of the binary; -trimpath keeps the
+# build directory out. Both are what make two builds byte-identical.
+# -mod=readonly makes a build fail rather than silently edit go.mod/go.sum.
+build-%:
+	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o "bin/$*" "./cmd/$*/"
 
 # Run go vet and gofmt checks (-s also enforces gofmt simplifications).
 # gofmt covers every tracked .go file so it stays in sync with `./...`
@@ -39,6 +27,8 @@ build-adopted-shim:
 vet:
 	go vet -composites.whitelist=false ./...
 	@set -e; files=$$(git ls-files '*.go'); \
+	if [ -z "$$files" ]; then \
+		printf 'git ls-files returned no .go files; run from a git checkout\n' >&2; exit 1; fi; \
 	unformatted=$$(gofmt -s -l $$files); \
 	test -z "$$unformatted" || { printf 'gofmt needed on:\n%s\n' "$$unformatted"; exit 1; }
 
@@ -46,16 +36,44 @@ vet:
 # tree (same rationale as the gofmt check above) so a script added outside
 # scripts/ cannot silently escape analysis.
 lint-shell:
-	shellcheck -x --enable=avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,require-double-brackets,useless-use-of-cat $$(git ls-files '*.sh')
+	@set -e; files=$$(git ls-files '*.sh'); \
+	if [ -z "$$files" ]; then \
+		printf 'git ls-files returned no .sh files; run from a git checkout\n' >&2; exit 1; fi; \
+	shellcheck -x --enable=avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,require-double-brackets,useless-use-of-cat $$files
 
 check:
 	go mod verify
 	$(MAKE) vet test smoke fuzz lint-shell all
 
+# Build every binary twice from the same tree and diff the results. Two
+# builds of the same source must be byte-identical; a diff means the build
+# reads host state (VCS metadata, the build directory, the clock). The
+# second pass runs under a different locale and timezone, because neither
+# may reach a Go binary. Run this from a differently named checkout as
+# well to cover the build-path case that -trimpath handles.
+repro-check:
+	@set -eu; \
+	rm -rf bin .repro-a .repro-b; \
+	$(MAKE) -s all; cp -R bin .repro-a; rm -rf bin; \
+	LC_ALL=C TZ=UTC $(MAKE) -s all; cp -R bin .repro-b; rm -rf bin; \
+	if diff -r .repro-a .repro-b; then \
+		echo "reproducible: $(words $(BINARIES)) binaries byte-identical across two builds"; \
+	else \
+		echo "NOT reproducible: see the diff above" >&2; exit 1; \
+	fi; \
+	rm -rf .repro-a .repro-b
+
 # Run unit tests with race detector
-test:
+test: check-node
 	go test ./... -count=1 -timeout 120s -race
 	node --test internal/dashboard/*.test.cjs
+
+# internal/dashboard's asset and form parser tests are Node's built-in test
+# runner. Node is the only non-Go toolchain the gate needs, so fail loud
+# here rather than at the `node --test` line with a bare "not found".
+check-node:
+	@command -v node >/dev/null 2>&1 || { \
+		printf 'node not found on PATH; the dashboard unit tests require it (see .node-version)\n' >&2; exit 1; }
 
 # Run smoke tests (no VMs required)
 smoke:
@@ -110,7 +128,7 @@ factory:
 
 # Remove build artifacts
 clean:
-	rm -rf bin/
+	rm -rf bin/ .repro-a .repro-b
 	rm -f katamaran.tar dashboard.tar mgr.tar factory.tar *.tar.tmp coverage.out *_cover.out
 
 # Show available targets
@@ -120,12 +138,9 @@ help:
 	@echo "Targets:"
 	@echo "  all                 Build all binaries"
 	@echo "  build               Build bin/katamaran"
-	@echo "  build-dashboard     Build bin/katamaran-dashboard"
-	@echo "  build-orchestrator  Build bin/katamaran-orchestrator"
-	@echo "  build-mgr           Build bin/katamaran-mgr"
-	@echo "  build-factory       Build bin/katamaran-factory"
-	@echo "  build-adopted-shim  Build bin/containerd-shim-katamaran-adopted-v2"
+	@echo "  build-<name>        Build bin/<name> from cmd/<name> (one of: $(BINARIES))"
 	@echo "  check               Verify modules, run local checks, build all binaries"
+	@echo "  repro-check         Build everything twice and diff the binaries"
 	@echo "  test                Run unit tests with race detector"
 	@echo "  smoke               Run smoke tests (no VMs required)"
 	@echo "  fuzz                Run fuzz test seed corpus (instant)"

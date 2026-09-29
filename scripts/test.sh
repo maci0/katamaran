@@ -84,7 +84,10 @@ else
     fail "gofmt found formatting issues in: ${GOFMT_DIFF}"
 fi
 
-if make -C "${PROJECT_ROOT}" build KATAMARAN_BINARY="${BINARY}"; then
+# The Makefile owns the build flags and always writes to bin/, so build
+# there and move the result into the scratch dir. Building by hand here
+# would let the smoke tests drift from what CI actually compiles.
+if make -C "${PROJECT_ROOT}" build && mv "${PROJECT_ROOT}/bin/katamaran" "${BINARY}"; then
     pass "go build succeeds"
 else
     fail "go build failed; binary behavior tests cannot run"
@@ -477,18 +480,17 @@ fi
 # --- 3. Shell script syntax ---
 echo "--- Shell scripts ---"
 
-for script in test.sh cleanup.sh minikube-test.sh e2e.sh sweep.sh lib.sh build-minikube-iso.sh build-minikube-modules.sh; do
-    if bash -n "${SCRIPT_DIR}/$script"; then
-        pass "$script has valid syntax"
+# Glob rather than a hardcoded list so a script added later is covered
+# without editing this loop. The glob is already sorted, so the output
+# order does not depend on readdir order.
+while IFS= read -r script; do
+    name="$(basename "${script}")"
+    if bash -n "${script}"; then
+        pass "${name} has valid syntax"
     else
-        fail "$script has syntax errors"
+        fail "${name} has syntax errors"
     fi
-done
-if bash -n "${PROJECT_ROOT}/deploy/migrate.sh" 2>/dev/null; then
-    pass "deploy/migrate.sh has valid syntax"
-else
-    fail "deploy/migrate.sh has syntax errors"
-fi
+done < <(printf '%s\n' "${SCRIPT_DIR}"/*.sh "${PROJECT_ROOT}/deploy/migrate.sh" | sort)
 
 # --- 4. Required files ---
 echo "--- Required files ---"

@@ -198,7 +198,7 @@ Validates katamaran against a real Kata Containers QMP socket inside a single-no
 
 - `minikube`, `kubectl`, `helm` installed
 - ~20 GB free disk space, ~16 GB free RAM
-- katamaran binary built (`make` or `go build -o bin/katamaran ./cmd/katamaran/`)
+- katamaran binary built (`make` or `make build`)
 
 ### Run
 

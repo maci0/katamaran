@@ -12,6 +12,8 @@ coverage.out
 *_cover.out
 godoc_all.txt
 out/
+.repro-a/
+.repro-b/
 
 # Merge/patch artifacts
 *.orig

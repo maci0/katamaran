@@ -11,6 +11,12 @@ gate.
 
 ## Constraints
 
+- Binaries are built by the `build-%` pattern rule in the Makefile: every
+  command under `cmd/` must have a matching name in `BINARIES`, and the flag
+  set lives in that one rule.
+- `make repro-check` builds everything twice under a different locale and
+  timezone and diffs the result. The binaries must stay byte-identical; a diff
+  means host state reached the build.
 - Serialize calls on each `internal/qmp` client; it is not concurrency-safe.
 - `cmd/containerd-shim-katamaran-adopted-v2` is experimental.
 - Dashboard assets are vendored under `internal/dashboard/assets/` and served

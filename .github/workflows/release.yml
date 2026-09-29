@@ -53,6 +53,17 @@ jobs:
           fi
       - name: Verify go modules
         run: go mod verify
+      - name: Record build toolchain
+        run: |
+          {
+            echo "## Build toolchain"
+            echo
+            echo "- go: $(go version)"
+            echo "- git: $(git --version)"
+            echo "- node: $(node --version 2>/dev/null || echo 'absent (make test needs it)')"
+            echo "- builder image: $(grep -oE 'golang:[^@]+@sha256:[a-f0-9]+' Dockerfile | head -1)"
+            echo "- runtime image: $(grep -oE 'alpine:[^@]+@sha256:[a-f0-9]+' Dockerfile | head -1)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Lint
         run: make vet
       - name: Lint shell scripts
