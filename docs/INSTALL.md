@@ -96,15 +96,15 @@ stable releases:
 | VM factory | `ghcr.io/maci0/katamaran-factory` |
 
 ```bash
-podman pull ghcr.io/maci0/katamaran:v0.6.0
-podman run --rm ghcr.io/maci0/katamaran:v0.6.0 --version
+podman pull ghcr.io/maci0/katamaran:v0.7.0
+podman run --rm ghcr.io/maci0/katamaran:v0.7.0 --version
 ```
 
 Retag it to the name `deploy/daemonset.yaml` expects, then load it into the
 cluster as described under Option 3:
 
 ```bash
-podman tag ghcr.io/maci0/katamaran:v0.6.0 localhost/katamaran:dev
+podman tag ghcr.io/maci0/katamaran:v0.7.0 localhost/katamaran:dev
 ```
 
 ## Option 3: Install on Kubernetes Nodes (DaemonSet)

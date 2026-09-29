@@ -12,6 +12,8 @@ workflow refuses to publish a tag that has no section below.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-29
+
 ### Added
 
 - `SECURITY.md`: supported versions and in-scope issues, stating plainly that
@@ -777,7 +779,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/maci0/katamaran/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/maci0/katamaran/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/maci0/katamaran/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.2
