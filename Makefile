@@ -1,4 +1,4 @@
-.PHONY: all build $(BUILD_TARGETS) check check-node test smoke fuzz fuzz-long repro-check image dashboard mgr factory clean vet lint-shell help
+.PHONY: all build $(BUILD_TARGETS) check check-node test smoke fuzz fuzz-long repro-check image dashboard mgr factory clean vet lint-shell lint-js help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/maci0/katamaran/internal/buildinfo.Version=$(VERSION)
@@ -39,11 +39,18 @@ lint-shell:
 	@set -e; files=$$(git ls-files '*.sh'); \
 	if [ -z "$$files" ]; then \
 		printf 'git ls-files returned no .sh files; run from a git checkout\n' >&2; exit 1; fi; \
-	shellcheck -x --enable=avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,require-double-brackets,useless-use-of-cat $$files
+	shellcheck -x --enable=add-default-case,avoid-negated-conditions,avoid-nullary-conditions,deprecate-which,quote-safe-variables,require-double-brackets,useless-use-of-cat $$files
+
+# Lint the hand-written dashboard JS (biome.json scopes the file set and
+# excludes the vendored bundles under internal/dashboard/assets). The
+# formatter is off in biome.json: the checked-in file predates biome and
+# reformatting it is separate work.
+lint-js:
+	biome lint
 
 check:
 	go mod verify
-	$(MAKE) vet test smoke fuzz lint-shell all
+	$(MAKE) vet test smoke fuzz lint-shell lint-js all
 
 # Build every binary twice from the same tree and diff the results. Two
 # builds of the same source must be byte-identical; a diff means the build

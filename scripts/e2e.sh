@@ -693,6 +693,8 @@ while IFS= read -r arg; do
             continue ;;
         -netdev) DST_QEMU_CMD+=" $(printf '%q' "${arg}")"; rewrite_netdev=true; continue ;;
         -device) DST_QEMU_CMD+=" $(printf '%q' "${arg}")"; rewrite_device=true; continue ;;
+        # Unrecognized args pass through unchanged, as below the esac.
+        *) ;;
     esac
     DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
 done <<< "${DST_CMDLINE}"
@@ -763,7 +765,9 @@ fi
 
 if [[ "${METHOD}" == "job" ]]; then
     # Both 'none' and 'nfs' skip NBD drive-mirror; only 'local' uses it.
-    STORAGE_FLAGS=""
+    # Unset, not empty, so ${STORAGE_FLAGS+...} stays safe under set -u on
+    # bash 3.2 (macOS), where an empty array expansion is an unbound variable.
+    unset STORAGE_FLAGS
     if [[ "${STORAGE}" != "local" ]]; then
         STORAGE_FLAGS="--shared-storage"
     fi
@@ -774,7 +778,7 @@ if [[ "${METHOD}" == "job" ]]; then
         --tap "${DST_TAP}" --tap-netns "${DST_TAP_NETNS}" \
         --qmp-source "${SRC_SOCK}" --qmp-dest "${DST_SOCK}" \
         --dest-ip "${DST_POD_IP}" --vm-ip "${SRC_POD_IP}" \
-        --image "localhost/katamaran:dev" ${STORAGE_FLAGS} --downtime 25 2>&1 | tee "${MIG_LOG}" || {
+        --image "localhost/katamaran:dev" ${STORAGE_FLAGS+"${STORAGE_FLAGS}"} --downtime 25 2>&1 | tee "${MIG_LOG}" || {
             error "Migration failed!"
             exit 1
         }

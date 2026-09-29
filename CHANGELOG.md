@@ -17,9 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard cluster-wide, as before.
 - `deploy/monitoring.yaml`, holding the mgr and dashboard metrics
   Services and their ServiceMonitors.
+- `make lint-js`: Biome lints the dashboard's hand-written JavaScript, and
+  `make check` plus a CI job run it. The file set is scoped in `biome.json`
+  so the vendored bundles under `internal/dashboard/assets/` stay out.
 
 ### Changed
 
+- `make lint-shell` also enables ShellCheck's `add-default-case` and
+  `quote-safe-variables`.
 - `deploy/dashboard.yaml` no longer creates a ClusterIP Service in front
   of the dashboard UI. The dashboard ServiceAccount can list, patch, and
   delete pods in every namespace and creates hostPID migration Jobs, so

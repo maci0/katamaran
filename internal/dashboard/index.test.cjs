@@ -103,7 +103,9 @@ for (const [value, automatic, badInput, allowed] of [
             getField, syncSourcePodFields() {}, syncDestNodeField() { return 'worker-b'; },
             clearFieldState() {}, markFieldInvalid(field) { invalid.push(field.id); },
             showToast() {},
-            FormData: class { constructor() { return []; } },
+            FormData: class {
+                constructor() { this[Symbol.iterator] = () => [][Symbol.iterator](); }
+            },
             URLSearchParams,
             apiCall(url) { requests.push(url); return Promise.resolve({ ok: true }); }
         }, { timeout: 1000 });
@@ -125,7 +127,7 @@ function statusHarness() {
             classList: { add() {}, remove() {} },
             setAttribute() {}, removeAttribute() {}, toggleAttribute() {},
             querySelector(selector) { return element(id + selector); },
-            get parentElement() { return element(id + '-parent'); }
+            get parentElement() { return element(`${id}-parent`); }
         });
         return elements.get(id);
     }
@@ -146,7 +148,7 @@ function statusHarness() {
         URLSearchParams,
         fetch: async () => ({ ok: true, json: async () => response }),
         ensureChart() {}, renderProgress() {}, syncDowntimeEnabled() {}, showToast() {},
-        console: { error(message, err) { throw err; } }
+        console: { error(_message, err) { throw err; } }
     };
     runInNewContext(html.slice(start, end), context, { timeout: 1000 });
     return {

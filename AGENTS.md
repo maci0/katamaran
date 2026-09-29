@@ -5,9 +5,9 @@ edit `AGENTS.md`.
 
 ## Gate
 
-`make check` (go mod verify, vet, test, smoke, fuzz, lint-shell, build all
-binaries) must pass before a change is done. Fix failures without weakening the
-gate.
+`make check` (go mod verify, vet, test, smoke, fuzz, lint-shell, lint-js, build
+all binaries) must pass before a change is done. Fix failures without weakening
+the gate.
 
 ## Constraints
 
