@@ -73,6 +73,33 @@ func TestPhaseBreakdown(t *testing.T) {
 			},
 			want: "36s wall (4s setup + 32s xfer)",
 		},
+		{
+			name: "unstamped transferring phase reports bare wall clock",
+			end:  start.Add(35 * time.Second),
+			phaseAt: map[orchestrator.StatusPhase]time.Time{
+				orchestrator.PhaseTransferring: {},
+			},
+			want: "35s wall",
+		},
+		{
+			// A producer whose clock trails the dashboard's, e.g. a
+			// cross-node orchestrator reporting an instant from before
+			// this process started watching.
+			name: "transferring stamp before start reports bare wall clock",
+			end:  start.Add(35 * time.Second),
+			phaseAt: map[orchestrator.StatusPhase]time.Time{
+				orchestrator.PhaseTransferring: start.Add(-2 * time.Second),
+			},
+			want: "35s wall",
+		},
+		{
+			name: "transferring stamp after end reports bare wall clock",
+			end:  start.Add(35 * time.Second),
+			phaseAt: map[orchestrator.StatusPhase]time.Time{
+				orchestrator.PhaseTransferring: start.Add(40 * time.Second),
+			},
+			want: "35s wall",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

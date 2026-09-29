@@ -425,7 +425,13 @@ func phaseBreakdown(start time.Time, phaseAt map[orchestrator.StatusPhase]time.T
 		return ""
 	}
 	xferStart, ok := phaseAt[orchestrator.PhaseTransferring]
-	if !ok {
+	// The per-phase stamps come from StatusUpdate.When, produced by the
+	// orchestrator; start and end are the dashboard's own. When the two
+	// disagree, or the stamp is simply absent, the split is arithmetic on
+	// incomparable instants and would render as a negative or year-sized
+	// duration. Report the wall total, which needs no cross-producer
+	// subtraction.
+	if !ok || xferStart.IsZero() || xferStart.Before(start) || xferStart.After(end) {
 		return fmt.Sprintf("%s wall", wall)
 	}
 	setup := xferStart.Sub(start).Round(time.Second)

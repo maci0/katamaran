@@ -22,8 +22,10 @@
 #  18. migrate.sh rejects missing required arguments
 #  19. migrate.sh rejects invalid --tunnel-mode values
 #  20. migrate.sh validates --tap format (rejects spaces)
-#  21. Shell scripts have valid syntax (bash -n)
-#  22. Required project files exist
+#  21. migrate.sh fails when the destination job wait fails
+#  22. migrate.sh waits for each job's full activeDeadlineSeconds
+#  23. Shell scripts have valid syntax (bash -n)
+#  24. Required project files exist
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -408,10 +410,22 @@ if [[ -x "${MIGRATE_SCRIPT}" ]]; then
     # surface exit 0: scripts consuming migrate.sh would see a broken
     # migration as success and skip their own failure handling.
     SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/migrate-shim.XXXXXX")"
+    # The shim records every kubectl invocation, answers the readiness
+    # probes deploy_dest_job polls, and drains stdin on `apply -f -`
+    # (a kubectl that exits without reading leaves envsubst killed by
+    # SIGPIPE, which pipefail turns into a false failure before the waits
+    # under test are ever reached).
     cat > "${SHIM_DIR}/kubectl" <<'EOF'
 #!/bin/bash
+echo "$*" >> "${SHIM_KUBECTL_LOG}"
 case "$*" in
-    *"--for=condition=complete job/katamaran-dest-"*) exit 1 ;;
+    *"-f -"*)  cat >/dev/null ;;
+    *"get pod"*) echo "pod/x Running" ;;
+    *"logs job/"*) echo "Waiting for QEMU RESUME" ;;
+esac
+case "$*" in
+    *"--for=condition=complete job/katamaran-dest-"*)
+        [[ -n "${SHIM_FAIL_DEST_WAIT:-}" ]] && exit 1 ;;
 esac
 exit 0
 EOF
@@ -420,18 +434,42 @@ EOF
 cat
 EOF
     chmod +x "${SHIM_DIR}/kubectl" "${SHIM_DIR}/envsubst"
+    SHIM_KUBECTL_LOG="$(mktemp "${TMPDIR:-/tmp}/migrate-shim-log.XXXXXX")"
+    export SHIM_KUBECTL_LOG
+
+    # A failed destination-job wait after a successful source wait must not
+    # surface exit 0: scripts consuming migrate.sh would see a broken
+    # migration as success and skip their own failure handling.
     DEST_FAIL_LOG="$(mktemp "${TMPDIR:-/tmp}/migrate-destfail.XXXXXX")"
     DEST_FAIL_RC=0
-    PATH="${SHIM_DIR}:${PATH}" KATAMARAN_KEEP_JOBS=true \
+    SHIM_FAIL_DEST_WAIT=1 PATH="${SHIM_DIR}:${PATH}" KATAMARAN_KEEP_JOBS=true \
         "${MIGRATE_SCRIPT}" --source-node a --dest-node b --tap tap0 \
-        --qmp-source /tmp/sock1 --qmp-dest /tmp/sock2 --dest-ip 10.0.0.2 \
+        --qmp-source /tmp/sock1 --qmp-dest /tmp/s2 --dest-ip 10.0.0.2 \
         --vm-ip 10.244.0.9 --image katamaran:dev > "${DEST_FAIL_LOG}" 2>&1 || DEST_FAIL_RC=$?
     if [[ ${DEST_FAIL_RC} -ne 0 ]] && ! grep -q "Migration completed successfully" "${DEST_FAIL_LOG}"; then
         pass "migrate.sh fails when destination job wait fails"
     else
         fail "migrate.sh should fail when destination job wait fails"
     fi
-    rm -rf "${SHIM_DIR}" "${DEST_FAIL_LOG}"
+    rm -f "${DEST_FAIL_LOG}"
+
+    # The Job waits must not undercut the Job's own activeDeadlineSeconds:
+    # a hard-coded short wait made migrate.sh report failure and tear the
+    # migration down while a multi-hour storage sync was still running.
+    JOB_DEADLINE="$(sed -n 's/^[[:space:]]*activeDeadlineSeconds:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "${PROJECT_ROOT}/internal/orchestrator/templates/job-source.yaml")"
+    WAIT_OK=1
+    for JOB in source dest; do
+        grep -q -- "--for=condition=complete job/katamaran-${JOB}-default --timeout=${JOB_DEADLINE}s" \
+            "${SHIM_KUBECTL_LOG}" || WAIT_OK=0
+    done
+    if [[ ${WAIT_OK} -eq 1 ]]; then
+        pass "migrate.sh waits for each job's full activeDeadlineSeconds (${JOB_DEADLINE}s)"
+    else
+        fail "migrate.sh should wait ${JOB_DEADLINE}s for both jobs, got: $(grep -o -- '--timeout=[0-9]*s' "${SHIM_KUBECTL_LOG}" | tr '\n' ' ')"
+    fi
+    rm -rf "${SHIM_DIR}" "${SHIM_KUBECTL_LOG}"
+    unset SHIM_KUBECTL_LOG
 else
     fail "deploy/migrate.sh not found or not executable"
 fi

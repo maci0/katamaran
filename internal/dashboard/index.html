@@ -836,6 +836,21 @@
         if (n >= (1<<10)) return (n/(1<<10)).toFixed(1) + ' KiB';
         return n + ' B';
     }
+    // Elapsed-time label for the history table. A migration is budgeted in
+    // hours (the Job templates allow 4h), so rendering every duration past
+    // a second in seconds produced "14400.0s" for the multi-hour runs the
+    // tool exists for. Sub-minute values keep one decimal; from a minute up
+    // the remainder is whole seconds.
+    function humanDuration(ms) {
+        if (ms < 1000) return ms + 'ms';
+        if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+        var totalSeconds = Math.round(ms / 1000);
+        var hours = Math.floor(totalSeconds / 3600);
+        var mins = Math.floor((totalSeconds % 3600) / 60);
+        var secs = totalSeconds % 60;
+        if (hours > 0) return hours + 'h ' + mins + 'm ' + secs + 's';
+        return mins + 'm ' + secs + 's';
+    }
     function renderProgress(p) {
         var card = document.getElementById('progress-card');
         var track = document.getElementById('progress-track');
@@ -1245,7 +1260,7 @@
                         }
                     }
                     addCell(startedText);
-                    var dur = h.duration_ms > 1000 ? (h.duration_ms / 1000).toFixed(1) + 's' : h.duration_ms + 'ms';
+                    var dur = humanDuration(h.duration_ms);
                     addCell(dur, 'text-right');
                     addCell(h.downtime_ms > 0 ? h.downtime_ms + ' ms' : '—', 'text-right');
                     var ram = h.ram_total > 0 ? (h.ram_transferred / 1048576).toFixed(0) + '/' + (h.ram_total / 1048576).toFixed(0) + ' MiB' : '—';

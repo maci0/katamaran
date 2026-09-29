@@ -171,3 +171,31 @@ test('latency statistics clear when successful samples leave the rolling window'
     assert.equal(dashboard.element('stat-avg').textContent, '8.00 ms');
     assert.equal(dashboard.element('stat-max').textContent, '8.00 ms');
 });
+
+// humanDuration backs the history table's Duration column. A migration is
+// budgeted in hours, so a seconds-only label read "14400.0s" for exactly the
+// runs the tool exists for.
+test('history durations keep hours, minutes and seconds readable', () => {
+    const html = readFileSync(join(__dirname, 'index.html'), 'utf8');
+    const start = html.indexOf('    function humanDuration(ms) {');
+    const end = html.indexOf('    function renderProgress(p) {', start);
+    assert.notEqual(start, -1);
+    assert.notEqual(end, -1);
+    const source = html.slice(start, end);
+    const context = {};
+    runInNewContext(`${source}\nthis.humanDuration = humanDuration;`, context, { timeout: 1000 });
+    for (const [ms, want] of [
+        [0, '0ms'],
+        [999, '999ms'],
+        [1000, '1.0s'],
+        [35999, '36.0s'],
+        [60000, '1m 0s'],
+        [90000, '1m 30s'],
+        [3599000, '59m 59s'],
+        [3600000, '1h 0m 0s'],
+        [14400000, '4h 0m 0s'],
+        [5445000, '1h 30m 45s']
+    ]) {
+        assert.equal(context.humanDuration(ms), want, `humanDuration(${ms})`);
+    }
+});

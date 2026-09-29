@@ -68,6 +68,24 @@ export KATAMARAN_MIGRATION_ID="${KATAMARAN_MIGRATION_ID:-}"
 export JOB_SUFFIX="${JOB_SUFFIX:-default}"
 SOURCE_JOB_NAME="katamaran-source-${JOB_SUFFIX}"
 DEST_JOB_NAME="katamaran-dest-${JOB_SUFFIX}"
+# Wait budget for the kubectl waits below. The Jobs' activeDeadlineSeconds is
+# the ceiling Kubernetes itself enforces, so waiting longer than that only
+# delays reporting a Job Kubernetes has already killed. Read it from the
+# shared template rather than repeating the number here: the previous
+# hard-coded 600s undercut a budget the templates set to 4h (2h storage
+# sync + 1h RAM migration + CNI convergence), so any migration slower than
+# ten minutes was declared failed while its Job was still running, and the
+# EXIT trap then tore the migration down.
+JOB_TEMPLATE_DIR="${SCRIPT_DIR}/../internal/orchestrator/templates"
+read_active_deadline() {
+    sed -n 's/^[[:space:]]*activeDeadlineSeconds:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1"
+}
+JOB_ACTIVE_DEADLINE_SECONDS="$(read_active_deadline "${JOB_TEMPLATE_DIR}/job-source.yaml")"
+DEST_ACTIVE_DEADLINE_SECONDS="$(read_active_deadline "${JOB_TEMPLATE_DIR}/job-dest.yaml")"
+if [[ -z "${JOB_ACTIVE_DEADLINE_SECONDS}" || "${JOB_ACTIVE_DEADLINE_SECONDS}" != "${DEST_ACTIVE_DEADLINE_SECONDS}" ]]; then
+    echo "Error: source and dest Job templates must declare the same activeDeadlineSeconds (got '${JOB_ACTIVE_DEADLINE_SECONDS}' and '${DEST_ACTIVE_DEADLINE_SECONDS}')" >&2
+    exit 1
+fi
 # Track --replay-cmdline staging resources so the EXIT trap can clean them
 # up even on early-exit error paths (kubectl wait/cp failures otherwise leak
 # a privileged stager pod into kube-system).
@@ -556,16 +574,20 @@ else
     deploy_source_job
 fi
 
-echo ">>> Waiting for migration to complete..."
+echo ">>> Waiting for migration to complete (budget ${JOB_ACTIVE_DEADLINE_SECONDS}s)..."
 set +e
-"${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${SOURCE_JOB_NAME}" --timeout=600s
+"${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${SOURCE_JOB_NAME}" --timeout="${JOB_ACTIVE_DEADLINE_SECONDS}s"
 wait_rc=$?
 set -e
 
-# Wait for dest job to complete too (it finishes shortly after source).
+# The dest job runs on the same deadline and normally reaches Complete
+# before the source does (the source waits out the CNI-convergence delay
+# after RESUME), so this normally returns within seconds. It carries the
+# same budget because a dest that has not completed by the time the source
+# Job's own deadline expires is a stuck Job, not a slow one.
 dest_rc=0
 if [[ "$wait_rc" -eq 0 ]]; then
-    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${DEST_JOB_NAME}" --timeout=60s || dest_rc=$?
+    "${KUBECTL[@]}" -n kube-system wait --for=condition=complete "job/${DEST_JOB_NAME}" --timeout="${JOB_ACTIVE_DEADLINE_SECONDS}s" || dest_rc=$?
 fi
 
 dump_debug
