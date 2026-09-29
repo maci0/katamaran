@@ -47,7 +47,7 @@ Traditional QEMU live migration assumes shared storage. In Kubernetes with Kata 
 - [Future Ideas](#future-ideas)
 - [Roadmap](docs/ROADMAP.md)
 
-See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Dashboard](cmd/katamaran-dashboard/README.md)** · **[Roadmap](docs/ROADMAP.md)**
+See also: **[Installation Guide](docs/INSTALL.md)** · **[Usage Guide](docs/USAGE.md)** · **[Testing Guide](docs/TESTING.md)** · **[User Stories](docs/STORIES.md)** · **[Threat Model](docs/THREAT_MODEL.md)** · **[Dashboard](cmd/katamaran-dashboard/README.md)** · **[Roadmap](docs/ROADMAP.md)**
 
 ---
 
