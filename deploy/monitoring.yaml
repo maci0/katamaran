@@ -1,0 +1,74 @@
+# Scrape targets for both workloads' Prometheus text endpoints: mgr exposes
+# controller + admission counters on :8081/metrics, the dashboard exposes
+# HTTP and migration counters on :8080/metrics. Without these objects the
+# metrics exist in the apps but no scraper ever collects them.
+#
+# Kept out of manager.yaml and dashboard.yaml because the ServiceMonitor CRD
+# ships with the Prometheus Operator, not with Kubernetes. Applying the
+# workload manifests on a cluster without that operator fails on these two
+# documents. Apply them only where a Prometheus Operator is installed:
+#
+#   kubectl apply -f deploy/monitoring.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-mgr-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-mgr
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8081
+    targetPort: debug
+    protocol: TCP
+  selector:
+    app: katamaran-mgr
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-dashboard-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-dashboard
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: katamaran-dashboard
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: katamaran-mgr
+  namespace: kube-system
+  labels:
+    app: katamaran-mgr
+spec:
+  selector:
+    matchLabels:
+      app: katamaran-mgr
+  endpoints:
+  - port: metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: katamaran-dashboard
+  namespace: kube-system
+  labels:
+    app: katamaran-dashboard
+spec:
+  selector:
+    matchLabels:
+      app: katamaran-dashboard
+  endpoints:
+  - port: metrics
+    interval: 30s

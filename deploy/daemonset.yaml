@@ -13,6 +13,9 @@ spec:
     metadata:
       labels:
         app: katamaran
+        # Two containers (keepalive, factory). Without this, `kubectl logs`
+        # and `kubectl exec` on the DaemonSet pod require -c.
+        kubectl.kubernetes.io/default-container: factory
     spec:
       automountServiceAccountToken: false
       nodeSelector:

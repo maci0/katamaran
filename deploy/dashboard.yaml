@@ -177,81 +177,12 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
----
 # No UI Service on purpose. The dashboard's ServiceAccount can list, patch,
 # and delete pods cluster-wide and creates hostPID migration Jobs, so a
 # ClusterIP Service in front of it would hand that surface to every pod in
 # the cluster. Admin access is
 # `kubectl port-forward -n kube-system svc/katamaran-dashboard-metrics 8080:8080`,
 # which the apiserver proxies and which therefore needs RBAC on pods/portforward
-# in kube-system. The katamaran-dashboard-metrics Service further down selects
-# the same dashboard pods on the same port, so the forwarded port serves the
-# UI as well as Prometheus.
-#
-# Scrape target for both workloads' Prometheus text endpoints: mgr exposes
-# controller + admission counters on :8081/metrics, the dashboard exposes
-# HTTP and migration counters on :8080/metrics. Without these objects the
-# metrics exist in the apps but no scraper ever collects them.
-apiVersion: v1
-kind: Service
-metadata:
-  name: katamaran-mgr-metrics
-  namespace: kube-system
-  labels:
-    app: katamaran-mgr
-spec:
-  type: ClusterIP
-  ports:
-  - name: metrics
-    port: 8081
-    targetPort: debug
-    protocol: TCP
-  selector:
-    app: katamaran-mgr
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: katamaran-dashboard-metrics
-  namespace: kube-system
-  labels:
-    app: katamaran-dashboard
-spec:
-  type: ClusterIP
-  ports:
-  - name: metrics
-    port: 8080
-    targetPort: http
-    protocol: TCP
-  selector:
-    app: katamaran-dashboard
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: katamaran-mgr
-  namespace: kube-system
-  labels:
-    app: katamaran-mgr
-spec:
-  selector:
-    matchLabels:
-      app: katamaran-mgr
-  endpoints:
-  - port: metrics
-    interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: katamaran-dashboard
-  namespace: kube-system
-  labels:
-    app: katamaran-dashboard
-spec:
-  selector:
-    matchLabels:
-      app: katamaran-dashboard
-  endpoints:
-  - port: metrics
-    interval: 30s
+# in kube-system. That Service now lives in `deploy/monitoring.yaml`, selects
+# the same dashboard pods on port 8080, so the forwarded port serves the UI
+# as well as Prometheus.

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dest_pod_namespace` outside it, matching the pin the Migration CRD
   applies to `spec.sourcePod` and `spec.destPod`. Unset leaves the
   dashboard cluster-wide, as before.
+- `deploy/monitoring.yaml`, holding the mgr and dashboard metrics
+  Services and their ServiceMonitors.
 
 ### Changed
 
@@ -32,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dir, `-monitor` and `-pidfile` are dropped, and a `-chardev file` backend is
   dropped, closing a VM-monitor takeover and an arbitrary root file write in
   the privileged dest job.
+
+### Fixed
+
+- `deploy/monitoring.yaml` extraction. The metrics Services and
+  ServiceMonitors moved out of `deploy/dashboard.yaml` so that manifest
+  applies on a cluster without a Prometheus Operator, and the mgr's
+  scrape objects no longer ship in the dashboard's file.
+- `deploy/migration-example.yaml` named a source pod (`kata-demo`) and
+  dest node (`kata-worker-b`) that no manifest in the tree creates. It
+  now points at the pod the tutorial deploys, `nginx-kata` in the
+  default namespace, and at that profile's second node.
 
 ## [0.6.0] - 2026-09-28
 

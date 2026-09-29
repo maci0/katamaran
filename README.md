@@ -378,6 +378,7 @@ deploy/
   daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
   manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
   migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
+  monitoring.yaml               # Metrics Services + ServiceMonitors; needs a Prometheus Operator
   migrate.sh                    # Manual-testing shell wrapper around the Job templates
                                 #   under internal/orchestrator/templates/. Production paths
                                 #   submit those templates through the Native orchestrator.
@@ -677,6 +678,8 @@ minikube image load dashboard.tar
 kubectl apply -f deploy/dashboard.yaml
 ```
 
+The dashboard and controller expose Prometheus text endpoints. The Services and ServiceMonitors that collect them live in `deploy/monitoring.yaml`, kept separate because the `ServiceMonitor` kind only exists when a Prometheus Operator is installed. Apply that file too if you run one.
+
 ### Using the Dashboard
 
 `deploy/dashboard.yaml` ships no Service in front of the UI. The dashboard's ServiceAccount can list, patch, and delete pods in every namespace and creates hostPID migration Jobs, so a ClusterIP Service would hand that surface to every pod in the cluster. Reach it through the apiserver instead:
@@ -704,14 +707,14 @@ minikube image load mgr.tar
 kubectl apply -f config/crd/migration.yaml
 kubectl apply -f deploy/manager.yaml
 
-# Submit a migration
+# Submit a migration (source pod from step 5, demo/nginx-kata.yaml)
 kubectl apply -f deploy/migration-example.yaml
 
 # Watch the phase column
 kubectl get migration -w
-# NAME     SOURCE      DEST           PHASE        AGE
-# demo-1   kata-demo   kata-worker-b  transferring 12s
-# demo-1   kata-demo   kata-worker-b  succeeded    38s
+# NAME    SOURCE      DEST                PHASE        AGE
+# demo-1  nginx-kata  katamaran-demo-m02  transferring 12s
+# demo-1  nginx-kata  katamaran-demo-m02  succeeded    38s
 ```
 
 The manager requires `KATAMARAN_MIGRATION_IMAGE` to name the administrator-approved image for privileged migration Jobs. Every CR's `spec.image` must match it exactly, including when resuming after a restart. `deploy/manager.yaml` uses `localhost/katamaran:dev`; replace it with your trusted image (prefer a digest) before deployment. Image rejection does not prevent deleting existing migrations or observing completed Jobs.
