@@ -114,11 +114,18 @@ var ErrUnknownID = errors.New("unknown migration ID")
 const MigrationIDLabel = "katamaran.io/migration-id"
 
 // SourcePodLabel tags every Job of a migration with the name of the pod
-// being migrated. Apply uses it to find an in-flight migration for a pod
-// before submitting a second set of Jobs against the same VM, so a
+// being migrated. Together with SourcePodNamespaceLabel it identifies the
+// source pod cluster-wide. Apply uses the pair to find an in-flight migration
+// for a pod before submitting a second set of Jobs against the same VM, so a
 // duplicated request (dashboard retry, CR re-dispatch after a lost status
 // patch) joins the running migration instead of restarting it.
 const SourcePodLabel = "katamaran.io/source-pod"
+
+// SourcePodNamespaceLabel tags every Job of a migration with the namespace of
+// the pod being migrated. Pod names are only unique within a namespace, so
+// this label is what keeps a Migration for "web" in one namespace from joining
+// the running migration of "web" in another.
+const SourcePodNamespaceLabel = "katamaran.io/source-pod-namespace"
 
 // maxLabelValueLen is the Kubernetes limit for a label value. Pod names
 // may be longer, so a source pod whose name does not fit is simply left
@@ -136,6 +143,20 @@ func sourcePodLabelValue(req Request) string {
 		return ""
 	}
 	return name
+}
+
+// sourcePodNamespaceLabelValue returns the SourcePodNamespaceLabel value for
+// req, or "" when the request has no source pod or no namespace. A namespace
+// is always a DNS-1123 label, so any non-empty value fits a label.
+func sourcePodNamespaceLabelValue(req Request) string {
+	if req.SourcePod == nil {
+		return ""
+	}
+	ns := req.SourcePod.Namespace
+	if ns == "" || len(ns) > maxLabelValueLen {
+		return ""
+	}
+	return ns
 }
 
 // DrainInBackground consumes ch until it closes. Callers that abandon a

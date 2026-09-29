@@ -283,11 +283,11 @@ func TestReadAdoptedSandboxID(t *testing.T) {
 				}
 			}
 			got, err := readAdoptedSandboxID(dir)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("readAdoptedSandboxID error = %v, wantErr %v", err, tc.wantErr)
-			}
 			if got != tc.want {
 				t.Errorf("readAdoptedSandboxID = %q, want %q", got, tc.want)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Errorf("readAdoptedSandboxID error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}

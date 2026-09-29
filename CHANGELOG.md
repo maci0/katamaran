@@ -90,6 +90,12 @@ workflow refuses to publish a tag that has no section below.
 
 ### Fixed
 
+- The in-flight migration guard no longer matches a same-named pod in another
+  namespace. Migration Jobs from every namespace land in `kube-system` and
+  carried only `katamaran.io/source-pod` (the pod name), so a Migration for
+  `web` in one namespace joined the running migration of `web` in another and
+  that migration's status was written to the wrong Migration CR. Jobs now also
+  carry `katamaran.io/source-pod-namespace` and the guard selects on both.
 - Replaying the `--replay-cmdline` dest Job submit no longer fails a live
   migration. `stageThenStartDest` treated an `AlreadyExists` create as a hard
   error, so a duplicated staging pass (or a create whose response was lost

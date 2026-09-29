@@ -1428,6 +1428,39 @@ func TestNative_Apply_AllowsRemigrationAfterTerminalJob(t *testing.T) {
 	}
 }
 
+// Pod names are only unique within a namespace, so the in-flight guard must
+// match on the source pod's namespace as well as its name. Otherwise a
+// Migration for "vm-a" in one namespace joins the running migration of a
+// same-named pod in another, and that migration's status lands on the wrong
+// Migration CR.
+func TestNative_Apply_DoesNotJoinSameNamedPodInAnotherNamespace(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewSimpleClientset()
+	ctx := context.Background()
+
+	first, err := newFromClient(cs).Apply(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+
+	other := validRequest()
+	other.SourcePod = &PodRef{Namespace: "other-tenant", Name: "vm-a"}
+	second, err := newFromClient(cs).Apply(ctx, other)
+	if err != nil {
+		t.Fatalf("Apply for other namespace: %v", err)
+	}
+	if second == first {
+		t.Fatalf("cross-namespace Apply joined the in-flight migration %q", first)
+	}
+	jobs, err := cs.BatchV1().Jobs("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 4 {
+		t.Fatalf("cross-namespace Apply created %d jobs, want 4: %+v", len(jobs.Items), jobs.Items)
+	}
+}
+
 // A controller restart drops the in-process run but leaves the Jobs behind.
 // The re-dispatch must find them through the cluster and join, not submit a
 // second storage sync against the same VM.

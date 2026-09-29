@@ -36,10 +36,15 @@ func (n *native) cleanupDestJob(ctx context.Context, destJobName, reason string)
 }
 
 // stampSourcePod records the migrated pod on the Job so inflightForSourcePod
-// can find it again. Called by both render helpers.
+// can find it again. Name and namespace are stamped as two labels because a
+// label value cannot hold "namespace/name", and the name alone does not
+// identify a pod across the cluster. Called by both render helpers.
 func stampSourcePod(job *batchv1.Job, req Request) {
 	if v := sourcePodLabelValue(req); v != "" {
 		job.Labels[SourcePodLabel] = v
+	}
+	if v := sourcePodNamespaceLabelValue(req); v != "" {
+		job.Labels[SourcePodNamespaceLabel] = v
 	}
 }
 
@@ -89,15 +94,19 @@ func (n *native) createDestJobIfAbsent(ctx context.Context, job *batchv1.Job) (b
 // by an earlier leader those goroutines are gone and Watch(id) would fail,
 // and when it is still live startRun is a no-op.
 func (n *native) joinInFlight(id MigrationID, req Request) MigrationID {
-	slog.Info("Migration already in flight for source pod; joining the running migration", "migration_id", id, "source_pod", req.SourcePod.Name, "namespace", n.namespace)
+	slog.Info("Migration already in flight for source pod; joining the running migration", "migration_id", id, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "namespace", n.namespace)
 	n.startRun(id, SourceJobName(id), DestJobName(id), req, nil, nil, true)
 	return id
 }
 
 // inflightForSourcePod reports the ID of a still-running migration for
-// req.SourcePod, if any. It ignores Jobs that have reached a terminal
-// condition (that migration is over, and a later request for the same pod
-// name is a genuine new migration) and Jobs whose own
+// req.SourcePod, if any. Both the name and the namespace label must match:
+// Jobs from every namespace land in the same Job namespace, so a name-only
+// lookup would hand one namespace's Migration the running migration of a
+// same-named pod in another namespace, and that migration's status would then
+// be written into the wrong Migration CR. It ignores Jobs that have reached a
+// terminal condition (that migration is over, and a later request for the
+// same pod name is a genuine new migration) and Jobs whose own
 // activeDeadlineSeconds has elapsed (the kubelet killed their pod, so nothing
 // is running and the guard would otherwise lock the pod out until the
 // Objects are garbage-collected). That bounds the guard's state: it only
@@ -105,17 +114,19 @@ func (n *native) joinInFlight(id MigrationID, req Request) MigrationID {
 // ttlSecondsAfterFinished.
 func (n *native) inflightForSourcePod(ctx context.Context, req Request) (MigrationID, bool, error) {
 	podName := sourcePodLabelValue(req)
-	if podName == "" {
+	podNamespace := sourcePodNamespaceLabelValue(req)
+	if podName == "" || podNamespace == "" {
 		return "", false, nil
 	}
+	selector := SourcePodLabel + "=" + podName + "," + SourcePodNamespaceLabel + "=" + podNamespace
 	jobs, err := n.client.BatchV1().Jobs(n.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector:   SourcePodLabel + "=" + podName,
+		LabelSelector:   selector,
 		ResourceVersion: "0",
 	})
 	if err != nil {
 		// A guard that cannot read the cluster must not silently hand out a
 		// fresh migration ID: that is exactly the duplicate this prevents.
-		return "", false, fmt.Errorf("list jobs for source pod %s: %w", podName, err)
+		return "", false, fmt.Errorf("list jobs for source pod %s/%s: %w", podNamespace, podName, err)
 	}
 	now := time.Now()
 	for i := range jobs.Items {
