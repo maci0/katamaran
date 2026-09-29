@@ -430,15 +430,24 @@ func serveAsset(name string) http.HandlerFunc {
 	}
 }
 
+// requireDiscoverer writes the 503 preamble when the app has no discoverer
+// and reports whether the caller may proceed. subject names the listing in
+// the warning ("pods", "nodes").
+func (a *App) requireDiscoverer(w http.ResponseWriter, r *http.Request, subject string) bool {
+	if a.discoverer != nil {
+		return true
+	}
+	slog.Warn("List "+subject+" failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
+	jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+	return false
+}
+
 // handleListPods returns kata-runtime pods discovered from Kubernetes.
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
-	disc := a.discoverer
-	if disc == nil {
-		slog.Warn("List pods failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+	if !a.requireDiscoverer(w, r, "pods") {
 		return
 	}
-	pods, err := disc.ListKataPods(r.Context())
+	pods, err := a.discoverer.ListKataPods(r.Context())
 	if err != nil {
 		slog.Warn("list kata pods failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list pods", http.StatusBadGateway)
@@ -449,13 +458,10 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 
 // handleListNodes returns nodes labeled for the kata runtime.
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
-	disc := a.discoverer
-	if disc == nil {
-		slog.Warn("List nodes failed: discoverer not configured", "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, "Discoverer not configured (no in-cluster config or KUBECONFIG)", http.StatusServiceUnavailable)
+	if !a.requireDiscoverer(w, r, "nodes") {
 		return
 	}
-	nodes, err := disc.ListKataNodes(r.Context())
+	nodes, err := a.discoverer.ListKataNodes(r.Context())
 	if err != nil {
 		slog.Warn("list kata nodes failed", "error", err, "request_id", requestIDFromContext(r.Context()))
 		jsonError(w, "Failed to list nodes", http.StatusBadGateway)

@@ -95,7 +95,7 @@ func (n *native) createDestJobIfAbsent(ctx context.Context, job *batchv1.Job) (b
 // and when it is still live startRun is a no-op.
 func (n *native) joinInFlight(id MigrationID, req Request) MigrationID {
 	slog.Info("Migration already in flight for source pod; joining the running migration", "migration_id", id, "source_pod", req.SourcePod.Namespace+"/"+req.SourcePod.Name, "namespace", n.namespace)
-	n.startRun(id, SourceJobName(id), DestJobName(id), req, nil, nil, true)
+	n.startRun(id, SourceJobName(id), DestJobName(id), req, nil, nil)
 	return id
 }
 

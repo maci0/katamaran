@@ -324,7 +324,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
 	}
 
-	n.startRun(id, srcJob.Name, destJob.Name, req, staged, destJob, true)
+	n.startRun(id, srcJob.Name, destJob.Name, req, staged, destJob)
 	return id, nil
 }
 
@@ -333,7 +333,7 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 // the live run nor starts a second set of watchers on its update channel.
 // stageDestJob is nil on the join path: the staging goroutine belongs to
 // whoever submitted the source Job, and a duplicate must not run it again.
-func (n *native) startRun(id MigrationID, srcName, destName string, req Request, staged []StatusUpdate, stageDestJob *batchv1.Job, seedSubmitted bool) {
+func (n *native) startRun(id MigrationID, srcName, destName string, req Request, staged []StatusUpdate, stageDestJob *batchv1.Job) {
 	// Claim the id before building the run: a duplicate call would otherwise
 	// allocate a cancel context and an updates channel it then drops, and the
 	// dropped cancel is a context nothing will ever release.
@@ -354,9 +354,7 @@ func (n *native) startRun(id MigrationID, srcName, destName string, req Request,
 	n.inflight[id] = run
 	n.mu.Unlock()
 
-	if seedSubmitted {
-		run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
-	}
+	run.updates <- StatusUpdate{ID: id, Phase: PhaseSubmitted, When: time.Now()}
 	for _, u := range staged {
 		run.updates <- u
 	}

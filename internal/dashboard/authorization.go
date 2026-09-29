@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -57,12 +58,7 @@ func (s namespaceScope) allows(ns string) bool {
 
 // names returns the allowlist, for the startup log line.
 func (s namespaceScope) names() []string {
-	names := make([]string, 0, len(s.allowed))
-	for ns := range s.allowed {
-		names = append(names, ns)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(s.allowed))
 }
 
 // filterPods drops pods outside the allowlist so /api/pods never discloses

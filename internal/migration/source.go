@@ -727,9 +727,6 @@ const queryMigrateTimeout = 5 * time.Second
 // 30s waits.
 var postActiveStallGrace = 30 * time.Second
 
-// waitForMigrationComplete polls query-migrate until migration reaches a terminal
-// state (completed, failed, or cancelled). Times out after migrationTimeout.
-//
 // waitForVMStop blocks until the guest pauses, which is when the downtime
 // window opens. It polls migration status sequentially in the same loop as
 // the STOP wait rather than using a separate goroutine for each: the QMP
@@ -783,13 +780,16 @@ func waitForVMStop(ctx context.Context, client *qmp.Client) error {
 	}
 }
 
+// waitForMigrationComplete polls query-migrate until migration reaches a
+// terminal state (completed, failed, or cancelled). Times out after
+// migrationTimeout.
+//
 // Each poll uses a per-call queryMigrateTimeout, so a stalled QMP socket
 // fails this short call rather than hanging the whole polling loop on the
 // global executeTimeout (2 min). Sustained QMP failures are interpreted
 // as a successful handover (kata-shim tearing down source QEMU
 // post-completion). The caller invokes this only after the VM is
-// paused and the tunnel cutover is complete, so the migration is
-// already in flight by the time we enter the loop, so a QMP failure
+// paused and the tunnel cutover is complete, so a QMP failure
 // here is a hand-off signal, not an early-stage error.
 func waitForMigrationComplete(ctx context.Context, client *qmp.Client, out io.Writer) (qmp.MigrateInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)

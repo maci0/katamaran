@@ -77,9 +77,6 @@ type MigrateInfo struct {
 	TotalTime int64 `json:"total-time,omitempty"`
 }
 
-// QMP command argument types, strictly typed to prevent typos and ensure
-// correct JSON serialization for each QMP command.
-
 // NBDServerStartArgs are the arguments for the nbd-server-start command.
 type NBDServerStartArgs struct {
 	Addr NBDServerAddr `json:"addr"`

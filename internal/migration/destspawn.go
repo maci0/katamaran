@@ -63,11 +63,8 @@ var (
 	// the probe is incompatible with QEMU's migration peek. Sized to cover:
 	// dest pod scheduling + image pull + virtiofsd start + QEMU spawn +
 	// QMP set-capabilities + migrate-incoming open. Empirically ~10-15s on
-	// a warm cluster, but can stretch to 30-40s when the dest node is
-	// freshly added (cgroup setup, image fetch, kata-deploy wiring), bumped
-	// from 25s to 60s to cover that case. Live e2e on a 3-node minikube
-	// after adding a worker showed source's migrate command racing dest
-	// startup at the 25s mark, returning "Connection refused".
+	// a warm cluster, stretching to 30-40s on a freshly added dest node
+	// (cgroup setup, image fetch, kata-deploy wiring).
 	destReplaySleep = 60 * time.Second
 )
 
@@ -199,9 +196,10 @@ type cmdlineRewrite struct {
 //     repin every -qmp socket to the dest sandbox dir
 //   - append -incoming defer (QEMU runs in the foreground; see body for why)
 //
-// The returned slice is the QEMU argv (without argv[0], which is returned
-// separately so the caller can wrap it in nsenter or similar). Returns an
-// error only if args is empty.
+// The returned slice is the QEMU argv without argv[0], which is returned
+// separately and is not safe to exec: spawnReplayedQEMU resolves the binary
+// from the trusted install path instead. Returns an error only if args is
+// empty.
 func transformCmdline(args []string, rw cmdlineRewrite) (binary string, qemuArgs []string, err error) {
 	if len(args) == 0 {
 		return "", nil, errors.New("empty cmdline (no argv[0])")

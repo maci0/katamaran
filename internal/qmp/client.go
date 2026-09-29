@@ -186,12 +186,10 @@ func NewClient(ctx context.Context, socketPath string) (*Client, error) {
 		return fail(fmt.Errorf("setting greeting deadline: %w", err))
 	}
 
-	if _, err := c.readLine(); err != nil {
-		if isTimeout(err) {
-			// Ignore timeout: QEMU likely skipped the greeting (wait=off).
-		} else {
-			return fail(fmt.Errorf("reading QMP greeting: %w", err))
-		}
+	// A greeting timeout is not an error: QEMU likely skipped the greeting
+	// (wait=off).
+	if _, err := c.readLine(); err != nil && !isTimeout(err) {
+		return fail(fmt.Errorf("reading QMP greeting: %w", err))
 	}
 
 	if err := conn.SetReadDeadline(time.Now().Add(dialTimeout)); err != nil {

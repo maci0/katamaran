@@ -301,10 +301,9 @@ func (realProc) NetnsHasIP(pid int, ip string) (bool, error) {
 // goroutine pinned with runtime.LockOSThread that is never unlocked: when it
 // returns, the runtime terminates the (now netns-tainted) thread rather than
 // recycling it. The netlink socket net.InterfaceAddrs opens is created on the
-// pinned thread, so it inherits the target namespace.
-//
-// ponytail: one throwaway OS thread per call. Fine at resolve-time frequency
-// (a handful of calls per migration); revisit only if this turns into a hot path.
+// pinned thread, so it inherits the target namespace. Each call burns one
+// throwaway OS thread, which resolve-time frequency (a handful of calls per
+// migration) absorbs.
 func netnsInterfaceAddrs(pid int) ([]net.Addr, error) {
 	type result struct {
 		addrs []net.Addr

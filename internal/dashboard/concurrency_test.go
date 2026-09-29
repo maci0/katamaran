@@ -212,43 +212,50 @@ func TestAppMigrationStartRace(t *testing.T) {
 		app.migrationMutex.Unlock()
 	}
 
-	var winners, losers int
+	// The test itself holds the guard for the first phase, so every worker
+	// claim is a guaranteed loss. Contention is then a fact of the setup
+	// rather than of how the scheduler happens to interleave 16 goroutines,
+	// which it does not on a many-core host running a microsecond-long
+	// critical section.
+	const workers, iterations = 16, 100
+	if !claim() {
+		t.Fatal("the initial claim was rejected; the guard does not start unset")
+	}
+	var blocked int
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for range 16 {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range 100 {
+			for range iterations {
 				if claim() {
-					mu.Lock()
-					winners++
-					mu.Unlock()
-					app.appendLog(">>> claimed")
-					// Hold the guard for a beat, the way a real
-					// migration holds it from claim to completion,
-					// so the other goroutines actually collide
-					// with it instead of each running the whole
-					// claim/release pair in turn.
-					time.Sleep(guardHoldTime)
-					release()
-					continue
+					t.Error("a claim succeeded while the test held the guard")
+					return
 				}
 				mu.Lock()
-				losers++
+				blocked++
 				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
+	release()
 
-	if winners == 0 {
-		t.Fatal("no goroutine ever claimed the migration guard")
+	if blocked != workers*iterations {
+		t.Fatalf("blocked claims = %d, want %d (every claim loses while the guard is held)", blocked, workers*iterations)
 	}
-	if losers == 0 {
-		t.Fatal("no goroutine was ever blocked by a concurrent claim; the guard was not contended")
+	if got, _, _ := app.counterSnapshot(); got != 1 {
+		t.Fatalf("migrationsStarted = %d, want 1 (the test's own claim)", got)
 	}
-	if got, _, _ := app.counterSnapshot(); got != int64(winners) {
-		t.Fatalf("migrationsStarted = %d, want %d (one per winning claim)", got, winners)
+
+	// With the guard released, the next claim wins and counts exactly once.
+	if !claim() {
+		t.Fatal("claim rejected after release")
+	}
+	app.appendLog(">>> claimed")
+	release()
+	if got, _, _ := app.counterSnapshot(); got != 2 {
+		t.Fatalf("migrationsStarted = %d, want 2 (one per winning claim)", got)
 	}
 }

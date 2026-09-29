@@ -36,7 +36,7 @@ func generateTunnelName() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("generating tunnel name: %w", err)
 	}
-	return tunnelPrefix + hex.EncodeToString(b[:]), nil // "mig-" (4) + 10 hex = 14 chars
+	return tunnelPrefix + hex.EncodeToString(b[:]), nil
 }
 
 // validateTunnelAddrs checks that both endpoints are valid addresses of the
