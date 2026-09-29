@@ -41,10 +41,27 @@ func TestValidateRejectsReplayCmdlineWithAutoSelectedDest(t *testing.T) {
 func TestValidateAcceptsReplayCmdlineWithExplicitDest(t *testing.T) {
 	t.Parallel()
 	req := validRequestForValidation()
+	req.SourceQMP = ""
+	req.VMIP = ""
+	req.SourcePod = &PodRef{Namespace: "default", Name: "kata-vm"}
 	req.ReplayCmdline = true
 
 	if err := Validate(req); err != nil {
 		t.Fatalf("Validate replayCmdline with explicit destNode: %v", err)
+	}
+}
+
+func TestValidateRejectsReplayCmdlineWithoutSourcePod(t *testing.T) {
+	t.Parallel()
+	req := validRequestForValidation()
+	req.ReplayCmdline = true
+
+	err := Validate(req)
+	if err == nil {
+		t.Fatal("expected error for replayCmdline in legacy mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "replayCmdline requires sourcePod") {
+		t.Fatalf("expected replayCmdline/sourcePod error, got: %v", err)
 	}
 }
 

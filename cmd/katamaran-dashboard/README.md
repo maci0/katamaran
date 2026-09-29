@@ -67,7 +67,7 @@ explicit mode, which requires the source-side fields.
 | `downtime` | optional | optional | Integer milliseconds, 1 to 60000. Defaults to the orchestrator value when omitted. |
 | `auto_downtime` | optional | optional | Literal `true` or `false`; anything else is `400`. |
 | `shared_storage` | optional | optional | Literal `true` or `false`; anything else is `400`. |
-| `replay_cmdline` | optional | optional | Literal `true` or `false`; anything else is `400`. |
+| `replay_cmdline` | optional | ignored in legacy mode | Literal `true` or `false`; anything else is `400`. Requires pod-picker mode: the source QEMU PID the cmdline is read from is resolved from `source_pod_*`, so legacy explicit-source requests are rejected with `400`. |
 | `tunnel_mode` | optional | optional | One of `ipip`, `gre`, `none`; anything else is `400`. |
 
 Non-2xx responses:

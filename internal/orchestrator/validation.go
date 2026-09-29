@@ -54,6 +54,17 @@ func Validate(req Request) error {
 	if req.ReplayCmdline && req.DestNode == "" {
 		return errors.New("replayCmdline requires destNode to be set (it is incompatible with destination auto-selection)")
 	}
+	// ReplayCmdline needs the source QEMU's pid to read /proc/<pid>/cmdline,
+	// and only the pod resolver can produce one: RunSource fails outright with
+	// "--emit-cmdline-to requires pod-mode" when SourcePod is unset, and
+	// Apply injects --emit-cmdline-to into the source Job for every replay
+	// request. Legacy SourceQMP+VMIP requests would therefore create a source
+	// Job that always dies. deploy/migrate.sh rejects the combination up
+	// front and the CRD path always sets SourcePod, so this closes the one
+	// remaining entry point instead of letting the Job fail at runtime.
+	if req.ReplayCmdline && req.SourcePod == nil {
+		return errors.New("replayCmdline requires sourcePod to be set (the source QEMU pid is resolved from the pod)")
+	}
 	if req.DestPod != nil && (req.DestPod.Name == "" || req.DestPod.Namespace == "") {
 		return errors.New("destPod requires both Name and Namespace")
 	}
