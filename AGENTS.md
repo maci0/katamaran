@@ -9,6 +9,10 @@ edit `AGENTS.md`.
 all binaries) must pass before a change is done. Fix failures without weakening
 the gate.
 
+`node` (version in `.node-version`) and `biome` (version in `biome.json`'s
+`$schema`) must be on `PATH`: the repo ships no `package.json`, so nothing
+installs them, and `test` and `lint-js` fail loud when either is absent.
+
 ## Constraints
 
 - Binaries are built by the `build-%` pattern rule in the Makefile: every
@@ -41,7 +45,9 @@ the gate.
 
 ## Release
 
-Only when explicitly asked to release: version the `[Unreleased]` section in
-`CHANGELOG.md`, add its compare link, and push the matching `v*` tag after the
-gate passes. `.github/workflows/release.yml` verifies, publishes multi-arch GHCR
-images, and creates the GitHub Release from the matching changelog section.
+Only when explicitly asked to release: rename the `## [Unreleased]` heading in
+`CHANGELOG.md` to `## [<version>]` (bare semver, no `v`, the exact string
+`release.yml` matches), move the compare link to the same version, and push the
+matching `v*` tag after the gate passes. `.github/workflows/release.yml`
+verifies, publishes multi-arch GHCR images, and creates the GitHub Release from
+the matching changelog section.
