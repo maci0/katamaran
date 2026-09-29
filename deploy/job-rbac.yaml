@@ -1,0 +1,65 @@
+# RBAC for the migration Jobs, shared by every producer of those Jobs.
+#
+# internal/orchestrator/templates/job-{source,dest}.yaml pins
+# `serviceAccountName: katamaran-source`, and all three Job producers
+# (the katamaran-mgr CRD controller, the dashboard, and deploy/migrate.sh)
+# create them in orchestrator.DefaultJobNamespace (kube-system). This file
+# owns that ServiceAccount and the least-privilege role behind it, so
+# installing any one producer does not silently leave the other two with
+# Jobs that cannot start ("serviceaccount katamaran-source not found").
+#
+# Apply it alongside whichever producer you install:
+#
+#   kubectl apply -f deploy/job-rbac.yaml
+#   kubectl apply -f deploy/manager.yaml     # or deploy/dashboard.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: katamaran-source
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: katamaran-source
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+# Dest job in --replay-cmdline-from-pod mode reads the source pod's
+# log to scrape its KATAMARAN_CMDLINE_B64 marker. Both source and
+# dest jobs share this SA, so the read-only get suffices for both.
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: katamaran-source
+  labels:
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: source-jobs
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
+subjects:
+- kind: ServiceAccount
+  name: katamaran-source
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: katamaran-source
+  apiGroup: rbac.authorization.k8s.io

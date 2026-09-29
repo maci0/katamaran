@@ -499,7 +499,7 @@ done < <(printf '%s\n' "${SCRIPT_DIR}"/*.sh "${PROJECT_ROOT}/deploy/migrate.sh" 
 # --- 4. Required files ---
 echo "--- Required files ---"
 
-for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/Makefile" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/INSTALL.md" "${PROJECT_ROOT}/docs/USAGE.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md" "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}/deploy/daemonset.yaml" "${PROJECT_ROOT}/internal/orchestrator/templates/job-dest.yaml" "${PROJECT_ROOT}/internal/orchestrator/templates/job-source.yaml" "${PROJECT_ROOT}/deploy/migrate.sh" "${PROJECT_ROOT}/scripts/manifests/kind-config-nocni.yaml"; do
+for file in "${PROJECT_ROOT}/go.mod" "${PROJECT_ROOT}/cmd/katamaran/main.go" "${PROJECT_ROOT}/Makefile" "${PROJECT_ROOT}/README.md" "${PROJECT_ROOT}/docs/INSTALL.md" "${PROJECT_ROOT}/docs/USAGE.md" "${PROJECT_ROOT}/docs/TESTING.md" "${PROJECT_ROOT}/docs/STORIES.md" "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}/deploy/daemonset.yaml" "${PROJECT_ROOT}/internal/orchestrator/templates/job-dest.yaml" "${PROJECT_ROOT}/internal/orchestrator/templates/job-source.yaml" "${PROJECT_ROOT}/deploy/migrate.sh" "${PROJECT_ROOT}/deploy/job-rbac.yaml" "${PROJECT_ROOT}/deploy/metrics-services.yaml" "${PROJECT_ROOT}/scripts/manifests/kind-config-nocni.yaml"; do
     basename="$(basename "${file}")"
     if [[ -f "${file}" ]]; then
         pass "${basename} exists"

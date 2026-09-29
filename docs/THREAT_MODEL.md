@@ -98,10 +98,11 @@ Surface added by deployment:
   `automountServiceAccountToken: true` and hostPaths
   (`internal/orchestrator/templates/job-source.yaml:33`, `:41`,
   `internal/orchestrator/templates/job-dest.yaml:31`, `:39`).
-- `deploy/monitoring.yaml` adds two ClusterIP Services publishing the manager's
-  `:8081` and the dashboard's `:8080` to the Prometheus ServiceMonitors
-  (`deploy/monitoring.yaml:13`, `:30`). Both serve unauthenticated `/metrics`,
-  so this widens the reach of T8 beyond the pod itself.
+- `deploy/metrics-services.yaml` adds two ClusterIP Services publishing the
+  manager's `:8081` and the dashboard's `:8080` to the Prometheus
+  ServiceMonitors (`deploy/metrics-services.yaml:14`, `:36`). Both serve
+  unauthenticated `/metrics`, so this widens the reach of T8 beyond the pod
+  itself.
 - `config/crd/runtimeclass-adopted.yaml` registers the `katamaran-adopted`
   runtime that routes an adopted-VM pod to the experimental shim
   (`internal/controller/reconciler.go:1256`).
@@ -348,7 +349,7 @@ Missing, ranked:
 - No authentication or authorization of any kind on the dashboard API (T1,
   T5). Nothing between the socket and Job creation.
 - No authentication on the observability endpoints (T8), and
-  `deploy/monitoring.yaml` now publishes two of them as Services.
+  `deploy/metrics-services.yaml` now publishes two of them as Services.
 - No confidentiality or integrity protection on the migration data plane
   (T4), acknowledged in `docs/ROADMAP.md:43`.
 - No peer authentication on the factory gRPC socket (T9).

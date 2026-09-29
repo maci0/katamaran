@@ -333,6 +333,10 @@ internal/
   logging/
     logging.go                  # Logging setup helpers (SetupLogger)
     logging_test.go             # Logging tests
+  manifests/
+    manifests_test.go           # Decodes every first-party manifest into typed API objects and
+                                #   checks cross-file references (ServiceAccounts, roleRefs,
+                                #   ServiceMonitor selectors, pinned namespaces)
   migration/
     config.go                   # SourceConfig / DestConfig types, shared constants, and QEMU URI helpers
     config_test.go              # Config unit tests
@@ -374,11 +378,13 @@ internal/
   qmptest/
     qmptest.go                  # Shared test helpers for faking a QMP server
 deploy/
-  dashboard.yaml                # Dashboard Kubernetes Deployment + metrics ClusterIP Service
+  dashboard.yaml                # Dashboard Kubernetes Deployment (no Service, by design)
   daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
+  job-rbac.yaml                 # katamaran-source ServiceAccount + ClusterRole, required by every Job producer
   manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
+  metrics-services.yaml         # ClusterIP Services for both workloads' :metrics endpoints
   migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
-  monitoring.yaml               # Metrics Services + ServiceMonitors; needs a Prometheus Operator
+  monitoring.yaml               # ServiceMonitors for those Services; needs a Prometheus Operator
   migrate.sh                    # Manual-testing shell wrapper around the Job templates
                                 #   under internal/orchestrator/templates/. Production paths
                                 #   submit those templates through the Native orchestrator.
@@ -672,11 +678,13 @@ make dashboard
 # 2. Load it into your cluster (if using minikube/kind)
 minikube image load dashboard.tar
 
-# 3. Deploy the manifests
+# 3. Deploy the manifests. job-rbac.yaml owns the ServiceAccount the
+#    migration Jobs run as, and the dashboard creates those Jobs.
+kubectl apply -f deploy/job-rbac.yaml
 kubectl apply -f deploy/dashboard.yaml
 ```
 
-The dashboard and controller expose Prometheus text endpoints. The Services and ServiceMonitors that collect them live in `deploy/monitoring.yaml`, kept separate because the `ServiceMonitor` kind only exists when a Prometheus Operator is installed. Apply that file too if you run one.
+The dashboard and controller expose Prometheus text endpoints. The ClusterIP Services in front of them live in `deploy/metrics-services.yaml` and apply on any cluster; the `ServiceMonitor` objects that turn those Services into scrape targets live in `deploy/monitoring.yaml`, kept separate because that kind only exists when a Prometheus Operator is installed. Apply `deploy/monitoring.yaml` too if you run one.
 
 ### Using the Dashboard
 
@@ -701,8 +709,10 @@ For GitOps / Argo / declarative workflows that prefer `kubectl apply` over a UI,
 make mgr
 minikube image load mgr.tar
 
-# Install the CRD + controller (one-time)
+# Install the CRD + controller (one-time). job-rbac.yaml is the
+# ServiceAccount the controller's migration Jobs run as.
 kubectl apply -f config/crd/migration.yaml
+kubectl apply -f deploy/job-rbac.yaml
 kubectl apply -f deploy/manager.yaml
 
 # Submit a migration (source pod from step 5, demo/nginx-kata.yaml)

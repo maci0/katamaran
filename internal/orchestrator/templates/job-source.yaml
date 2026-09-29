@@ -1,6 +1,6 @@
 # Source-side migration Job template.
 # The katamaran-source ServiceAccount + ClusterRole + ClusterRoleBinding
-# are applied at install-time via deploy/dashboard.yaml (or out-of-band)
+# are applied at install-time via deploy/job-rbac.yaml (or out-of-band)
 # so the dashboard only needs RBAC to create the Job itself.
 # Rendered by the Native orchestrator or via envsubst by deploy/migrate.sh.
 # Variables: NODE_NAME, IMAGE, DEST_IP, EXTRA_ARGS, KATAMARAN_MIGRATION_ID, JOB_SUFFIX
@@ -28,8 +28,11 @@ spec:
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
-      # Mirrors the Job's own labels: NetworkPolicies, ServiceMonitors and
-      # any future PDB select the pod, not the Job.
+      # The pod carries its own copy of the Job's app.kubernetes.io/*
+      # labels so a NetworkPolicy, ServiceMonitor or PDB can select the
+      # pod rather than the Job. The Job's own labels additionally carry
+      # katamaran.io/migration-id, which the orchestrator reads back off
+      # the Job; it is deliberately not on the pod.
       labels:
         app: katamaran-source
         app.kubernetes.io/name: katamaran

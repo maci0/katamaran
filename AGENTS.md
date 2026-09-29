@@ -51,6 +51,13 @@ one is absent.
   reason. `scripts/manifests/kata-pod.yaml` is excluded there: it is a shell
   template, valid only after `scripts/e2e.sh` substitutes its `${...}`
   placeholders.
+- `deploy/job-rbac.yaml` is the only file that declares the
+  `katamaran-source` ServiceAccount the Job templates pin, and
+  `deploy/metrics-services.yaml` is the only file that declares a Service.
+  Two files emitting the same object makes the applier's ordering decide
+  which one's teardown removes it, so each object has exactly one owner.
+  `internal/manifests` fails the gate if that stops being true, or if any
+  manifest stops decoding into a typed API object.
 - Migration timeouts and buffer sizes are named constants, not literals. Keep
   the controller's `StatusTimeout` and both Jobs' `activeDeadlineSeconds` equal
   in duration and above `storageSyncTimeout + migrationTimeout`, with headroom

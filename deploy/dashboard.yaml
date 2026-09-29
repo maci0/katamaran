@@ -1,3 +1,6 @@
+# The migration Jobs this dashboard's orchestrator creates run as the
+# `katamaran-source` ServiceAccount, which lives in deploy/job-rbac.yaml
+# (shared with katamaran-mgr and deploy/migrate.sh). Apply that file too.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -79,61 +82,6 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: katamaran-dashboard-cluster
-  apiGroup: rbac.authorization.k8s.io
----
-# Source job ServiceAccount + RBAC. Pre-applied at install time so the
-# dashboard's Native orchestrator only needs to create migration Jobs at
-# runtime.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: katamaran-source
-  namespace: kube-system
-  labels:
-    app.kubernetes.io/name: katamaran
-    app.kubernetes.io/component: source-jobs
-    app.kubernetes.io/part-of: katamaran
-    app.kubernetes.io/managed-by: kubectl
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: katamaran-source
-  labels:
-    app.kubernetes.io/name: katamaran
-    app.kubernetes.io/component: source-jobs
-    app.kubernetes.io/part-of: katamaran
-    app.kubernetes.io/managed-by: kubectl
-rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get"]
-# Dest job in --replay-cmdline-from-pod mode reads the source pod's
-# log to scrape its KATAMARAN_CMDLINE_B64 marker. Both source and
-# dest jobs share this SA, so the read-only get suffices for both.
-- apiGroups: [""]
-  resources: ["pods/log"]
-  verbs: ["get"]
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: katamaran-source
-  labels:
-    app.kubernetes.io/name: katamaran
-    app.kubernetes.io/component: source-jobs
-    app.kubernetes.io/part-of: katamaran
-    app.kubernetes.io/managed-by: kubectl
-subjects:
-- kind: ServiceAccount
-  name: katamaran-source
-  namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: katamaran-source
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
@@ -236,12 +184,13 @@ spec:
       volumes:
       - name: tmp
         emptyDir: {}
-# No UI Service on purpose. The dashboard's ServiceAccount can list, patch,
-# and delete pods cluster-wide and creates hostPID migration Jobs, so a
-# ClusterIP Service in front of it would hand that surface to every pod in
-# the cluster. Admin access is
+# No UI Service in this file on purpose. The dashboard's ServiceAccount can
+# list, patch, and delete pods cluster-wide and creates hostPID migration
+# Jobs, so nothing here should hand that surface to the cluster at large. Admin
+# access is
 # `kubectl port-forward -n kube-system svc/katamaran-dashboard-metrics 8080:8080`,
-# which the apiserver proxies and which therefore needs RBAC on pods/portforward
-# in kube-system. That Service now lives in `deploy/monitoring.yaml`, selects
-# the same dashboard pods on port 8080, so the forwarded port serves the UI
-# as well as Prometheus.
+# which the apiserver proxies and which therefore needs RBAC on
+# pods/portforward in kube-system. That Service is plain core/v1, so it lives
+# in `deploy/metrics-services.yaml` where it applies without a Prometheus
+# Operator; it selects these same pods on port 8080, so the forwarded port
+# serves the UI as well as Prometheus.

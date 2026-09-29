@@ -22,8 +22,26 @@ workflow refuses to publish a tag that has no section below.
   `dest_pod_namespace` outside it, matching the pin the Migration CRD
   applies to `spec.sourcePod` and `spec.destPod`. Unset leaves the
   dashboard cluster-wide, as before.
-- `deploy/monitoring.yaml`, holding the mgr and dashboard metrics
-  Services and their ServiceMonitors.
+- `deploy/metrics-services.yaml`, holding the mgr and dashboard metrics
+  ClusterIP Services. Plain core/v1, so it applies on any cluster.
+- `deploy/job-rbac.yaml`, holding the `katamaran-source` ServiceAccount and
+  its ClusterRole and ClusterRoleBinding. The migration Job templates pin
+  `serviceAccountName: katamaran-source` and all three Job producers
+  (katamaran-mgr, the dashboard, `deploy/migrate.sh`) need it, so the
+  objects moved out of `deploy/dashboard.yaml` to a file every install path
+  applies. A katamaran-mgr-only install previously produced Jobs stuck on
+  `serviceaccount "katamaran-source" not found`.
+- `deploy/monitoring.yaml`, holding the ServiceMonitors for those Services.
+- Removed `scripts/manifests/kata-pod.yaml`. No script or document applied it,
+  `pod-src.yaml` and `pod-dest.yaml` had superseded it, and it still named a
+  pause-image container `nginx` with a `containerPort: 80` nothing listened on.
+- `internal/manifests`: a test that decodes every first-party manifest into
+  typed API objects and checks the references between them, standing in for
+  a schema validator. It rejects a field the API type does not define, a
+  `serviceAccountName` no install manifest declares, a `roleRef` or binding
+  subject that resolves to nothing, a ServiceMonitor whose selector matches
+  no Service, an install object with no `metadata.namespace`, and a CRD whose
+  name, scope or storage version is wrong.
 - `make lint-js`: Biome lints the dashboard's hand-written JavaScript, and
   `make check` plus a CI job run it. The file set is scoped in `biome.json`
   so the vendored bundles under `internal/dashboard/assets/` stay out.

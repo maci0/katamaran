@@ -163,6 +163,7 @@ same Native orchestrator the dashboard uses.
 make mgr
 minikube image load mgr.tar     # or kind load docker-image, etc.
 kubectl apply -f config/crd/migration.yaml
+kubectl apply -f deploy/job-rbac.yaml
 kubectl apply -f deploy/manager.yaml
 ```
 
@@ -190,9 +191,11 @@ The controller exposes operational endpoints on port `8081`:
 | `/debug/vars`  | Same controller counters via Go expvar JSON, plus runtime memstats |
 
 Point a Prometheus scrape at the `katamaran-mgr` pod's `:8081/metrics`
-to ingest the migration counters. No `prometheus/client_golang` runtime
-dependency: the handler walks the in-process expvar registry and emits
-text-format directly.
+to ingest the migration counters. `deploy/metrics-services.yaml` publishes
+that endpoint (and the dashboard's) as a ClusterIP Service on any cluster;
+`deploy/monitoring.yaml` adds the ServiceMonitors and needs a Prometheus
+Operator. No `prometheus/client_golang` runtime dependency: the handler
+walks the in-process expvar registry and emits text-format directly.
 
 ## Job-Based Migration Install (Optional)
 
@@ -200,6 +203,7 @@ If you plan to run migrations through Kubernetes Jobs, these assets are included
 
 - `internal/orchestrator/templates/job-dest.yaml` (canonical destination Job template, embedded into the binaries)
 - `internal/orchestrator/templates/job-source.yaml` (canonical source Job template, embedded into the binaries)
+- `deploy/job-rbac.yaml` (the `katamaran-source` ServiceAccount both templates pin; every Job producer needs it)
 - `deploy/migrate.sh` *(legacy shell harness that renders the templates above via `envsubst` and `kubectl apply`; kept for ad-hoc CLI runs and CI smoke; production paths use the in-cluster Native orchestrator)*
 
 The dashboard (`deploy/dashboard.yaml`) runs migrations through the Native orchestrator (client-go), which embeds the same Job templates and submits them directly via the apiserver: no `envsubst`, no kubectl, no `migrate.sh` invocation. The standalone `katamaran-orchestrator` CLI uses the same client-go path for structured local or CI runs.

@@ -1,5 +1,7 @@
 # RBAC + Deployment for the katamaran-mgr controller. Apply after the CRD
-# (config/crd/migration.yaml) has been registered.
+# (config/crd/migration.yaml) has been registered, and after
+# deploy/job-rbac.yaml, which owns the `katamaran-source` ServiceAccount the
+# migration Jobs this controller creates run as.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

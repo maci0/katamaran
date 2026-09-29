@@ -1,3 +1,10 @@
+# Demo workload for the README tutorial: a Kata pod on one node behind a
+# NodePort Service, ready to be migrated with deploy/migration-example.yaml.
+#
+# spec.nodeName pins the pod to a node by name. Edit it to a node that exists
+# in your cluster (`kubectl get nodes`): a name that does not resolve leaves
+# the pod Pending with a FailedScheduling, and the migration CR's
+# spec.destNode has to name a different one.
 apiVersion: v1
 kind: Pod
 metadata:

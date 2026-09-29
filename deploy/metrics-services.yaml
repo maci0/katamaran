@@ -1,0 +1,55 @@
+# ClusterIP Services in front of both workloads' Prometheus text endpoints:
+# mgr on :8081/metrics, the dashboard on :8080/metrics.
+#
+# These two objects are plain core/v1, so they apply on any cluster and
+# nothing else here has a CRD dependency. That matters for the dashboard:
+# `kubectl port-forward svc/katamaran-dashboard-metrics` is the documented
+# way to reach its UI, and the Service has to exist whether or not a
+# Prometheus Operator does. The ServiceMonitors that turn these Services into
+# scrape targets need that operator, so they live in deploy/monitoring.yaml.
+#
+# A ClusterIP Service carries no identity, so this one grants nothing to a pod
+# that could not already reach port 8080. It is safe to point Prometheus at;
+# `deploy/dashboard.yaml` explains why no *ingress* path is published in front
+# of the dashboard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-mgr-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-mgr
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: mgr
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8081
+    targetPort: debug
+    protocol: TCP
+  selector:
+    app: katamaran-mgr
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: katamaran-dashboard-metrics
+  namespace: kube-system
+  labels:
+    app: katamaran-dashboard
+    app.kubernetes.io/name: katamaran
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: katamaran
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: katamaran-dashboard

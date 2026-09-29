@@ -846,8 +846,13 @@ The script produces a structured report at the end:
 
 | Artifact | How to Collect | Contents |
 |----------|----------------|----------|
-| Source job logs | `kubectl logs -n kube-system job/katamaran-source` | Full source-side katamaran output |
-| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest` | Full destination-side katamaran output |
+| Source job logs | `kubectl logs -n kube-system job/katamaran-source-default` | Full source-side katamaran output |
+| Dest job logs | `kubectl logs -n kube-system job/katamaran-dest-default` | Full destination-side katamaran output |
+
+Job names carry a per-migration suffix: `deploy/migrate.sh` uses `default`
+unless `JOB_SUFFIX` is set, and the Native orchestrator uses the migration id.
+List them with `kubectl -n kube-system get jobs -l katamaran.io/migration-id`
+when the exact name is not to hand.
 
 Every E2E section below produces these two logs; the per-CNI sections omit
 the table rather than repeat it.
@@ -1130,7 +1135,7 @@ sequenceDiagram
 | Source execution | K8s Job (`internal/orchestrator/templates/job-source.yaml`): privileged pod on source node |
 | Orchestration | `deploy/migrate.sh`: renders the canonical templates above via `envsubst`, applies jobs, waits for completion |
 | Binary deployment | DaemonSet installs binary; Jobs use the container image |
-| Log collection | `kubectl logs -n kube-system job/katamaran-source`, `kubectl logs -n kube-system job/katamaran-dest` |
+| Log collection | `kubectl logs -n kube-system job/katamaran-source-default`, `kubectl logs -n kube-system job/katamaran-dest-default` |
 
 ## 12. macOS Apple Silicon: TCG (Software Emulation)
 

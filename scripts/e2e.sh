@@ -435,6 +435,7 @@ kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/daemonset.yaml"
 kubectl --context "${CTX}" -n kube-system rollout status daemonset/katamaran-deploy --timeout=300s
 
 # RBAC for migration Jobs (ServiceAccount, ClusterRole, ClusterRoleBinding).
+kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/job-rbac.yaml"
 kubectl --context "${CTX}" apply -f "${PROJECT_ROOT}/deploy/dashboard.yaml"
 
 # --- Storage: deploy NFS server for shared storage test ---
