@@ -25,6 +25,15 @@ ISO_OUTPUT="${PROJECT_ROOT}/out/minikube-amd64.iso"
 
 CE="${CE:-$(command -v podman 2>/dev/null || command -v docker)}"
 
+# The minikube board, auto-pause binary and ISO target used below are all
+# x86_64-only upstream, so the artifact is amd64-only by construction.
+# Building it on another host yields an ISO that minikube refuses to boot.
+if [[ "$(uname -m)" != "x86_64" ]]; then
+    echo "ERROR: this script builds an amd64-only minikube ISO; host is $(uname -m)." >&2
+    echo "       e2e.sh already skips a custom ISO on non-x86_64 hosts." >&2
+    exit 1
+fi
+
 echo ">>> Preparing minikube source (${MINIKUBE_BRANCH})..."
 if [[ -d "${MINIKUBE_DIR}/.git" ]]; then
     echo "    Using existing checkout at ${MINIKUBE_DIR}"

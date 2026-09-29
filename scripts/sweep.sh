@@ -202,7 +202,19 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     # 5. Start destination QEMU manually via mig-helper
     log "Starting destination QEMU..."
 
-    node_exec "$DEST_NODE" "${SUDO} bash -c 'nohup /opt/kata/bin/qemu-system-x86_64 -name sandbox-mig-helper -machine q35,accel=kvm,kernel_irqchip=split -m 2048 -smp 2 -cpu host -no-user-config -nodefaults -nographic -vga none -daemonize -incoming defer -monitor none -qmp unix:/tmp/qmp-dest.sock,server=on,wait=off -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on -numa node,memdev=dimm1 -pidfile /tmp/qemu-dest.pid >/tmp/qemu.log 2>&1 &'"
+    # Release images ship linux/amd64 and linux/arm64, and kata-deploy names
+    # the QEMU binary per host architecture. kernel_irqchip is x86-only, so
+    # resolve both the binary and the machine type from the node's uname -m.
+    DEST_ARCH=$(node_exec "$DEST_NODE" "uname -m")
+    if [[ "$DEST_ARCH" == "aarch64" ]]; then
+        HELPER_QEMU="/opt/kata/bin/qemu-system-aarch64"
+        HELPER_MACHINE="virt,accel=kvm,gic-version=host"
+    else
+        HELPER_QEMU="/opt/kata/bin/qemu-system-x86_64"
+        HELPER_MACHINE="q35,accel=kvm,kernel_irqchip=split"
+    fi
+
+    node_exec "$DEST_NODE" "${SUDO} bash -c 'nohup ${HELPER_QEMU} -name sandbox-mig-helper -machine ${HELPER_MACHINE} -m 2048 -smp 2 -cpu host -no-user-config -nodefaults -nographic -vga none -daemonize -incoming defer -monitor none -qmp unix:/tmp/qmp-dest.sock,server=on,wait=off -object memory-backend-file,id=dimm1,size=2048M,mem-path=/dev/shm,share=on -numa node,memdev=dimm1 -pidfile /tmp/qemu-dest.pid >/tmp/qemu.log 2>&1 &'"
     DEST_QMP="/tmp/qmp-dest.sock"
 
     # Wait a bit for QEMU to start

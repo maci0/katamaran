@@ -228,7 +228,23 @@ fi
 # of the kata-shim (the primary qmp.sock is 1:1 and already owned by the shim).
 # Requires enable_debug=true in the [hypervisor.qemu] section.
 echo ">>> Enabling extra QMP monitor socket in Kata config..."
-KATA_CFG="/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
+# Kata >=3.25.0 moved configs into runtimes/qemu/ subdir. Auto-detect, the
+# same way scripts/e2e.sh and deploy/daemonset.yaml do.
+KATA_CFG_CANDIDATES=(
+    "/opt/kata/share/defaults/kata-containers/runtimes/qemu/configuration-qemu.toml"
+    "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+)
+KATA_CFG=""
+for candidate in "${KATA_CFG_CANDIDATES[@]}"; do
+    if minikube -p "${PROFILE}" ssh -- "[ -f ${candidate} ]" 2>/dev/null; then
+        KATA_CFG="${candidate}"
+        break
+    fi
+done
+if [[ -z "${KATA_CFG}" ]]; then
+    fail "Kata configuration not found on the node (looked in ${KATA_CFG_CANDIDATES[*]})"
+    echo "WARNING: QMP handshake tests will fail."
+elif [[ -n "${KATA_CFG}" ]]; then
 minikube -p "${PROFILE}" ssh -- "
     sudo sed -i '/^\[hypervisor\.qemu\]/,/^\[/{
         s/^enable_debug = false/enable_debug = true/
@@ -241,6 +257,7 @@ if minikube -p "${PROFILE}" ssh -- "sudo grep -q 'extra_monitor_socket = \"qmp\"
 else
     fail "failed to configure extra QMP monitor socket"
     echo "WARNING: QMP handshake tests may fail."
+fi
 fi
 
 if [[ "${ENV_ONLY}" == "true" ]]; then

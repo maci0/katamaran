@@ -81,6 +81,24 @@ echo ">>> Extracting kernel info from minikube profile '${PROFILE}'..."
 KVER=$(minikube -p "${PROFILE}" ssh -- "uname -r" | tr -d '\r')
 echo "    Kernel version: ${KVER}"
 
+# The modules are built from the node's /proc/config.gz and loaded on that
+# node, so the toolchain follows the node's architecture, not the host's. A
+# mismatched toolchain produces a valid-looking .ko that insmod rejects with
+# ENOEXEC, which used to surface much later as a "sch_plug is not available"
+# tc error. Release images ship linux/amd64 and linux/arm64, so both are
+# supported; anything else stops here instead of building a useless module.
+KARCH=$(minikube -p "${PROFILE}" ssh -- "uname -m" | tr -d '\r')
+case "${KARCH}" in
+    x86_64)  BR2_ARCH=BR2_x86_64;  TUPLE=x86_64-buildroot-linux-gnu;  KERNEL_ARCH=x86_64 ;;
+    aarch64) BR2_ARCH=BR2_aarch64; TUPLE=aarch64-buildroot-linux-gnu; KERNEL_ARCH=arm64 ;;
+    *)
+        echo "ERROR: unsupported node architecture '${KARCH}'." >&2
+        echo "       Supported: x86_64 (amd64), aarch64 (arm64)." >&2
+        exit 1
+        ;;
+esac
+echo "    Node architecture: ${KARCH} (kernel ARCH=${KERNEL_ARCH}, tuple=${TUPLE})"
+
 # Extract the running kernel's config. Use base64 to avoid PTY binary corruption.
 minikube -p "${PROFILE}" ssh -- "base64 /proc/config.gz" | tr -d '\r' | base64 -d > "${BUILD_DIR}/config.gz"
 gunzip -f "${BUILD_DIR}/config.gz"
@@ -155,10 +173,10 @@ RUN git clone --depth=1 --branch=\${BR_VERSION} \\
 
 WORKDIR /buildroot
 
-# Minimal defconfig: only build the x86_64 glibc cross-toolchain.
+# Minimal defconfig: only build the ${KARCH} glibc cross-toolchain.
 RUN make defconfig && \\
     ./utils/config --set-str BR2_DEFCONFIG "" && \\
-    ./utils/config --enable  BR2_x86_64 && \\
+    ./utils/config --enable  ${BR2_ARCH} && \\
     ./utils/config --set-str BR2_TOOLCHAIN_BUILDROOT_CXX "" && \\
     ./utils/config --enable  BR2_TOOLCHAIN_BUILDROOT_LOCALE && \\
     ./utils/config --set-str BR2_TARGET_GENERIC_HOSTNAME "minikube" && \\
@@ -168,8 +186,8 @@ RUN make defconfig && \\
     make olddefconfig
 
 RUN make toolchain -j\$(nproc) 2>&1 | tail -5 && \\
-    ls output/host/bin/x86_64-buildroot-linux-gnu-gcc && \\
-    output/host/bin/x86_64-buildroot-linux-gnu-gcc --version | head -1
+    ls output/host/bin/${TUPLE}-gcc && \\
+    output/host/bin/${TUPLE}-gcc --version | head -1
 
 # Stage 2: build kernel modules with the Buildroot cross-compiler.
 FROM toolchain AS builder
@@ -182,14 +200,14 @@ WORKDIR /linux-\${KVER}
 COPY config .config
 
 ENV PATH="/buildroot/output/host/bin:\${PATH}"
-ENV CROSS_COMPILE=x86_64-buildroot-linux-gnu-
-ENV ARCH=x86_64
+ENV CROSS_COMPILE=${TUPLE}-
+ENV ARCH=${KERNEL_ARCH}
 
-RUN make ARCH=x86_64 CROSS_COMPILE=\${CROSS_COMPILE} olddefconfig 2>/dev/null
-RUN make ARCH=x86_64 CROSS_COMPILE=\${CROSS_COMPILE} -j\$(nproc) modules_prepare > /dev/null 2>&1
+RUN make ARCH=${KERNEL_ARCH} CROSS_COMPILE=\${CROSS_COMPILE} olddefconfig 2>/dev/null
+RUN make ARCH=${KERNEL_ARCH} CROSS_COMPILE=\${CROSS_COMPILE} -j\$(nproc) modules_prepare > /dev/null 2>&1
 
 # Build requested modules in-tree.
-RUN make ARCH=x86_64 CROSS_COMPILE=\${CROSS_COMPILE} KBUILD_MODPOST_WARN=1 \\
+RUN make ARCH=${KERNEL_ARCH} CROSS_COMPILE=\${CROSS_COMPILE} KBUILD_MODPOST_WARN=1 \\
     -j\$(nproc) ${MAKE_TARGETS} 2>&1 | tail -20
 
 # Collect built modules into /out for easy extraction.
@@ -254,7 +272,13 @@ for node in ${NODES}; do
             if minikube -p "${PROFILE}" ssh -n "${node}" -- "sudo insmod ${MOD_DIR}/${ko_name}" 2>/dev/null; then
                 echo "      ${mod_name} loaded"
             else
-                echo "      WARNING: ${mod_name} failed to load (may have unmet dependencies)" >&2
+                # Fatal: e2e.sh treats a zero exit as "module available" and
+                # then fails much later with a tc "sch_plug is not available"
+                # error. A wrong-arch module lands here (insmod ENOEXEC).
+                echo "ERROR: ${mod_name} failed to load on ${node}." >&2
+                echo "       Usually unmet dependencies or a module built for" >&2
+                echo "       the wrong architecture (${KARCH})." >&2
+                exit 1
             fi
         fi
     done

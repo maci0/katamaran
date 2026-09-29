@@ -287,6 +287,13 @@ synchronization loop (`waitForStorageSync`, `nbd-server-start/add/stop`, `drive-
 (`CONFIG_NFS_FS`, `CONFIG_SUNRPC`). If using a custom minikube ISO, enable these in the
 kernel config alongside `CONFIG_NET_SCH_PLUG`.
 
+**Custom minikube ISO:** `scripts/build-minikube-iso.sh` patches an x86_64 minikube board,
+so it builds `out/minikube-amd64.iso` and refuses to run on another host. `scripts/e2e.sh`
+only passes that ISO to minikube on an x86_64 host and uses stock minikube kernels
+elsewhere. When stock kernels lack `sch_plug`, `scripts/build-minikube-modules.sh` builds it
+for the node's architecture (x86_64 or aarch64) and fails if the module does not load, in
+which case e2e falls back to `tap=none` without the zero-drop qdisc.
+
 ## 4b. CRD Path E2E (`--method=crd`)
 
 The same harness can drive migrations through the Migration CRD +

@@ -69,6 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `logs` and `pings` in the same response already served `[]`; a client
   iterating `history` threw. `GET /api/nodes` and `GET /api/pods` now
   normalize an empty result the same way at the handler.
+- Developer tooling on arm64 hosts, which the release images and the
+  arm64 CI job support. `scripts/sweep.sh` hardcoded
+  `qemu-system-x86_64` and the x86-only `q35,kernel_irqchip=split` machine
+  type for its destination helper VM, so the sweep could not run on an
+  aarch64 node; both now come from the node's `uname -m`.
+  `scripts/build-minikube-modules.sh` built the kernel modules with an
+  x86_64 Buildroot toolchain regardless of the node's architecture, and a
+  module that failed to `insmod` was only a warning, so the mismatch
+  surfaced later as a `sch_plug` qdisc error. It now selects the toolchain
+  from the node architecture, rejects architectures it cannot build for, and
+  fails when a module does not load. `scripts/build-minikube-iso.sh` is
+  amd64-only upstream, so it now refuses to run on another host, and
+  `scripts/e2e.sh` only offers the custom ISO on x86_64.
 - `deploy/monitoring.yaml` extraction. The metrics Services and
   ServiceMonitors moved out of `deploy/dashboard.yaml` so that manifest
   applies on a cluster without a Prometheus Operator, and the mgr's

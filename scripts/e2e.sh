@@ -192,9 +192,16 @@ log "Starting 2-node ${PROVIDER} cluster (CNI: ${CNI})..."
 
 if [[ "${PROVIDER}" == "minikube" ]]; then
     MINIKUBE_ARGS=("--nodes" "2" "--driver=kvm2" "--memory=12288" "--cpus=6" "--container-runtime=containerd" "--extra-config=kubelet.runtime-request-timeout=10m")
-    # Use custom ISO with sch_plug if available.
+    # Use custom ISO with sch_plug if available. The build scripts only
+    # produce an amd64 ISO (build-minikube-iso.sh pins the x86_64 defconfig),
+    # so only offer it on an x86_64 host: minikube with a foreign-arch ISO
+    # fails at cluster start.
     CUSTOM_ISO="${PROJECT_ROOT}/out/minikube-amd64.iso"
-    if [[ -f "${CUSTOM_ISO}" ]]; then
+    if [[ "$(uname -m)" != "x86_64" ]]; then
+        if [[ -f "${CUSTOM_ISO}" ]]; then
+            log "Skipping ${CUSTOM_ISO}: built for amd64, host is $(uname -m)."
+        fi
+    elif [[ -f "${CUSTOM_ISO}" ]]; then
         log "Using custom minikube ISO with sch_plug: ${CUSTOM_ISO}"
         MINIKUBE_ARGS+=("--iso-url=file://${CUSTOM_ISO}")
     fi
