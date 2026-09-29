@@ -179,10 +179,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	emitCmdlineTo := fs.String("emit-cmdline-to", "", "Source mode: capture /proc/<qemu_pid>/cmdline to this path before migration (the file is removed when the source run ends)")
 	replayCmdline := fs.String("replay-cmdline", "", "Dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
 	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "Dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
-	showVersion := fs.Bool("version", false, "Show version and exit")
-	showVersionShort := fs.Bool("v", false, "")
-	helpFlag := fs.Bool("help", false, "")
-	helpFlagShort := fs.Bool("h", false, "")
+	var common buildinfo.CommonFlags
+	common.Register(fs)
 
 	fs.Usage = func() { printUsage(stderr) }
 
@@ -190,19 +188,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *helpFlag || *helpFlagShort {
-		printUsage(stdout)
-		return 0
+	if code, handled := common.Act(fs, "katamaran", stdout, stderr, printUsage); handled {
+		return code
 	}
 
-	if *showVersion || *showVersionShort {
-		_, _ = fmt.Fprintf(stdout, "katamaran %s\n", buildinfo.Version)
-		return 0
-	}
-
-	if fs.NArg() > 0 {
-		return usageError(stderr, "unexpected arguments: %s", strings.Join(fs.Args(), " "))
-	}
 	seenFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { seenFlags[f.Name] = true })
 

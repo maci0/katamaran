@@ -963,16 +963,16 @@ func nestedSpecInt(obj map[string]any, field string) int {
 }
 
 // statusPatchAttempts bounds the retry budget for status writes.
-// Backoff doubles from 500ms; the total wait is 15.5s.
 const statusPatchAttempts = 6
+
+// statusPatchBackoffBase is the first wait between status patch attempts;
+// each subsequent wait doubles it. The five waits the budget allows sum to
+// 15.5s.
+const statusPatchBackoffBase = 500 * time.Millisecond
 
 // statusPatchBackoff is a var so tests can shrink the waits.
 var statusPatchBackoff = func(attempt int) time.Duration {
-	d := 500 * time.Millisecond << uint(attempt)
-	if d > 16*time.Second {
-		d = 16 * time.Second
-	}
-	return d
+	return statusPatchBackoffBase << uint(attempt)
 }
 
 // patchStatusRetry patches the status with exponential backoff until it

@@ -135,10 +135,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	enableDebug := fs.Bool("enable-debug", false, "Enable /debug/pprof/ and /debug/vars endpoints")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
-	showVersion := fs.Bool("version", false, "Show version and exit")
-	showVersionShort := fs.Bool("v", false, "")
-	helpFlag := fs.Bool("help", false, "")
-	helpFlagShort := fs.Bool("h", false, "")
+	var common buildinfo.CommonFlags
+	common.Register(fs)
 
 	fs.Usage = func() { printUsage(stderr) }
 
@@ -146,21 +144,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *helpFlag || *helpFlagShort {
-		printUsage(stdout)
-		return 0
+	if code, handled := common.Act(fs, "katamaran-dashboard", stdout, stderr, printUsage); handled {
+		return code
 	}
 
-	if *showVersion || *showVersionShort {
-		fmt.Fprintf(stdout, "katamaran-dashboard %s\n", buildinfo.Version)
-		return 0
-	}
-
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
-		printUsage(stderr)
-		return 2
-	}
 	if !validListenAddr(*addr) {
 		fmt.Fprintf(stderr, "Error: invalid --addr %q (expected host:port, for example :8080 or 0.0.0.0:8080)\n\n", *addr)
 		printUsage(stderr)

@@ -342,50 +342,8 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}
 	}()
 
-	// Wait for the STOP event (downtime window begins).
-	// We poll migration status sequentially in the same loop rather than using a
-	// separate goroutine for WaitForEvent vs query-migrate. This prevents QMP
-	// socket data races and ensures we detect silent migration failures.
-	var lastLoggedStatus qmp.MigrateStatus
-	var lastLoggedRemaining int64
-	var queryErrors int
-	for {
-		err = client.WaitForEvent(ctx, "STOP", migrationPollInterval)
-		if err == nil {
-			break // Success: VM stopped.
-		}
-		// A desynchronized stream never recovers on its own, so retrying
-		// would burn the whole migration budget against a dead connection.
-		if errors.Is(err, qmp.ErrDesynced) {
-			return fmt.Errorf("waiting for STOP: %w", err)
-		}
-
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			// Check if the background migration process failed.
-			info, qerr := queryMigrateInfo(ctx, client)
-			if qerr != nil {
-				queryErrors++
-				logTransientQueryError(ctx, "Transient query-migrate error during STOP polling", qerr, queryErrors)
-				continue
-			}
-			queryErrors = 0
-			// Log only on status change or significant progress (remaining bytes halved).
-			if migrationProgressChanged(lastLoggedStatus, lastLoggedRemaining, info) {
-				slog.Info("Migration progress", "status", info.Status, "progress_pct", ramProgressPct(info), "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
-				lastLoggedStatus = info.Status
-				lastLoggedRemaining = info.RAM.Remaining
-			}
-			if terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc); terminal {
-				if termErr != nil {
-					return fmt.Errorf("during STOP polling: %w", termErr)
-				}
-				slog.Warn("Migration completed without explicit STOP event", "status", info.Status)
-				break
-			}
-			continue
-		}
-		return fmt.Errorf("unexpected error waiting for STOP event: %w", err)
+	if err = waitForVMStop(ctx, client); err != nil {
+		return err
 	}
 
 	slog.Info("VM paused. Redirecting in-flight packets to destination")
@@ -772,6 +730,59 @@ var postActiveStallGrace = 30 * time.Second
 // waitForMigrationComplete polls query-migrate until migration reaches a terminal
 // state (completed, failed, or cancelled). Times out after migrationTimeout.
 //
+// waitForVMStop blocks until the guest pauses, which is when the downtime
+// window opens. It polls migration status sequentially in the same loop as
+// the STOP wait rather than using a separate goroutine for each: the QMP
+// socket is not concurrency-safe, and a single loop is what detects a
+// migration that failed without ever emitting STOP.
+//
+// The loop runs until ctx ends, so the caller's Job deadline is the bound.
+func waitForVMStop(ctx context.Context, client *qmp.Client) error {
+	var lastLoggedStatus qmp.MigrateStatus
+	var lastLoggedRemaining int64
+	var queryErrors int
+	for {
+		err := client.WaitForEvent(ctx, "STOP", migrationPollInterval)
+		if err == nil {
+			return nil // VM stopped.
+		}
+		// A desynchronized stream never recovers on its own, so retrying
+		// would burn the whole migration budget against a dead connection.
+		if errors.Is(err, qmp.ErrDesynced) {
+			return fmt.Errorf("waiting for STOP: %w", err)
+		}
+
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			return fmt.Errorf("unexpected error waiting for STOP event: %w", err)
+		}
+
+		// The wait timed out: check whether the background migration failed.
+		info, qerr := queryMigrateInfo(ctx, client)
+		if qerr != nil {
+			queryErrors++
+			logTransientQueryError(ctx, "Transient query-migrate error during STOP polling", qerr, queryErrors)
+			continue
+		}
+		queryErrors = 0
+		// Log only on status change or significant progress (remaining bytes halved).
+		if migrationProgressChanged(lastLoggedStatus, lastLoggedRemaining, info) {
+			slog.Info("Migration progress", "status", info.Status, "progress_pct", ramProgressPct(info), "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total, "ram_remaining", info.RAM.Remaining)
+			lastLoggedStatus = info.Status
+			lastLoggedRemaining = info.RAM.Remaining
+		}
+		terminal, termErr := migrationTerminalError(info.Status, info.ErrorDesc)
+		if !terminal {
+			continue
+		}
+		if termErr != nil {
+			return fmt.Errorf("during STOP polling: %w", termErr)
+		}
+		slog.Warn("Migration completed without explicit STOP event", "status", info.Status)
+		return nil
+	}
+}
+
 // Each poll uses a per-call queryMigrateTimeout, so a stalled QMP socket
 // fails this short call rather than hanging the whole polling loop on the
 // global executeTimeout (2 min). Sustained QMP failures are interpreted

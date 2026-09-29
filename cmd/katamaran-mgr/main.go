@@ -107,8 +107,6 @@ func main() {
 	leaderNamespace := fs.String("leader-namespace", "kube-system", "Namespace holding the leader-election Lease")
 	leaderName := fs.String("leader-name", "katamaran-mgr", "Lease object name for leader election")
 	skipLeaderElect := fs.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
-	showVersion := fs.Bool("version", false, "Show version and exit")
-	showVersionShort := fs.Bool("v", false, "")
 	podWaitTimeout := fs.Duration("pod-wait-timeout", 60*time.Second, "How long to wait for migration Job pods to appear")
 	webhookAddr := fs.String("webhook-addr", ":9443", "HTTPS listen address for the validating admission webhook (TLS, in-process self-signed cert)")
 	webhookService := fs.String("webhook-service", "katamaran-mgr-webhook", "Name of the Kubernetes Service the apiserver dials to reach the webhook (used as TLS SAN)")
@@ -116,24 +114,14 @@ func main() {
 	disableWebhook := fs.Bool("disable-webhook", false, "Skip starting the validating webhook (development only)")
 	logFormat := fs.String("log-format", "json", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
-	helpFlag := fs.Bool("help", false, "")
-	helpFlagShort := fs.Bool("h", false, "")
+	var common buildinfo.CommonFlags
+	common.Register(fs)
 	fs.Usage = func() { printUsage(os.Stderr) }
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
-	if *helpFlag || *helpFlagShort {
-		printUsage(os.Stdout)
-		return
-	}
-	if *showVersion || *showVersionShort {
-		fmt.Fprintf(os.Stdout, "katamaran-mgr %s\n", buildinfo.Version)
-		return
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
-		printUsage(os.Stderr)
-		os.Exit(2)
+	if code, handled := common.Act(fs, "katamaran-mgr", os.Stdout, os.Stderr, printUsage); handled {
+		os.Exit(code)
 	}
 	if !validListenAddr(*addr) {
 		fmt.Fprintf(os.Stderr, "Error: invalid --addr %q (expected host:port, for example :8081 or 0.0.0.0:8081)\n\n", *addr)

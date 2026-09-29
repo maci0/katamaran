@@ -110,26 +110,14 @@ func main() {
 	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
-	showVersion := fs.Bool("version", false, "Show version and exit")
-	showVersionShort := fs.Bool("v", false, "")
-	helpFlag := fs.Bool("help", false, "")
-	helpFlagShort := fs.Bool("h", false, "")
+	var common buildinfo.CommonFlags
+	common.Register(fs)
 	fs.Usage = func() { printUsage(os.Stderr) }
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
-	if *helpFlag || *helpFlagShort {
-		printUsage(os.Stdout)
-		return
-	}
-	if *showVersion || *showVersionShort {
-		fmt.Fprintf(os.Stdout, "katamaran-orchestrator %s\n", buildinfo.Version)
-		return
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n\n", strings.Join(fs.Args(), " "))
-		printUsage(os.Stderr)
-		os.Exit(2)
+	if code, handled := common.Act(fs, "katamaran-orchestrator", os.Stdout, os.Stderr, printUsage); handled {
+		os.Exit(code)
 	}
 
 	*logFormat = strings.ToLower(*logFormat)
