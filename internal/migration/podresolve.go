@@ -140,6 +140,77 @@ func overrideQMPSocket(socket, placeholder, sandboxID string) string {
 // realProc is the production implementation of procFS.
 type realProc struct{}
 
+// sandboxNeedlePrefix is the literal every sandbox needle starts with.
+// Anchoring the /proc scan on it makes the match one pass over a cmdline
+// instead of one pass per sandbox: without the anchor, S sandboxes cost S
+// walks of every process's cmdline.
+var sandboxNeedlePrefix = []byte("sandbox-")
+
+// procWant is the per-sandbox match state built by PIDsForSandboxes.
+type procWant struct {
+	uuid []byte // wanted identifier, compared as a prefix of a scanned token
+	best int    // lowest matching PID so far; 0 = none yet
+	gen  int    // scan generation that last matched, 0 = never
+}
+
+// isSandboxIDByte reports whether c can appear in a sandbox identifier, i.e.
+// whether it is inside the character class sandboxUUIDRe accepts after the
+// first character. The first character is excluded so a token scan cannot
+// swallow a leading '.' that the regex would have rejected, keeping the
+// prefix comparison equivalent to matching the full "sandbox-"+uuid needle.
+func isSandboxIDByte(c byte) bool {
+	return c >= 'a' && c <= 'z' ||
+		c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' ||
+		c == '_' || c == '.' || c == '-'
+}
+
+// recordSandboxMatches finds every "sandbox-" anchor in raw (a raw
+// /proc/<pid>/cmdline buffer) and records a match for each wanted uuid the
+// following identifier token starts with, keeping the lowest PID. gen
+// identifies this process's scan so the several anchors one QEMU cmdline
+// carries for the same sandbox count once. Uuids matched by more than one
+// process are appended to multi.
+//
+// Anchoring on the shared prefix makes this equivalent to testing every
+// wanted uuid with a full cmdline substring search: a wanted uuid matches iff
+// the identifier token right after an anchor starts with it, because
+// sandboxUUIDRe admits no character that could split the token.
+func recordSandboxMatches(raw []byte, wanted map[string]*procWant, pid, gen int, multi *[]string) {
+	for off := 0; off < len(raw); {
+		i := bytes.Index(raw[off:], sandboxNeedlePrefix)
+		if i < 0 {
+			return
+		}
+		start := off + i + len(sandboxNeedlePrefix)
+		end := start
+		for end < len(raw) && isSandboxIDByte(raw[end]) {
+			end++
+		}
+		token := raw[start:end]
+		for uuid, w := range wanted {
+			if !bytes.HasPrefix(token, w.uuid) {
+				continue
+			}
+			if w.gen == gen {
+				continue // already counted for this process
+			}
+			w.gen = gen
+			if w.best == 0 {
+				w.best = pid
+				continue
+			}
+			*multi = append(*multi, uuid)
+			if pid < w.best {
+				w.best = pid
+			}
+		}
+		// Resume after the anchor, not after the token: '-' is not an
+		// identifier character, so no anchor can start inside the token.
+		off = start
+	}
+}
+
 // PIDsForSandboxes locates the QEMU PID associated with each given sandbox
 // UUID by scanning /proc/<pid>/cmdline for the literal substring
 // "sandbox-<uuid>". The whole set is resolved in one pass over /proc so N
@@ -151,17 +222,13 @@ type realProc struct{}
 // mentions the sandbox path), the lowest PID wins. UUIDs with no matching
 // process are absent from the returned map; invalid identifiers are skipped.
 func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
-	type want struct {
-		needle string
-		best   int // lowest matching PID so far; 0 = none yet
-	}
-	wanted := make(map[string]*want, len(uuids))
+	wanted := make(map[string]*procWant, len(uuids))
 	for _, uuid := range uuids {
 		if !sandboxUUIDRe.MatchString(uuid) {
 			slog.Warn("Skipping invalid sandbox identifier", "sandbox", uuid)
 			continue
 		}
-		wanted[uuid] = &want{needle: "sandbox-" + uuid}
+		wanted[uuid] = &procWant{uuid: []byte(uuid)}
 	}
 	if len(wanted) == 0 {
 		return nil
@@ -172,6 +239,8 @@ func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
 		return nil
 	}
 	var multi []string
+	// gen is 1-based so 0 can mean "no process has matched this uuid yet".
+	gen := 0
 	for _, e := range entries {
 		pid, perr := strconv.Atoi(e.Name())
 		if perr != nil {
@@ -182,17 +251,8 @@ func (realProc) PIDsForSandboxes(uuids []string) map[string]int {
 		if rerr != nil {
 			continue
 		}
-		for uuid, w := range wanted {
-			if w.best != 0 && pid >= w.best {
-				continue // already matched a lower PID for this sandbox
-			}
-			if bytes.Contains(raw, []byte(w.needle)) {
-				if w.best != 0 {
-					multi = append(multi, uuid)
-				}
-				w.best = pid
-			}
-		}
+		gen++
+		recordSandboxMatches(raw, wanted, pid, gen, &multi)
 	}
 	out := make(map[string]int, len(wanted))
 	for uuid, w := range wanted {

@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -187,6 +188,72 @@ func TestRealProcPIDsForSandboxes_FindsSpawnedProcess(t *testing.T) {
 	empty := (realProc{}).PIDsForSandboxes([]string{"no-such-sandbox-ffffffff", "../evil"})
 	if len(empty) != 0 {
 		t.Fatalf("unexpected resolutions for unknown/invalid uuids: %v", empty)
+	}
+}
+
+// TestRecordSandboxMatches_MatchesNaiveNeedleSearch pins recordSandboxMatches
+// to the literal-substring semantics it replaced. The scanner anchors on the
+// shared "sandbox-" prefix and prefix-compares the following token; this table
+// asserts the result is identical to testing bytes.Contains(raw, "sandbox-"+uuid)
+// for every uuid, including the cases where the two could plausibly diverge:
+// repeated anchors for one sandbox, a uuid that is a prefix of another, and
+// token terminators.
+func TestRecordSandboxMatches_MatchesNaiveNeedleSearch(t *testing.T) {
+	t.Parallel()
+
+	uuids := []string{"abc", "abcd", "a", "x-1.2_3", "zzz"}
+	// A QEMU-like cmdline: one sandbox referenced by several args, a second
+	// sandbox, and a "sandbox-" with no identifier behind it.
+	raw := []byte("qemu\x00-smp\x001\x00-object\x00memory-backend-file,id=mem0,mem-path=/dev/shm/sandbox-abc/page\x00" +
+		"-qmp\x00unix:path=/run/vc/vm/sandbox-abc/qmp.sock,server=on\x00" +
+		"drive\x00file=/run/kata/x-x-1.2_3.img\x00" +
+		"-chardev\x00socket,path=/run/vc/vm/sandbox-/x\x00" +
+		"-name\x00sandbox-abcd-extra\x00")
+
+	// Reference: what the previous per-uuid bytes.Contains loop returned.
+	wantMatched := make(map[string]bool, len(uuids))
+	for _, uuid := range uuids {
+		if bytes.Contains(raw, []byte("sandbox-"+uuid)) {
+			wantMatched[uuid] = true
+		}
+	}
+
+	wanted := make(map[string]*procWant, len(uuids))
+	for _, uuid := range uuids {
+		wanted[uuid] = &procWant{uuid: []byte(uuid)}
+	}
+	var multi []string
+	recordSandboxMatches(raw, wanted, 4242, 1, &multi)
+
+	// Exactly one process was scanned, so every resolved uuid must carry that
+	// PID and nothing may be reported as a multi-process match.
+	for uuid, w := range wanted {
+		switch {
+		case wantMatched[uuid] && w.best != 4242:
+			t.Errorf("uuid %q: expected a match, got best=%d", uuid, w.best)
+		case !wantMatched[uuid] && w.best != 0:
+			t.Errorf("uuid %q: unexpected match at pid %d", uuid, w.best)
+		}
+	}
+	if len(multi) != 0 {
+		t.Errorf("single-process scan reported multi-process matches: %v", multi)
+	}
+
+	// A second, higher-numbered process matching the same uuids must be
+	// reported once each and must not displace the lower PID already recorded.
+	recordSandboxMatches(raw, wanted, 5000, 2, &multi)
+	for uuid, w := range wanted {
+		if wantMatched[uuid] && w.best != 4242 {
+			t.Errorf("uuid %q: lowest PID not kept, got %d", uuid, w.best)
+		}
+	}
+	for _, uuid := range multi {
+		if !wantMatched[uuid] {
+			t.Errorf("multi-match reported for unmatched uuid %q", uuid)
+		}
+	}
+	if want := len(wantMatched); len(multi) != want {
+		t.Errorf("multi-match list = %v, want one entry per matched uuid (%d)", multi, want)
 	}
 }
 
