@@ -93,6 +93,15 @@ Destination mode flags:
   --replay-cmdline-from-pod string
                            Fetch source QEMU cmdline from the named source pod's log ('<namespace>/<name>') instead of a hostPath file (requires pods/log get on the SA)
 
+Output:
+  stdout   Source mode only, and only the KATAMARAN_* marker lines the
+           orchestrator and deploy/migrate.sh scrape: KATAMARAN_DOWNTIME_LIMIT,
+           KATAMARAN_PHASE, KATAMARAN_PROGRESS, KATAMARAN_RESULT,
+           KATAMARAN_CMDLINE_AT, KATAMARAN_CMDLINE_B64, and the VMConfig
+           markers. Dest mode writes nothing to stdout. Safe to redirect to a
+           file; the human-readable log stays on stderr either way.
+  stderr   The full log, in --log-format, plus every error and warning.
+
 Other:
   -v, --version            Show version and exit
   -h, --help               Show this help and exit
@@ -371,6 +380,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			PodName:             *podName,
 			PodNamespace:        *podNS,
 			EmitCmdlineTo:       *emitCmdlineTo,
+			Out:                 stdout,
 		})
 	}
 

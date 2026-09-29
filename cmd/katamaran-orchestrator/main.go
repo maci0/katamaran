@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/maci0/katamaran/internal/buildinfo"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -93,12 +95,13 @@ Example:
 // designed to take a piped JSON request; if a user runs the binary
 // interactively without piping, ReadAll would block forever waiting for
 // EOF, so this lets us fail fast with a helpful message instead.
+//
+// The check asks the kernel for a terminal, not merely for a character
+// device: /dev/null and /dev/zero are character devices too, and a
+// "stdin is a terminal" message for `< /dev/null` would send a script
+// author looking for a TTY that was never there.
 func isStdinTTY(f *os.File) bool {
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (st.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func main() {

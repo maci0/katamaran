@@ -1,7 +1,6 @@
 package migration
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -16,40 +15,6 @@ import (
 	"github.com/maci0/katamaran/internal/qmp"
 	"github.com/maci0/katamaran/internal/qmptest"
 )
-
-// captureStdout runs fn with os.Stdout redirected to a pipe and returns
-// everything written during the call. The VMConfig emission markers are
-// printed on stdout (not slog) precisely so they survive log re-formatting
-// when scraped from pod logs, so stdout is the observable behavior here.
-// Not safe for parallel use; callers must not be parallel.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	orig := os.Stdout
-	os.Stdout = w
-	t.Cleanup(func() { os.Stdout = orig })
-
-	read := make(chan string, 1)
-	go func() {
-		var buf strings.Builder
-		sc := bufio.NewScanner(r)
-		for sc.Scan() {
-			buf.WriteString(sc.Text() + "\n")
-		}
-		read <- buf.String()
-	}()
-
-	fn()
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stdout pipe: %v", err)
-	}
-	return <-read
-}
 
 func markerLines(t *testing.T, out, marker string) []string {
 	t.Helper()
@@ -136,7 +101,7 @@ func compactJSONBytes(t *testing.T, data []byte) string {
 // the shapes the dest binary and factory consume. A wrong or missing
 // marker here silently degrades every migration to a cold-start VM.
 func TestEmitVMConfig_MatchingPidEmitsMarkers(t *testing.T) {
-	// Not parallel: swaps kataSBSRoot and captures process stdout.
+	// Not parallel: swaps kataSBSRoot.
 	root := t.TempDir()
 	withKataSBSRoot(t, root)
 
@@ -144,7 +109,9 @@ func TestEmitVMConfig_MatchingPidEmitsMarkers(t *testing.T) {
 	writeSandboxPersist(t, root, "sb-other", 9999, "other")
 	writeSandboxPersist(t, root, "sb-mine", qemuPID, "mine")
 
-	out := captureStdout(t, func() { emitVMConfig(qemuPID) })
+	var buf bytes.Buffer
+	emitVMConfig(qemuPID, &buf)
+	out := buf.String()
 
 	vmPayloads := markerLines(t, out, "KATAMARAN_VMCONFIG_B64=")
 	if len(vmPayloads) != 1 {
@@ -189,13 +156,15 @@ func TestEmitVMConfig_MatchingPidEmitsMarkers(t *testing.T) {
 // consumers treat the absence of the marker as "no adoption data", but an
 // empty-payload marker would decode to garbage and fail downstream parsing.
 func TestEmitVMConfig_NoMatchingPidEmitsNothing(t *testing.T) {
-	// Not parallel: swaps kataSBSRoot and captures process stdout.
+	// Not parallel: swaps kataSBSRoot.
 	root := t.TempDir()
 	withKataSBSRoot(t, root)
 
 	writeSandboxPersist(t, root, "sb-a", 1111, "a")
 
-	out := captureStdout(t, func() { emitVMConfig(4242) })
+	var buf bytes.Buffer
+	emitVMConfig(4242, &buf)
+	out := buf.String()
 
 	for _, marker := range []string{"KATAMARAN_VMCONFIG_B64=", "KATAMARAN_AGENTCONFIG_B64="} {
 		if got := markerLines(t, out, marker); len(got) != 0 {

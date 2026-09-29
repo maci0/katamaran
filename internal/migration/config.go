@@ -6,6 +6,7 @@ package migration
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -189,6 +190,23 @@ type SourceConfig struct {
 	// rather than leaving one file per migration to accumulate on the
 	// node-wide cmdline hostPath.
 	EmitCmdlineTo string
+	// Out receives the KATAMARAN_* marker lines that make up the source
+	// binary's machine-readable output: the orchestrator and deploy/migrate.sh
+	// scrape them out of the pod log, and nothing parses slog output, so
+	// they must stay on a channel the caller owns rather than hardcoded to
+	// the process stdout. Everything diagnostic goes through slog to stderr.
+	// Nil means os.Stdout.
+	Out io.Writer
+}
+
+// out returns the writer the KATAMARAN_* markers go to. Callers that only
+// exercise migration behavior and not the marker contract leave Out nil and
+// get the process stdout, which is what the binary does.
+func (c *SourceConfig) out() io.Writer {
+	if c.Out == nil {
+		return os.Stdout
+	}
+	return c.Out
 }
 
 // DestConfig holds all parameters for RunDestination.

@@ -62,6 +62,24 @@ katamaran --mode <source|dest> [flags]
 | `--replay-cmdline` | no | `""` | Path to a captured source QEMU cmdline file. When set, dest spawns its own QEMU with the replayed cmdline + `-incoming defer` (no kata sandbox needed on dest). |
 | `--replay-cmdline-from-pod` | no | `""` | Source pod reference (`<namespace>/<name>`) whose logs contain the captured cmdline marker for in-cluster replay |
 
+### Output streams
+
+Source mode splits its two audiences across two streams, so a script can
+redirect one without losing the other:
+
+- **stdout** carries only the `KATAMARAN_*` marker lines that the
+  orchestrator and `deploy/migrate.sh` scrape out of the pod log:
+  `KATAMARAN_DOWNTIME_LIMIT`, `KATAMARAN_PHASE`, `KATAMARAN_PROGRESS`,
+  `KATAMARAN_RESULT`, `KATAMARAN_CMDLINE_AT`, `KATAMARAN_CMDLINE_B64`,
+  `KATAMARAN_VMCONFIG_B64`, and `KATAMARAN_AGENTCONFIG_B64`. They are plain
+  text, not slog output, so they survive `--log-format json`.
+- **stderr** carries the human-readable log in `--log-format`, plus every
+  error and warning.
+
+Dest mode writes nothing to stdout. Both modes write `--help` and
+`--version` to stdout and every error to stderr, and exit 2 on an argument
+or validation error, 1 on a runtime failure, 130 on SIGINT/SIGTERM.
+
 ## Direct CLI Usage
 
 ### 1) Destination node (run first)

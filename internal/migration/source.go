@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -94,6 +95,7 @@ func resolveSourcePod(ctx context.Context, cfg *SourceConfig) (int, error) {
 //   - Cancels the drive-mirror block job (disarms the deferred cleanup)
 //   - Tears down the IP tunnel after a CNI convergence delay (immediately on failure)
 func RunSource(ctx context.Context, cfg SourceConfig) error {
+	out := cfg.out()
 	// Stamp pod identity onto every log line for this migration so operators
 	// can correlate the whole source flow in aggregated logs. One migration
 	// runs per process, so mutating the default logger here is safe.
@@ -133,7 +135,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		}()
 		// Marker line consumed by deploy/migrate.sh, printed on stdout so it
 		// survives log re-formatting (slog writes to stderr in this binary).
-		fmt.Printf("%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo)
+		fmt.Fprintf(out, "%s%s\n", CmdlineAtMarker, cfg.EmitCmdlineTo)
 		// Also emit the cmdline file's contents as a single base64 line on
 		// stdout. The dest binary scrapes the source pod's log via the
 		// apiserver (--replay-cmdline-from-pod), avoiding a separate file
@@ -141,7 +143,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 		if cmdlineBytes, err := os.ReadFile(cfg.EmitCmdlineTo); err != nil {
 			slog.Warn("Failed to read captured cmdline for KATAMARAN_CMDLINE_B64; in-pod-log replay will fail", "error", err, "path", cfg.EmitCmdlineTo)
 		} else {
-			fmt.Printf("%s%s\n", CmdlineB64Marker, base64.StdEncoding.EncodeToString(cmdlineBytes))
+			fmt.Fprintf(out, "%s%s\n", CmdlineB64Marker, base64.StdEncoding.EncodeToString(cmdlineBytes))
 		}
 		slog.Info("Captured source QEMU cmdline", "path", cfg.EmitCmdlineTo, "qemu_pid", resolvedQEMUPID)
 	}
@@ -151,7 +153,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// Done regardless of cmdline replay mode: any migration benefits
 	// from having VMConfig available for adoption.
 	if resolvedQEMUPID != 0 {
-		emitVMConfig(resolvedQEMUPID)
+		emitVMConfig(resolvedQEMUPID, out)
 	}
 
 	cfg.DestIP = cfg.DestIP.Unmap()
@@ -318,7 +320,7 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// came from the RTT calculation; on RTT failure the --downtime
 	// fallback is programmed and auto stays false so consumers don't
 	// mistake spec.downtimeMS for an auto-derived limit.
-	fmt.Printf("%s applied_ms=%d rtt_ms=%d auto=%t\n",
+	fmt.Fprintf(out, "%s applied_ms=%d rtt_ms=%d auto=%t\n",
 		DowntimeLimitMarker, downtimeLimitMS, rttMS, downtimeFromRTT)
 
 	if _, err = client.Execute(ctx, "migrate-set-parameters", qmp.MigrateSetParametersArgs{
@@ -416,14 +418,14 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 	// traffic is now buffered/redirected, so the downtime window is open. The
 	// orchestrator scrapes this from the pod log and surfaces it as the
 	// PhaseCutover status update.
-	fmt.Printf("%sphase=cutover\n", PhaseMarker)
+	fmt.Fprintf(out, "%sphase=cutover\n", PhaseMarker)
 	slog.Info("Waiting for migration to complete")
 
-	info, migrationErr := waitForMigrationComplete(ctx, client)
+	info, migrationErr := waitForMigrationComplete(ctx, client, out)
 
 	if migrationErr == nil && info.Status == qmp.MigrateStatusCompleted {
 		slog.Info("Migration completed", "actual_downtime_ms", info.Downtime, "total_time_ms", info.TotalTime, "setup_time_ms", info.SetupTime, "ram_transferred", info.RAM.Transferred, "ram_total", info.RAM.Total)
-		fmt.Printf("%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
+		fmt.Fprintf(out, "%sdowntime_ms=%d total_time_ms=%d ram_transferred=%d ram_total=%d\n",
 			ResultMarker, info.Downtime, info.TotalTime, info.RAM.Transferred, info.RAM.Total)
 	}
 
@@ -773,7 +775,7 @@ var postActiveStallGrace = 30 * time.Second
 // paused and the tunnel cutover is complete, so the migration is
 // already in flight by the time we enter the loop, so a QMP failure
 // here is a hand-off signal, not an early-stage error.
-func waitForMigrationComplete(ctx context.Context, client *qmp.Client) (qmp.MigrateInfo, error) {
+func waitForMigrationComplete(ctx context.Context, client *qmp.Client, out io.Writer) (qmp.MigrateInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, migrationTimeout)
 	defer cancel()
 
@@ -824,7 +826,7 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) (qmp.Migr
 				// Stable, parser-friendly progress marker the orchestrator
 				// scrapes from pod logs to surface RAM transfer progress
 				// without depending on slog's text/json layout.
-				fmt.Printf("%sstatus=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
+				fmt.Fprintf(out, "%sstatus=%s ram_transferred=%d ram_total=%d ram_remaining=%d\n",
 					ProgressMarker, info.Status, info.RAM.Transferred, info.RAM.Total, info.RAM.Remaining)
 				prevStatus = info.Status
 				lastLoggedRemaining = info.RAM.Remaining
@@ -845,7 +847,7 @@ func waitForMigrationComplete(ctx context.Context, client *qmp.Client) (qmp.Migr
 // VMConfig as a base64-encoded stdout marker. The dest binary scrapes
 // this from the source pod's log to populate migration-meta.json so the
 // factory can serve it to the Kata shim for VM adoption.
-func emitVMConfig(qemuPID int) {
+func emitVMConfig(qemuPID int, out io.Writer) {
 	entries, err := os.ReadDir(kataSBSRoot)
 	if err != nil {
 		slog.Warn("Cannot read sandbox dir for VMConfig emission; factory VM adoption will fall back to cold start", "dir", kataSBSRoot, "error", err)
@@ -878,8 +880,8 @@ func emitVMConfig(qemuPID int) {
 		}
 		vmCfg := MarshalVMConfig(persist.Config.HypervisorType, persist.Config.HypervisorConfig, persist.Config.KataAgentConfig)
 		agentCfg := persist.Config.KataAgentConfig
-		fmt.Printf("%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg))
-		fmt.Printf("%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg))
+		fmt.Fprintf(out, "%s%s\n", VMConfigB64Marker, base64.StdEncoding.EncodeToString(vmCfg))
+		fmt.Fprintf(out, "%s%s\n", AgentConfigB64Marker, base64.StdEncoding.EncodeToString(agentCfg))
 		slog.Info("Emitted VMConfig for factory adoption", "sandbox", e.Name(), "size", len(vmCfg))
 		return
 	}

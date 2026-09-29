@@ -1,11 +1,28 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
+
+// A character device is not a terminal. /dev/null is the case that matters:
+// `< /dev/null` must reach readRequest and report the missing request, not be
+// turned away with the "stdin is a terminal" message that is meant to stop an
+// interactive invocation from blocking on EOF.
+func TestIsStdinTTYRejectsNonTerminalCharDevice(t *testing.T) {
+	t.Parallel()
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if isStdinTTY(f) {
+		t.Fatalf("isStdinTTY(%s) = true, want false", os.DevNull)
+	}
+}
 
 func TestReadRequestRejectsEmptyStdin(t *testing.T) {
 	t.Parallel()
