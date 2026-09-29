@@ -33,17 +33,11 @@ func splitTarget(target string) (host, port string, hasPort bool, ok bool) {
 	return target, "", false, true
 }
 
+// validTargetPort accepts a decimal port in 1-65535. ParseUint rejects any
+// non-digit and any sign prefix, and bitSize 16 is the 65535 ceiling.
 func validTargetPort(port string) bool {
-	if port == "" {
-		return false
-	}
-	for _, c := range port {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	p, err := strconv.Atoi(port)
-	return err == nil && p >= 1 && p <= 65535
+	p, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && p >= 1
 }
 
 // blockedMetadataIPs are well-known cloud-provider instance metadata

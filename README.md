@@ -404,12 +404,10 @@ scripts/                        # Test and operational scripts
   build-minikube-iso.sh         # Custom minikube ISO builder
   build-minikube-modules.sh     # Kernel module builder for minikube
   manifests/                    # E2E test manifests and templates
-    kata-pod.yaml               # Kata Containers pod template
     kind-config.yaml            # Kind cluster configuration
     kind-config-tcg.yaml        # Kind cluster configuration (TCG/software-emulation variant)
     kind-config-nocni.yaml      # Kind cluster configuration (CNI disabled for Cilium/Flannel)
     kind-config-nocni-tcg.yaml  # Kind cluster configuration (no CNI + TCG)
-    nfs-pv.yaml                 # NFS PersistentVolume template
     nfs-server.yaml             # NFS server pod template
     pod-src.yaml                # Source pod manifest for E2E tests
     pod-dest.yaml               # Destination pod manifest for E2E tests
