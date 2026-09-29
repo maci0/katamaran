@@ -94,7 +94,9 @@ Exit codes:
   2   Argument or configuration error
 
 Environment variables:
-  KATAMARAN_MIGRATION_IMAGE   Required trusted image for /api/migrate; all other images are rejected
+  KATAMARAN_MIGRATION_IMAGE       Required trusted image for /api/migrate; all other images are rejected
+  KATAMARAN_ALLOWED_NAMESPACES    Comma-separated namespaces the dashboard may read pods
+                                  from and migrate (default: every namespace in the cluster)
 
 Examples:
   # Start on default port
@@ -177,7 +179,19 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	app := &App{startTime: time.Now(), allowedImage: allowedImage}
+	namespaces, err := newNamespaceScope(os.Getenv("KATAMARAN_ALLOWED_NAMESPACES"))
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n\n", err)
+		printUsage(stderr)
+		return 2
+	}
+	if len(namespaces.allowed) == 0 {
+		slog.Warn("KATAMARAN_ALLOWED_NAMESPACES is unset: /api/pods and /api/migrate reach every namespace in the cluster")
+	} else {
+		slog.Info("Namespace allowlist active", "namespaces", namespaces.names())
+	}
+
+	app := &App{startTime: time.Now(), allowedImage: allowedImage, namespaces: namespaces}
 
 	// The dashboard needs a Kubernetes connection: try in-cluster
 	// service-account creds first, then a kubeconfig-loaded client (handy
@@ -402,7 +416,7 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to list pods", http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, pods)
+	writeJSON(w, http.StatusOK, a.namespaces.filterPods(pods))
 }
 
 // handleListNodes returns nodes labeled for the kata runtime.

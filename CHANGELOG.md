@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `KATAMARAN_ALLOWED_NAMESPACES` on the dashboard: a comma-separated
+  namespace allowlist. `/api/pods` omits pods outside it and
+  `POST /api/migrate` answers 403 for a `source_pod_namespace` or
+  `dest_pod_namespace` outside it, matching the pin the Migration CRD
+  applies to `spec.sourcePod` and `spec.destPod`. Unset leaves the
+  dashboard cluster-wide, as before.
+
+### Changed
+
+- `deploy/dashboard.yaml` no longer creates a ClusterIP Service in front
+  of the dashboard UI. The dashboard ServiceAccount can list, patch, and
+  delete pods in every namespace and creates hostPID migration Jobs, so
+  the Service handed an admin surface to every pod in the cluster. Reach
+  the UI with `kubectl port-forward -n kube-system
+  svc/katamaran-dashboard-metrics 8080:8080`.
+
 ## [0.6.0] - 2026-09-28
 
 ### Changed

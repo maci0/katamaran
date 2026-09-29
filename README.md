@@ -377,7 +377,7 @@ internal/
   qmptest/
     qmptest.go                  # Shared test helpers for faking a QMP server
 deploy/
-  dashboard.yaml                # Dashboard Kubernetes Deployment + ClusterIP Service
+  dashboard.yaml                # Dashboard Kubernetes Deployment + metrics ClusterIP Service
   daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
   manager.yaml                  # katamaran-mgr ServiceAccount + ClusterRole + Deployment + PDB + webhook
   migration-example.yaml        # Sample Migration CR (kubectl apply -f to start a migration)
@@ -682,9 +682,9 @@ kubectl apply -f deploy/dashboard.yaml
 
 ### Using the Dashboard
 
-Once deployed, the dashboard is exposed via a ClusterIP service on port `8080`.
+`deploy/dashboard.yaml` ships no Service in front of the UI. The dashboard's ServiceAccount can list, patch, and delete pods in every namespace and creates hostPID migration Jobs, so a ClusterIP Service would hand that surface to every pod in the cluster. Reach it through the apiserver instead:
 
-1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080` and open `http://localhost:8080`.
+1. **Access the UI**: Run `kubectl port-forward -n kube-system svc/katamaran-dashboard-metrics 8080:8080` and open `http://localhost:8080`.
 2. **Pick a Source Pod** and **Dest Node** from the dropdowns (auto-populated from `/api/pods` and `/api/nodes`). The hidden `vm_ip` and `dest_ip` form fields auto-fill from the selection. For full zero-config dest spawning, also enable `replay_cmdline=true` (recommended, see scripted example in the dashboard README).
 3. **Start Load Generation**: Click **ICMP Ping** or **HTTP Load**. A live Chart.js graph plots latency.
 4. **Migrate**: Click **Start Migration**. The real-time log viewer streams the orchestrator's progress.

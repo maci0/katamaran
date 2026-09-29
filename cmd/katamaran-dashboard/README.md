@@ -116,9 +116,27 @@ kubectl apply -f deploy/dashboard.yaml
 This creates:
 - A `ServiceAccount` with RBAC permissions to manage Jobs and read pod logs
 - A `Deployment` running the dashboard container
-- A `ClusterIP` Service on port **8080**
+- A `ClusterIP` metrics Service on port **8080**
 
-Access the dashboard via `kubectl port-forward -n kube-system svc/katamaran-dashboard 8080:8080`, then open `http://localhost:8080`.
+No Service fronts the UI. The dashboard's ServiceAccount can list, patch, and delete pods in every namespace and creates hostPID migration Jobs, so a ClusterIP Service would expose an admin surface to every pod in the cluster. Port-forward through the apiserver, which needs RBAC on `pods/portforward` in `kube-system`:
+
+```bash
+kubectl port-forward -n kube-system svc/katamaran-dashboard-metrics 8080:8080
+```
+
+Then open `http://localhost:8080`.
+
+### Limiting the dashboard to specific namespaces
+
+`KATAMARAN_ALLOWED_NAMESPACES` is a comma-separated allowlist of namespaces the dashboard may list pods from and migrate pods in:
+
+```yaml
+env:
+- name: KATAMARAN_ALLOWED_NAMESPACES
+  value: team-a,team-b
+```
+
+`/api/pods` omits pods outside the list and `POST /api/migrate` answers `403` for a `source_pod_namespace` or `dest_pod_namespace` outside it. This is the same namespace pin the `Migration` CRD applies to `spec.sourcePod` and `spec.destPod`. Unset means every namespace, which matches a deployment where only cluster admins can reach the UI.
 
 ## Architecture
 

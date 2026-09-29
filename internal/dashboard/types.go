@@ -64,6 +64,11 @@ type App struct {
 	allowedImage string
 	draining     atomic.Bool
 
+	// namespaces bounds every namespace-scoped read and migration to the
+	// operator's allowlist. The zero value (empty allowlist) is
+	// unrestricted; see newNamespaceScope.
+	namespaces namespaceScope
+
 	// orch is the orchestrator handleMigrate submits to. Set by the
 	// production main() to New() (or kubeconfig fallback). Tests
 	// inject a fakeOrchestrator. handleMigrate fails 503 if nil.

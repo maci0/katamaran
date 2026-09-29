@@ -140,6 +140,21 @@ func (a *App) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Authorization: the dashboard's ServiceAccount acts cluster-wide, so
+	// both pod references are checked against the operator's namespace
+	// allowlist before any of them reach the orchestrator. Mirrors the CRD
+	// path's pin (controller.specToRequest) for the same reason.
+	for _, ref := range []struct{ ns, field string }{
+		{r.PostFormValue("source_pod_namespace"), "source_pod_namespace"},
+		{destPodNS, "dest_pod_namespace"},
+	} {
+		if ref.ns != "" && !a.namespaces.allows(ref.ns) {
+			slog.Warn("Migration request rejected: namespace not allowed", "field", ref.field, "namespace", ref.ns, "remote_addr", r.RemoteAddr, "request_id", requestIDFromContext(r.Context()))
+			jsonError(w, "Namespace not allowed", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Validate optional fields before acquiring the migration lock to avoid
 	// needing state rollback on validation failure.
 	var downtimeMS int
