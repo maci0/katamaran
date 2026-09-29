@@ -303,7 +303,10 @@ func (a *App) handleHTTPStart(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			resp, err := client.Do(req)
-			lat := float64(time.Since(start).Milliseconds())
+			// Fractional milliseconds, matching the ping path: Duration
+			// .Milliseconds() truncates, and a sub-millisecond round trip to
+			// a local target would report as a 0ms sample.
+			lat := float64(time.Since(start)) / float64(time.Millisecond)
 
 			if err != nil {
 				if ctx.Err() != nil {

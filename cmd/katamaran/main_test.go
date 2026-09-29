@@ -139,6 +139,23 @@ func TestRun_SourceNegativeAutoDowntimeFloor(t *testing.T) {
 	}
 }
 
+func TestRun_SourceAutoDowntimeFloorAboveCap(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := katamaran.Run(context.Background(), []string{
+		"--mode", "source",
+		"--dest-ip", "10.0.0.1",
+		"--vm-ip", "10.0.0.2",
+		"--auto-downtime",
+		"--auto-downtime-floor-ms", "60001",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--auto-downtime-floor-ms") {
+		t.Fatalf("expected auto-downtime-floor-ms error, got: %s", stderr.String())
+	}
+}
+
 func TestRun_SourceNegativeCNIConvergenceDelay(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := katamaran.Run(context.Background(), []string{

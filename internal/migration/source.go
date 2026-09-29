@@ -300,12 +300,12 @@ func RunSource(ctx context.Context, cfg SourceConfig) error {
 			slog.Warn("Failed to measure RTT for auto-downtime, using fallback", "error", err, "fallback_ms", downtimeLimitMS)
 		} else {
 			rttMS = rtt.Milliseconds()
-			rttBudget := rtt * rttMultiplier
-			rttBudgetMS := rttBudget.Milliseconds()
-			if rttBudget%time.Millisecond != 0 {
-				rttBudgetMS++
+			calculatedDowntime, clamped := autoDowntimeMS(rtt, floorMS)
+			if clamped {
+				slog.Warn("Auto-calculated downtime limit capped",
+					"downtime_ms", calculatedDowntime, "rtt_ms", rttMS, "floor_ms", floorMS,
+					"cap_ms", MaxDowntimeMS)
 			}
-			calculatedDowntime := int(rttBudgetMS) + floorMS
 			slog.Info("Auto-calculated downtime limit", "downtime_ms", calculatedDowntime, "rtt_ms", rttMS, "floor_ms", floorMS)
 			downtimeLimitMS = calculatedDowntime
 			downtimeFromRTT = true
@@ -596,6 +596,27 @@ func logTransientQueryError(ctx context.Context, msg string, err error, consecut
 func migrationProgressChanged(lastStatus qmp.MigrateStatus, lastRemaining int64, info qmp.MigrateInfo) bool {
 	return info.Status != lastStatus ||
 		(lastRemaining > 0 && info.RAM.Remaining <= lastRemaining/2)
+}
+
+// autoDowntimeMS derives the auto-calculated downtime limit from the measured
+// round-trip time and the caller's floor, rounding the RTT budget up to the
+// next whole millisecond so a sub-millisecond RTT still contributes a unit.
+// The sum is capped at MaxDowntimeMS: floorMS alone is validated against that
+// cap at every entry point, but the RTT budget is added on top here, and
+// QEMU holds the guest stopped for up to downtime-limit after pre-copy, so an
+// uncapped total would stall a VM for minutes on a converging migration.
+// Reports whether the cap was applied.
+func autoDowntimeMS(rtt time.Duration, floorMS int) (downtimeMS int, clamped bool) {
+	budget := rtt * rttMultiplier
+	budgetMS := budget.Milliseconds()
+	if budget%time.Millisecond != 0 {
+		budgetMS++
+	}
+	total := budgetMS + int64(floorMS)
+	if total > MaxDowntimeMS {
+		return MaxDowntimeMS, true
+	}
+	return int(total), false
 }
 
 // ramProgressPct returns the transferred share of total RAM in percent,

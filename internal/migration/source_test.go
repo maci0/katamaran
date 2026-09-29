@@ -1084,6 +1084,8 @@ func TestRunSource_AutoDowntime_FractionalRTT(t *testing.T) {
 		{name: "fractional millisecond", rtt: 1500 * time.Microsecond, wantMS: 28},
 		{name: "round budget up", rtt: 1500*time.Microsecond + time.Nanosecond, wantMS: 29},
 		{name: "custom floor", rtt: 1500 * time.Microsecond, floorMS: 40, wantMS: 43},
+		{name: "cap from floor", floorMS: MaxDowntimeMS, wantMS: MaxDowntimeMS},
+		{name: "cap from rtt", rtt: time.Minute, floorMS: 25, wantMS: MaxDowntimeMS},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			origMeasureRTT := measureRTTFunc

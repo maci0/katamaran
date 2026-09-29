@@ -76,7 +76,7 @@ Source mode flags:
   --downtime int           Max allowed downtime in milliseconds, 1-60000 (default 25)
   --auto-downtime          Auto-calculate downtime based on RTT (overrides --downtime)
   --auto-downtime-floor-ms int
-                           Lower bound + overhead for auto-downtime in ms (0 uses compiled-in 25ms; ignored without --auto-downtime)
+                           Lower bound + overhead for auto-downtime in ms, 0-60000 (0 uses compiled-in 25ms; ignored without --auto-downtime)
   --cni-convergence-delay duration
                            Post-cutover wait keeping the IP tunnel alive while the CNI rebinds the pod (0 uses compiled-in 5s)
   --emit-cmdline-to string Capture source QEMU /proc/<pid>/cmdline to this path before migration
@@ -141,7 +141,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tunnelMode := fs.String("tunnel-mode", "ipip", "Tunnel mode: 'ipip', 'gre', or 'none'")
 	downtimeLimit := fs.Int("downtime", 25, fmt.Sprintf("Max allowed downtime in milliseconds (1-%d)", migration.MaxDowntimeMS))
 	autoDowntime := fs.Bool("auto-downtime", false, "Auto-calculate downtime based on RTT (overrides --downtime)")
-	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, "Lower bound + overhead for the auto-calculated downtime (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime")
+	autoDowntimeFloor := fs.Int("auto-downtime-floor-ms", 0, fmt.Sprintf("Lower bound + overhead for the auto-calculated downtime, 0-%d (0 uses the compiled-in default of 25ms). Ignored without --auto-downtime", migration.MaxDowntimeMS))
 	cniConvergenceDelay := fs.Duration("cni-convergence-delay", 0, "Post-cutover wait that keeps the IP tunnel alive while the CNI propagates the pod's new node binding (0 uses the compiled-in default of 5s)")
 	multifdChannels := fs.Int("multifd-channels", migration.DefaultMultifdChannels, "Parallel TCP channels for RAM migration (0 to disable)")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
@@ -218,8 +218,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
-	if mode == roleSource && *autoDowntimeFloor < 0 {
-		_, _ = fmt.Fprintf(stderr, "Error: --auto-downtime-floor-ms must be non-negative, got %d\n\n", *autoDowntimeFloor)
+	if mode == roleSource && (*autoDowntimeFloor < 0 || *autoDowntimeFloor > migration.MaxDowntimeMS) {
+		_, _ = fmt.Fprintf(stderr, "Error: --auto-downtime-floor-ms must be between 0 and %d, got %d\n\n", migration.MaxDowntimeMS, *autoDowntimeFloor)
 		printUsage(stderr)
 		return 2
 	}

@@ -233,6 +233,11 @@ if [[ -n "$AUTO_DOWNTIME_FLOOR_MS" && ! "$AUTO_DOWNTIME_FLOOR_MS" =~ ^[0-9]+$ ]]
     exit 2
 fi
 
+if [[ -n "$AUTO_DOWNTIME_FLOOR_MS" && "$AUTO_DOWNTIME_FLOOR_MS" -gt 60000 ]]; then
+    echo "Error: --auto-downtime-floor-ms must be between 0 and 60000, got '$AUTO_DOWNTIME_FLOOR_MS'" >&2
+    exit 2
+fi
+
 if [[ ! "$MULTIFD_CHANNELS" =~ ^[0-9]+$ ]]; then
     echo "Error: --multifd-channels must be a non-negative integer, got '$MULTIFD_CHANNELS'" >&2
     exit 2
