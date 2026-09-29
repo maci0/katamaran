@@ -155,6 +155,23 @@ func TestShouldDenyPodCreate_DaemonSetOwnerDenied(t *testing.T) {
 	}
 }
 
+func TestShouldDenyPodCreate_JobOwnerDenied(t *testing.T) {
+	t.Parallel()
+	r := &Reconciler{pending: newPendingAdoptionRegistry()}
+	r.pending.Mark("job-1", "mig-job")
+	ctrl := true
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "Job", UID: "job-1", Controller: &ctrl},
+			},
+		},
+	}
+	if got := r.ShouldDenyPodCreate(pod); got == "" {
+		t.Fatal("Job pod with marked owner UID must be denied")
+	}
+}
+
 func TestShouldDenyPodCreate_UnmanagedKindAllowed(t *testing.T) {
 	t.Parallel()
 	r := &Reconciler{pending: newPendingAdoptionRegistry()}

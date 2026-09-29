@@ -93,9 +93,18 @@ func TestNewClient_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
+	// The context must abort the handshake, not merely fail it later: the
+	// per-step deadlines alone would take greetingTimeout+dialTimeout to
+	// surface an error, so anything close to those bounds means the
+	// connection was never torn down on cancellation.
+	start := time.Now()
 	_, err := NewClient(ctx, sock)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("NewClient took %v to fail a context cancelled after 100ms: "+
+			"the cancellation did not close the connection", elapsed)
 	}
 }
 
@@ -288,12 +297,23 @@ func TestExecute_ContextCancelled(t *testing.T) {
 	}
 	defer c.Close()
 
-	execCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	// Cancel explicitly rather than by deadline: ctx.Err() must be set before
+	// the read unblocks, which is what puts Execute on its interruption path.
+	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
 
 	_, err = c.Execute(execCtx, "query-migrate", nil)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute error = %v, want it to wrap context.Canceled", err)
+	}
+	// A cancelled context is reported as an interruption, not as the read
+	// timeout that a silent QEMU produces; callers rely on the distinction.
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("Execute error = %v, want an 'interrupted' report rather than a timeout", err)
 	}
 }
 
@@ -430,12 +450,21 @@ func TestWaitForEvent_ContextCancelled(t *testing.T) {
 	}
 	defer c.Close()
 
-	waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
 
 	err = c.WaitForEvent(waitCtx, "RESUME", 30*time.Second)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+	// The 30s event timeout is far longer than the cancellation, so this error
+	// can only come from the interruption branch; assert it says so.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForEvent error = %v, want it to wrap context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("WaitForEvent error = %v, want an 'interrupted' report rather than a timeout", err)
 	}
 }
 

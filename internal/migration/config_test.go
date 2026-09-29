@@ -232,6 +232,45 @@ func TestValidateDriveID(t *testing.T) {
 	}
 }
 
+// TestValidateDriveIDs covers the two rules the single-ID wrapper cannot
+// express: a migration with no drives at all, and the same drive listed
+// twice (which would export one device under one job ID twice).
+func TestValidateDriveIDs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		ids     []string
+		wantErr string
+	}{
+		{"single", []string{"drive-virtio-disk0"}, ""},
+		{"multiple", []string{"drive-virtio-disk0", "mirror-drive-virtio-disk0"}, ""},
+		{"nil", nil, "at least one drive ID is required"},
+		{"empty slice", []string{}, "at least one drive ID is required"},
+		{"duplicate", []string{"drive0", "drive1", "drive0"}, `duplicate drive ID: "drive0"`},
+		{"duplicate adjacent", []string{"drive0", "drive0"}, `duplicate drive ID: "drive0"`},
+		{"invalid member", []string{"drive0", "bad id"}, `invalid drive ID: "bad id"`},
+		{"invalid before duplicate", []string{"drive0", "bad id", "drive0"}, `invalid drive ID: "bad id"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDriveIDs(tt.ids)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateDriveIDs(%v) = %v, want no error", tt.ids, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateDriveIDs(%v) = nil, want %q", tt.ids, tt.wantErr)
+			}
+			if err.Error() != tt.wantErr {
+				t.Fatalf("validateDriveIDs(%v) = %q, want %q", tt.ids, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestFormatQEMUHost(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

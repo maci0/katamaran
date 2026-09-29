@@ -424,8 +424,22 @@ func TestNative_Apply_AutoSelectDestNodeCreatesSourceWithResolvedDestIP(t *testi
 	if len(dest.Spec.Template.Spec.Tolerations) != 1 || dest.Spec.Template.Spec.Tolerations[0].Key != "katamaran" {
 		t.Fatalf("dest tolerations = %+v, want copied request toleration", dest.Spec.Template.Spec.Tolerations)
 	}
+	// The anti-affinity must actually exclude the source node: a bare
+	// Affinity struct, an empty NotIn value list, or the wrong key would all
+	// schedule the dest pod back onto the node it is migrating away from.
 	if dest.Spec.Template.Spec.Affinity == nil || dest.Spec.Template.Spec.Affinity.NodeAffinity == nil {
-		t.Fatalf("dest job missing source-node anti-affinity")
+		t.Fatal("dest job missing source-node anti-affinity")
+	}
+	terms := dest.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+		t.Fatalf("dest anti-affinity = %+v, want one required node selector term", terms)
+	}
+	expr := terms[0].MatchExpressions[0]
+	if expr.Key != "kubernetes.io/hostname" || expr.Operator != corev1.NodeSelectorOpNotIn {
+		t.Fatalf("dest anti-affinity expression = %+v, want hostname NotIn", expr)
+	}
+	if len(expr.Values) != 1 || expr.Values[0] != "worker-a" {
+		t.Fatalf("dest anti-affinity excludes %v, want exactly [worker-a]", expr.Values)
 	}
 
 	src, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), SourceJobName(id), metav1.GetOptions{})
@@ -905,9 +919,15 @@ func jobNameFromPodListAction(action clienttesting.Action) (string, bool) {
 	return strings.CutPrefix(la.GetListRestrictions().Labels.String(), "batch.kubernetes.io/job-name=")
 }
 
+// jobCreateBudget bounds how long a fake-client create may take to become
+// visible. It is a stall guard, not a correctness window: the job is created
+// by a goroutine racing the poll, so the budget only has to exceed scheduler
+// latency on a loaded machine.
+const jobCreateBudget = 10 * time.Second
+
 func waitForJob(t *testing.T, cs *fake.Clientset, name string) *batchv1.Job {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(jobCreateBudget)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		job, err := cs.BatchV1().Jobs(DefaultJobNamespace).Get(context.Background(), name, metav1.GetOptions{})

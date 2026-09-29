@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,6 +37,21 @@ func TestNamespaceScope_RejectsMalformedNamespace(t *testing.T) {
 	t.Parallel()
 	if _, err := newNamespaceScope("team-a,NOT A NAMESPACE"); err == nil {
 		t.Fatal("newNamespaceScope accepted a malformed namespace, want a startup error")
+	}
+}
+
+// TestNamespaceScope_BlankEntriesStayUnrestricted pins the posture the
+// comment on newNamespaceScope calls out: a list of separators and spaces
+// parses to an empty allowlist, which authorizes every namespace rather than
+// none.
+func TestNamespaceScope_BlankEntriesStayUnrestricted(t *testing.T) {
+	t.Parallel()
+	scope, err := newNamespaceScope(" , ,  ")
+	if err != nil {
+		t.Fatalf("newNamespaceScope(%q) = %v, want no error", " , ,  ", err)
+	}
+	if !scope.allows("kube-system") {
+		t.Fatal("an allowlist of blank entries must leave the dashboard cluster-wide")
 	}
 }
 
@@ -94,6 +110,49 @@ func TestHandleListPods_NoAllowlistReturnsEverything(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "team-b") {
 		t.Fatalf("unrestricted listing dropped a pod: %s", w.Body.String())
+	}
+}
+
+// TestHandleListPods_EmptyResultIsArray covers the never-nil contract on
+// filterPods: a nil pod list from the discoverer must serialize as [] so the
+// pod picker's iteration does not hit a JSON null.
+func TestHandleListPods_EmptyResultIsArray(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		allowlist string
+		pods      []orchestrator.PodInfo
+	}{
+		{name: "unrestricted, nil list", allowlist: "", pods: nil},
+		{name: "scoped, no pods match", allowlist: "team-a", pods: []orchestrator.PodInfo{
+			{Namespace: "team-b", Name: "billing-0"},
+		}},
+		{name: "scoped, nil list", allowlist: "team-a", pods: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scope, err := newNamespaceScope(tt.allowlist)
+			if err != nil {
+				t.Fatalf("newNamespaceScope = %v", err)
+			}
+			app := &App{namespaces: scope, discoverer: &stubDiscoverer{pods: tt.pods}}
+			req := httptest.NewRequest(http.MethodGet, "/api/pods", nil)
+			w := httptest.NewRecorder()
+			app.handleListPods(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %v", w.Code)
+			}
+			var body []orchestrator.PodInfo
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("failed to unmarshal pods response: %v (%s)", err, w.Body.String())
+			}
+			if len(body) != 0 {
+				t.Fatalf("pods = %v, want empty", body)
+			}
+			if strings.Contains(w.Body.String(), "null") {
+				t.Fatalf("pods response serialized a JSON null: %s", w.Body.String())
+			}
+		})
 	}
 }
 

@@ -131,6 +131,64 @@ func TestSpecToRequest_MissingRequired(t *testing.T) {
 	}
 }
 
+// TestSpecToRequest_PinsPodRefsToCRNamespace locks the cross-namespace
+// guard: the controller's ServiceAccount acts on pods cluster-wide, so a
+// Migration created in namespace X must not be able to reference (and with
+// spec.sourceCleanup, delete) a pod in namespace Y.
+func TestSpecToRequest_PinsPodRefsToCRNamespace(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  map[string]any
+		want string
+	}{
+		{
+			name: "foreign source pod",
+			obj: map[string]any{"spec": map[string]any{
+				"sourcePod": map[string]any{"namespace": "kube-system", "name": "victim"},
+				"destNode":  "x",
+				"image":     "y",
+			}},
+			want: `spec.sourcePod.namespace "kube-system" must match the Migration's own namespace "default"`,
+		},
+		{
+			name: "foreign dest pod",
+			obj: map[string]any{"spec": map[string]any{
+				"sourcePod": map[string]any{"namespace": "default", "name": "p"},
+				"destPod":   map[string]any{"namespace": "kube-system", "name": "victim"},
+				"destNode":  "x",
+				"image":     "y",
+			}},
+			want: `spec.destPod.namespace "kube-system" must match the Migration's own namespace "default"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := specToRequest(tc.obj, "default"); err == nil {
+				t.Fatal("expected cross-namespace pod reference to be rejected")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The same-namespaced dest pod still has to parse, otherwise the guard above
+// could pass by rejecting every destPod.
+func TestSpecToRequest_AcceptsSameNamespaceDestPod(t *testing.T) {
+	req, err := specToRequest(map[string]any{"spec": map[string]any{
+		"sourcePod": map[string]any{"namespace": "default", "name": "p"},
+		"destPod":   map[string]any{"namespace": "default", "name": "kata-dest"},
+		"destNode":  "x",
+		"image":     "y",
+	}}, "default")
+	if err != nil {
+		t.Fatalf("specToRequest: %v", err)
+	}
+	if req.DestPod == nil || req.DestPod.Name != "kata-dest" || req.DestPod.Namespace != "default" {
+		t.Fatalf("DestPod = %+v, want default/kata-dest", req.DestPod)
+	}
+}
+
 func TestSpecToRequest_OptionalDestNode(t *testing.T) {
 	// destNode is now optional: specToRequest should succeed without it.
 	obj := map[string]any{
@@ -1158,10 +1216,18 @@ func TestReconciler_DeletionCancelsRecoveryLoop(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	// Give recover at least one tick so the test would fail without the fix
-	// (it would keep looping forever after deletion).
-	if waits := len(orch.callsFor("Resume")); waits == 0 {
-		t.Log("note: Resume had not been called yet when deletion fired; loop cancellation is still exercised")
+	// The recover loop must have polled at least once, otherwise the deletion
+	// below proves nothing about cancelling a running loop.
+	resumed := false
+	for deadline := time.Now().Add(5 * time.Second); !resumed; {
+		if len(orch.callsFor("Resume")) > 0 {
+			resumed = true
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recover never called Resume before deletion; the loop cancellation is untested")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	rec.handleDeletion(context.Background(), key, newMigrationCR("m-delrec", []string{finalizerName}, true, nil))
