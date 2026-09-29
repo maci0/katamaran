@@ -15,8 +15,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buil
 
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-ARG TARGETARCH=amd64
-
 # iputils is required for the loadgen ICMP ping path. kubectl, bash, and
 # envsubst (gettext) are no longer shipped because the dashboard uses the
 # in-process Native orchestrator (client-go). Use katamaran-orchestrator
@@ -38,4 +36,4 @@ LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
       org.opencontainers.image.description="Katamaran migration dashboard" \
       org.opencontainers.image.version="${VERSION}"
 
-ENTRYPOINT ["./dashboard"]
+ENTRYPOINT ["/app/dashboard"]

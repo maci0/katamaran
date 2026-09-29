@@ -78,6 +78,31 @@ Sanity check:
 podman run --rm localhost/katamaran:dev --help
 ```
 
+## Option 2b: Pull the Published Image
+
+Every `v*` release publishes four multi-arch (`linux/amd64`, `linux/arm64`)
+images to GHCR, tagged with the release version, with `latest` moving only for
+stable releases:
+
+| Image | Repository |
+| --- | --- |
+| node CLI + DaemonSet binaries | `ghcr.io/maci0/katamaran` |
+| dashboard | `ghcr.io/maci0/katamaran-dashboard` |
+| CRD controller | `ghcr.io/maci0/katamaran-mgr` |
+| VM factory | `ghcr.io/maci0/katamaran-factory` |
+
+```bash
+podman pull ghcr.io/maci0/katamaran:v0.6.0
+podman run --rm ghcr.io/maci0/katamaran:v0.6.0 --version
+```
+
+Retag it to the name `deploy/daemonset.yaml` expects, then load it into the
+cluster as described under Option 3:
+
+```bash
+podman tag ghcr.io/maci0/katamaran:v0.6.0 localhost/katamaran:dev
+```
+
 ## Option 3: Install on Kubernetes Nodes (DaemonSet)
 
 This installs `katamaran`, `katamaran-factory`, and `containerd-shim-katamaran-adopted-v2` into `/usr/local/bin` on nodes labeled for Kata runtime (basic migrations only need `katamaran`; the other two support VM-cache adoption, see [Roadmap](ROADMAP.md)). The DaemonSet also loads the kernel modules needed by katamaran (`ipip`, `ip6_tunnel`, `ip_gre`, `ip6_gre`, `sch_plug`) and enables the Kata QMP extra-monitor socket when the default Kata 3.25+ QEMU config path is present.

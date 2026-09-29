@@ -15,7 +15,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buil
 # Stage 2: minimal runtime
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 ARG VERSION=dev
-RUN addgroup -g 1000 factory && adduser -D -u 1000 -G factory factory
+RUN addgroup -g 1000 factory && adduser -D -u 1000 -G factory factory && \
+    mkdir -p /var/run/katamaran && chown factory:factory /var/run/katamaran && \
+    chmod 0755 /var/run/katamaran
 COPY --from=builder /katamaran-factory /usr/local/bin/katamaran-factory
 USER factory
 LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
