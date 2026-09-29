@@ -771,6 +771,13 @@ func injectReplayFromPod(destJob *batchv1.Job, ns, srcPod string) (*batchv1.Job,
 	return nil, fmt.Errorf("no katamaran container in dest job")
 }
 
+// send is the only supported way to publish a StatusUpdate. It takes
+// sendMu for reading so closeUpdates cannot close run.updates underneath an
+// in-flight send, and it aborts as soon as run.finished closes. Every
+// producer (Apply, poll, tailProgress, stageThenStartDest) must go through
+// it: a bare `run.updates <-` is not covered by the sendMu protocol, so a
+// producer that blocked on a full buffer could keep poll from ever reaching
+// its closeUpdates defer, pinning both goroutines and the inflight entry.
 func (run *nativeRun) send(u StatusUpdate) {
 	run.sendMu.RLock()
 	defer run.sendMu.RUnlock()
@@ -987,7 +994,7 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 		select {
 		case <-ctx.Done():
 			slog.Warn("Migration poll canceled", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "error", ctx.Err())
-			run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: ctx.Err()}
+			run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: ctx.Err()})
 			return
 		case <-ticker.C:
 			srcJob, srcErr := n.client.BatchV1().Jobs(n.namespace).Get(ctx, run.srcJob, cacheRead)
@@ -998,13 +1005,13 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 				destStatusErrors = 0
 				if cond, ok := LatestTerminalJobCondition(destJob); ok && cond.Type == batchv1.JobComplete {
 					slog.Info("Migration destination job completed", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
-					run.updates <- n.succeededUpdate(ctx, id, run)
+					run.send(n.succeededUpdate(ctx, id, run))
 					return
 				} else if ok && cond.Type == batchv1.JobFailed {
 					attrs := []any{"migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob}
 					attrs = append(attrs, jobConditionAttrs(cond)...)
 					slog.Error("Migration destination job failed", attrs...)
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("dest job failed", cond)}
+					run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("dest job failed", cond)})
 					return
 				}
 			} else if !apierrors.IsNotFound(destErr) {
@@ -1018,7 +1025,7 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 			if srcErr != nil {
 				if apierrors.IsNotFound(srcErr) {
 					slog.Error("Migration source job disappeared", "migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob)
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job disappeared")}
+					run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: errors.New("source job disappeared")})
 					return
 				}
 				srcStatusErrors++
@@ -1037,13 +1044,13 @@ func (n *native) poll(ctx context.Context, id MigrationID, run *nativeRun) {
 					attrs := []any{"migration_id", id, "source_job", run.srcJob, "dest_job", run.destJob, "grace", sourceFailGrace}
 					attrs = append(attrs, jobConditionAttrs(srcCond)...)
 					slog.Error("Migration source job failed and destination did not complete", attrs...)
-					run.updates <- StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("source job failed and dest did not complete within grace window", srcCond)}
+					run.send(StatusUpdate{ID: id, Phase: PhaseFailed, When: time.Now(), Error: jobFailedError("source job failed and dest did not complete within grace window", srcCond)})
 					return
 				}
 				continue // give dest time to land RESUME and exit 0
 			}
 			if !announcedTransferring && (srcJob.Status.Active > 0 || (srcJob.Status.Ready != nil && *srcJob.Status.Ready > 0)) {
-				run.updates <- StatusUpdate{ID: id, Phase: PhaseTransferring, When: time.Now()}
+				run.send(StatusUpdate{ID: id, Phase: PhaseTransferring, When: time.Now()})
 				announcedTransferring = true
 			}
 		}
