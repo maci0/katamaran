@@ -26,6 +26,11 @@ installs them, and `test` and `lint-js` fail loud when either is absent.
   timezone and diffs the result. The binaries must stay byte-identical; a diff
   means host state reached the build.
 - Serialize calls on each `internal/qmp` client; it is not concurrency-safe.
+- The four shipped images (`Dockerfile`, `Dockerfile.dashboard`,
+  `Dockerfile.factory`, `Dockerfile.mgr`) are checked by
+  `internal/images/images_test.go`: digest-pinned bases, exec-form ENTRYPOINT,
+  the OCI title/source/documentation/description/version labels, and a `USER` in
+  the runtime stage unless the file carries a `No USER:` rationale.
 - `cmd/containerd-shim-katamaran-adopted-v2` is experimental.
 - Dashboard assets are vendored under `internal/dashboard/assets/` and served
   same-origin. No CDN references, no remote script loads.

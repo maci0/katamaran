@@ -22,13 +22,24 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buil
 
 # Stage 2: runtime
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+# iproute2 provides the `ip` and `tc` the migration path shells out to
+# (tunnels, tap devices, sch_plug qdiscs). kmod provides modprobe, which
+# deploy/daemonset.yaml runs via nsenter to load the tunnel modules on the
+# host; busybox's applet does not cover the full module syntax.
 RUN apk add --no-cache iproute2 kmod
 COPY --from=builder /katamaran /usr/local/bin/katamaran
 COPY --from=builder /katamaran-factory /usr/local/bin/katamaran-factory
 COPY --from=builder /containerd-shim-katamaran-adopted-v2 /usr/local/bin/containerd-shim-katamaran-adopted-v2
+# No USER: the node-setup init container in deploy/daemonset.yaml runs this
+# image privileged and needs root to write the host binaries under
+# /host/usr/local/bin and to nsenter into the host for modprobe and the
+# containerd restart. A non-root process drops the capability set even in a
+# privileged container, which breaks that path.
 ENTRYPOINT ["/usr/local/bin/katamaran"]
 
 ARG VERSION=dev
-LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+LABEL org.opencontainers.image.title="katamaran" \
+      org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.documentation="https://github.com/maci0/katamaran/blob/main/docs/INSTALL.md" \
       org.opencontainers.image.description="Zero-packet-drop live migration for Kata Containers" \
       org.opencontainers.image.version="${VERSION}"

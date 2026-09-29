@@ -234,18 +234,11 @@ func TestWriteShimLogExistingOversizedFile(t *testing.T) {
 }
 
 func TestReadAdoptedSandboxID(t *testing.T) {
-	write := func(t *testing.T, body string) string {
-		t.Helper()
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
 	cases := []struct {
-		name string
-		body string
-		want string
+		name    string
+		body    string
+		want    string
+		wantErr bool
 	}{
 		{
 			name: "annotation present",
@@ -269,19 +262,36 @@ func TestReadAdoptedSandboxID(t *testing.T) {
 			want: "sandbox-a",
 		},
 		{
-			name: "malformed json",
-			body: `{"annotations":{"` + adoptedSandboxAnnotation + `":"a"`,
-			want: "",
+			name:    "missing bundle config",
+			body:    "",
+			want:    "",
+			wantErr: true,
+		},
+		{
+			name:    "malformed json",
+			body:    `{"annotations":{"` + adoptedSandboxAnnotation + `":"a"`,
+			want:    "",
+			wantErr: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readAdoptedSandboxID(write(t, tc.body)); got != tc.want {
+			dir := t.TempDir()
+			if tc.body != "" {
+				if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(tc.body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := readAdoptedSandboxID(dir)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("readAdoptedSandboxID error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
 				t.Errorf("readAdoptedSandboxID = %q, want %q", got, tc.want)
 			}
 		})
 	}
-	if got := readAdoptedSandboxID(""); got != "" {
-		t.Errorf("readAdoptedSandboxID(\"\") = %q, want empty", got)
+	if got, err := readAdoptedSandboxID(""); err != nil || got != "" {
+		t.Errorf("readAdoptedSandboxID(\"\") = %q, %v, want empty and no error", got, err)
 	}
 }

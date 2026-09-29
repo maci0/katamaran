@@ -20,7 +20,9 @@ RUN addgroup -g 1000 factory && adduser -D -u 1000 -G factory factory && \
     chmod 0755 /var/run/katamaran
 COPY --from=builder /katamaran-factory /usr/local/bin/katamaran-factory
 USER factory
-LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+LABEL org.opencontainers.image.title="katamaran-factory" \
+      org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.documentation="https://github.com/maci0/katamaran/blob/main/docs/INSTALL.md" \
       org.opencontainers.image.description="Katamaran VM factory: gRPC cache server for Kata live migration" \
       org.opencontainers.image.version="${VERSION}"
 ENTRYPOINT ["/usr/local/bin/katamaran-factory"]

@@ -32,7 +32,9 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -q --spider http://localhost:8080/healthz || exit 1
 ARG VERSION=dev
-LABEL org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+LABEL org.opencontainers.image.title="katamaran-dashboard" \
+      org.opencontainers.image.source="https://github.com/maci0/katamaran" \
+      org.opencontainers.image.documentation="https://github.com/maci0/katamaran/blob/main/docs/INSTALL.md" \
       org.opencontainers.image.description="Katamaran migration dashboard" \
       org.opencontainers.image.version="${VERSION}"
 
