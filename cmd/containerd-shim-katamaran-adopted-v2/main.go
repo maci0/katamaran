@@ -39,6 +39,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	taskAPIv2 "github.com/containerd/containerd/api/runtime/task/v2"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
@@ -333,6 +335,13 @@ func writeShimLog(f *os.File, maxBytes int64, record []byte) (err error) {
 	}
 	if int64(len(record)) > maxBytes {
 		record = record[int64(len(record))-maxBytes:]
+		// The cut can land inside a multi-byte sequence, leaving the kept
+		// window starting on a continuation byte. Drop the partial head so
+		// shim.log stays decodable instead of opening every retained record
+		// with a replacement character.
+		for len(record) > 0 && !utf8.RuneStart(record[0]) {
+			record = record[1:]
+		}
 	}
 	if fi.Size() > maxBytes-int64(len(record)) {
 		if err = f.Truncate(0); err != nil {
@@ -899,18 +908,17 @@ func readAdoptedSandboxID(bundleDir string) string {
 	if err != nil {
 		return ""
 	}
-	// Avoid pulling in the full runtime-spec parser; the annotation
-	// format is well-known and this is a shim with a small string
-	// budget. Look for `"katamaran.io/adopted-sandbox-id":"<value>"`.
-	needle := `"` + adoptedSandboxAnnotation + `":"`
-	i := strings.Index(string(data), needle)
-	if i < 0 {
+	// Decode only the annotations map: the full OCI runtime spec is large
+	// and a shim has no business modeling it, but the value still has to
+	// come from a real JSON string. A substring scan for
+	// `"<annotation>":"` also matches the needle inside another
+	// annotation's or label's value, and the shim would then adopt a
+	// sandbox nobody asked for.
+	var spec struct {
+		Annotations map[string]string `json:"annotations"`
+	}
+	if err := json.Unmarshal(data, &spec); err != nil {
 		return ""
 	}
-	rest := string(data)[i+len(needle):]
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
+	return spec.Annotations[adoptedSandboxAnnotation]
 }

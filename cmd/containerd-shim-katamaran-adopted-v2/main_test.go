@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestValidAdoptedSandboxID(t *testing.T) {
@@ -171,6 +172,41 @@ func TestWriteShimLogBound(t *testing.T) {
 	}
 }
 
+func TestWriteShimLogTruncationKeepsValidUTF8(t *testing.T) {
+	// Every offset of a 4-byte rune is exercised: the byte-boundary cut
+	// lands mid-rune for all but the leading one, and the kept window must
+	// never start on a continuation byte.
+	for _, r := range []rune{'é', '界', '😀'} {
+		text := []byte(string(r))
+		for cut := 0; cut < len(text); cut++ {
+			const maxBytes = 8
+			path := filepath.Join(t.TempDir(), "shim.log")
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := append(bytes.Repeat([]byte("x"), maxBytes-len(text)+cut), text...)
+			record = append(record, []byte("tail")...)
+			if err := writeShimLog(f, maxBytes, record); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !utf8.Valid(got) {
+				t.Errorf("rune %q cut at offset %d: kept %d bytes = %q, want valid UTF-8", r, cut, maxBytes, got)
+			}
+			if !bytes.HasSuffix(got, []byte("tail")) {
+				t.Errorf("rune %q cut at offset %d: log = %q, want the record tail", r, cut, got)
+			}
+		}
+	}
+}
+
 func TestWriteShimLogExistingOversizedFile(t *testing.T) {
 	const maxBytes = 32
 	path := filepath.Join(t.TempDir(), "shim.log")
@@ -192,5 +228,58 @@ func TestWriteShimLogExistingOversizedFile(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("log = %q, want %q", got, want)
+	}
+}
+
+func TestReadAdoptedSandboxID(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "annotation present",
+			body: `{"annotations":{"` + adoptedSandboxAnnotation + `":"sandbox-a"}}`,
+			want: "sandbox-a",
+		},
+		{
+			name: "annotation absent",
+			body: `{"annotations":{"other":"x"}}`,
+			want: "",
+		},
+		{
+			name: "needle quoted inside another value",
+			body: `{"annotations":{"note":"see \"` + adoptedSandboxAnnotation + `\":\"wrong\" here","` +
+				adoptedSandboxAnnotation + `":"right"}}`,
+			want: "right",
+		},
+		{
+			name: "escaped value",
+			body: `{"annotations":{"` + adoptedSandboxAnnotation + `":"sandbox\u002da"}}`,
+			want: "sandbox-a",
+		},
+		{
+			name: "malformed json",
+			body: `{"annotations":{"` + adoptedSandboxAnnotation + `":"a"`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readAdoptedSandboxID(write(t, tc.body)); got != tc.want {
+				t.Errorf("readAdoptedSandboxID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := readAdoptedSandboxID(""); got != "" {
+		t.Errorf("readAdoptedSandboxID(\"\") = %q, want empty", got)
 	}
 }

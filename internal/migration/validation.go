@@ -22,10 +22,16 @@ func validateTapIface(name string) error {
 	return nil
 }
 
+// maxNetnsPathLen caps the netns path at 256 bytes. The bound is in bytes
+// because the path is handed to the kernel as a byte string, and a netns
+// name is a filesystem entry that can hold arbitrary bytes; the allowlist
+// below then narrows it to ASCII anyway.
+const maxNetnsPathLen = 256
+
 // validateTapNetns checks that path is a safe network namespace path.
 func validateTapNetns(path string) error {
-	if len(path) > 256 {
-		return fmt.Errorf("netns path too long: %d chars", len(path))
+	if len(path) > maxNetnsPathLen {
+		return fmt.Errorf("netns path too long: %d bytes (max %d)", len(path), maxNetnsPathLen)
 	}
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("netns path contains path traversal: %q", path)

@@ -199,10 +199,22 @@ func TestValidateTapNetns(t *testing.T) {
 		}
 	}
 
-	// Path length limit.
-	long := "/" + strings.Repeat("a", 256)
+	// Path length limit, in bytes: a multibyte rune cannot buy extra
+	// headroom past the cap, and a path exactly at the cap still passes.
+	atLimit := "/" + strings.Repeat("a", maxNetnsPathLen-1)
+	if len(atLimit) != maxNetnsPathLen {
+		t.Fatalf("test path is %d bytes, want %d", len(atLimit), maxNetnsPathLen)
+	}
+	if err := validateTapNetns(atLimit); err != nil {
+		t.Errorf("path at the %d-byte cap was rejected: %v", maxNetnsPathLen, err)
+	}
+	long := "/" + strings.Repeat("a", maxNetnsPathLen)
 	if err := validateTapNetns(long); err == nil {
 		t.Error("expected overlong path to be rejected")
+	}
+	multibyte := "/" + strings.Repeat("é", maxNetnsPathLen/2)
+	if err := validateTapNetns(multibyte); err == nil {
+		t.Error("expected a multibyte path over the byte cap to be rejected")
 	}
 }
 
