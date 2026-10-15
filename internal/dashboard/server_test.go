@@ -122,6 +122,25 @@ func TestServeDrainsRequests(t *testing.T) {
 	}
 }
 
+func TestRun_Schema(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"schema"}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), `"clispec":"0.3"`) || !strings.Contains(stdout.String(), buildinfo.Version) {
+		t.Fatalf("schema code %d stdout %s stderr %s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = Run(context.Background(), []string{"-o", "json", "--nope"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), `"kind":"usage"`) {
+		t.Fatalf("json usage code %d stderr %s", code, stderr.String())
+	}
+	stdout.Reset()
+	code = Run(context.Background(), []string{"-o", "text", "--version"}, &stdout, &stderr)
+	if code != 0 || strings.HasPrefix(stdout.String(), "{") {
+		t.Fatalf("text version %d %q", code, stdout.String())
+	}
+}
+
 func TestRun_Help(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer

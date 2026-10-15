@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
 
@@ -12,6 +15,21 @@ import (
 // `< /dev/null` must reach readRequest and report the missing request, not be
 // turned away with the "stdin is a terminal" message that is meant to stop an
 // interactive invocation from blocking on EOF.
+func TestSchema(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	_, _, code, handled := clispec.Gate([]string{"schema"}, &stdout, &stderr, "katamaran-orchestrator", buildinfo.Version, specDoc())
+	if !handled || code != 0 || !strings.Contains(stdout.String(), `"clispec":"0.3"`) || !strings.Contains(stdout.String(), `"stream_format":"ndjson"`) {
+		t.Fatalf("schema handled=%v code=%d stdout=%s stderr=%s", handled, code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	_, _, code, _ = clispec.Gate([]string{"-o", "text", "version"}, &stdout, &stderr, "katamaran-orchestrator", buildinfo.Version, specDoc())
+	if code != 0 || strings.HasPrefix(stdout.String(), "{") {
+		t.Fatalf("text version %d %q", code, stdout.String())
+	}
+}
+
 func TestIsStdinTTYRejectsNonTerminalCharDevice(t *testing.T) {
 	t.Parallel()
 	f, err := os.Open(os.DevNull)

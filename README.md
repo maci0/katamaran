@@ -427,6 +427,8 @@ katamaran provides two modes (`source` and `dest`) to coordinate migration.
 
 For full details on CLI flags, direct usage, shared storage mode, IPv6, Cloud VPC configuration, and Kubernetes Job-based orchestration, please see the **[Usage Guide](docs/USAGE.md)**.
 
+`katamaran schema` prints the CLI spec and loads no cluster. `-o json version` prints the version as JSON. `auto` stays text on a pipe.
+
 
 ---
 

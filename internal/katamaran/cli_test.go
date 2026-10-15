@@ -45,6 +45,40 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
+func TestRun_SchemaAndJSONFailure(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"schema"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("schema exit %d stderr %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"clispec":"0.3"`) || !strings.Contains(stdout.String(), buildinfo.Version) {
+		t.Fatalf("schema stdout: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"piped":"text"`) || !strings.Contains(stdout.String(), `"name":"migrate"`) {
+		t.Fatalf("schema shape: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run(context.Background(), []string{"-o", "json", "--nope"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("usage exit %d", code)
+	}
+	lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, `"kind":"usage"`) {
+		t.Fatalf("envelope: %s", last)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run(context.Background(), []string{"-o", "text", "version"}, &stdout, &stderr)
+	if code != 0 || strings.HasPrefix(stdout.String(), "{") {
+		t.Fatalf("text version %d %q", code, stdout.String())
+	}
+}
+
 func TestRun_MissingMode(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer

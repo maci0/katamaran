@@ -12,6 +12,14 @@ workflow refuses to publish a tag that has no section below.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-15
+
+### Added
+
+- `schema` on the user-facing commands prints a CLI Spec 0.3 document and needs no cluster, no config, and no network. `schema <command>` returns that document filtered to the command.
+- `-o` / `--output` accept `auto`, `text`, or `json` before the command. `auto` stays text on a pipe. `version` and `--version` print `{"version":"..."}` in JSON mode. A usage exit (2), a failure exit (1), or a signal exit (130) then ends with an error object on stderr when JSON mode is explicit.
+- Log format stays on stderr. `KATAMARAN_*` marker lines and orchestrator status lines stay the bytes they were.
+
 ## [0.7.0] - 2026-09-29
 
 ### Added
@@ -779,7 +787,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/maci0/katamaran/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/maci0/katamaran/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/maci0/katamaran/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/maci0/katamaran/compare/v0.4.2...v0.5.0

@@ -41,6 +41,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/controller"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
@@ -51,6 +52,8 @@ func printUsage(w io.Writer) {
 
 Usage:
   katamaran-mgr [flags]
+  katamaran-mgr schema [command]
+  katamaran-mgr version
   katamaran-mgr --version
   katamaran-mgr --help
 
@@ -72,6 +75,7 @@ Flags:
   --log-level string              Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
 Other:
+  -o, --output FMT                Output format: auto, text, or json [default: auto]. auto stays text on a pipe
   -v, --version                   Show version and exit
   -h, --help                      Show this help and exit
 
@@ -99,7 +103,29 @@ Examples:
 `)
 }
 
+func specDoc() clispec.Doc {
+	return clispec.New("katamaran-mgr", buildinfo.Version, "Kubernetes controller for the Migration CRD.", []clispec.Command{{
+		Name:        "serve",
+		Description: "Reconcile Migration resources. Invoked as katamaran-mgr with no subcommand. A retry is not safe.",
+		Effects:     "non_idempotent",
+		OutputKind:  "opaque",
+		MediaType:   "text/plain",
+	}}, clispec.Errors())
+}
+
+var cliOutputMode = "auto"
+
+func exitCLI(code int) {
+	clispec.Finish(os.Stderr, cliOutputMode, code)
+	os.Exit(code)
+}
+
 func main() {
+	mode, args, code, handled := clispec.Gate(os.Args[1:], os.Stdout, os.Stderr, "katamaran-mgr", buildinfo.Version, specDoc())
+	cliOutputMode = mode
+	if handled {
+		exitCLI(code)
+	}
 	fs := flag.NewFlagSet("katamaran-mgr", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
@@ -117,37 +143,38 @@ func main() {
 	var common buildinfo.CommonFlags
 	common.Register(fs)
 	fs.Usage = func() { printUsage(os.Stderr) }
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		os.Exit(2)
+	if err := fs.Parse(args); err != nil {
+		exitCLI(2)
 	}
+	common.Format = mode
 	if code, handled := common.Act(fs, "katamaran-mgr", os.Stdout, os.Stderr, printUsage); handled {
-		os.Exit(code)
+		exitCLI(code)
 	}
 	if !validListenAddr(*addr) {
 		fmt.Fprintf(os.Stderr, "Error: invalid --addr %q (expected host:port, for example :8081 or 0.0.0.0:8081)\n\n", *addr)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if !*disableWebhook && !validListenAddr(*webhookAddr) {
 		fmt.Fprintf(os.Stderr, "Error: invalid --webhook-addr %q (expected host:port, for example :9443 or 0.0.0.0:9443)\n\n", *webhookAddr)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *podWaitTimeout <= 0 {
 		fmt.Fprintf(os.Stderr, "Error: --pod-wait-timeout must be greater than 0, got %s\n\n", *podWaitTimeout)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if !*skipLeaderElect {
 		if strings.TrimSpace(*leaderNamespace) == "" {
 			fmt.Fprintf(os.Stderr, "Error: --leader-namespace must not be empty\n\n")
 			printUsage(os.Stderr)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		if strings.TrimSpace(*leaderName) == "" {
 			fmt.Fprintf(os.Stderr, "Error: --leader-name must not be empty\n\n")
 			printUsage(os.Stderr)
-			os.Exit(2)
+			exitCLI(2)
 		}
 	}
 
@@ -157,17 +184,17 @@ func main() {
 	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-mgr"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	allowedImage := os.Getenv("KATAMARAN_MIGRATION_IMAGE")
 	if allowedImage == "" {
 		fmt.Fprintln(os.Stderr, "Error: KATAMARAN_MIGRATION_IMAGE is required; set it to a trusted migration image")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if err := orchestrator.ValidateSafeArgValue("KATAMARAN_MIGRATION_IMAGE", allowedImage); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Resolved before any Kubernetes client is built so a malformed value
@@ -177,7 +204,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	*podWaitTimeout = resolvedPodWait
 
@@ -388,5 +415,5 @@ func setLeaderLabel(ctx context.Context, kube kubernetes.Interface, namespace, p
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-	os.Exit(1)
+	exitCLI(1)
 }

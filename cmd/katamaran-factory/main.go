@@ -59,6 +59,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/factory"
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"github.com/maci0/katamaran/internal/logging"
@@ -83,6 +84,8 @@ func printUsage(w io.Writer) {
 
 Usage:
   katamaran-factory [flags]
+  katamaran-factory schema [command]
+  katamaran-factory version
   katamaran-factory --version
   katamaran-factory --help
 
@@ -93,6 +96,7 @@ Flags:
   --log-level string     Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
 Other:
+  -o, --output FMT       Output format: auto, text, or json [default: auto]. auto stays text on a pipe
   -v, --version          Show version and exit
   -h, --help             Show this help and exit
 
@@ -110,7 +114,29 @@ Examples:
 `)
 }
 
+func specDoc() clispec.Doc {
+	return clispec.New("katamaran-factory", buildinfo.Version, "gRPC VM cache server for Kata Containers live migration.", []clispec.Command{{
+		Name:        "serve",
+		Description: "Serve the VM cache socket. Invoked as katamaran-factory with no subcommand. A retry is not safe.",
+		Effects:     "non_idempotent",
+		OutputKind:  "opaque",
+		MediaType:   "text/plain",
+	}}, clispec.Errors())
+}
+
+var cliOutputMode = "auto"
+
+func exitCLI(code int) {
+	clispec.Finish(os.Stderr, cliOutputMode, code)
+	os.Exit(code)
+}
+
 func main() {
+	mode, args, code, handled := clispec.Gate(os.Args[1:], os.Stdout, os.Stderr, "katamaran-factory", buildinfo.Version, specDoc())
+	cliOutputMode = mode
+	if handled {
+		exitCLI(code)
+	}
 	fs := flag.NewFlagSet("katamaran-factory", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	listen := fs.String("listen", "/var/run/katamaran/factory.sock", "Unix socket path for the gRPC server")
@@ -121,21 +147,22 @@ func main() {
 	common.Register(fs)
 	fs.Usage = func() { printUsage(os.Stderr) }
 
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		os.Exit(2)
+	if err := fs.Parse(args); err != nil {
+		exitCLI(2)
 	}
+	common.Format = mode
 	if code, handled := common.Act(fs, "katamaran-factory", os.Stdout, os.Stderr, printUsage); handled {
-		os.Exit(code)
+		exitCLI(code)
 	}
 	if *listen == "" {
 		fmt.Fprintf(os.Stderr, "Error: --listen must not be empty\n\n")
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *watchDir == "" {
 		fmt.Fprintf(os.Stderr, "Error: --watch-dir must not be empty\n\n")
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	*logFormat = strings.ToLower(*logFormat)
@@ -144,7 +171,7 @@ func main() {
 	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-factory"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Ensure the socket directory exists.
@@ -219,5 +246,5 @@ func main() {
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-	os.Exit(1)
+	exitCLI(1)
 }

@@ -15,8 +15,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/controller"
 )
+
+func TestSchema(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	_, _, code, handled := clispec.Gate([]string{"schema"}, &stdout, &stderr, "katamaran-mgr", buildinfo.Version, specDoc())
+	if !handled || code != 0 || !strings.Contains(stdout.String(), `"clispec":"0.3"`) || !strings.Contains(stdout.String(), buildinfo.Version) {
+		t.Fatalf("schema handled=%v code=%d stdout=%s stderr=%s", handled, code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	_, _, code, _ = clispec.Gate([]string{"-o", "json", "schema", "missing"}, &stdout, &stderr, "katamaran-mgr", buildinfo.Version, specDoc())
+	clispec.Finish(&stderr, "json", code)
+	if code != 2 || !strings.Contains(stderr.String(), `"kind":"usage"`) {
+		t.Fatalf("usage code %d stderr %s", code, stderr.String())
+	}
+}
 
 func TestMigrationImageStartupValidation(t *testing.T) {
 	if os.Getenv("KATAMARAN_TEST_IMAGE_STARTUP") == "1" {

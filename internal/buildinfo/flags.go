@@ -16,6 +16,9 @@ type CommonFlags struct {
 	short   bool
 	help    bool
 	helpSh  bool
+	// Format is auto, text, or json. Callers set it from -o / --output,
+	// which is parsed before the flag set so it can precede the command.
+	Format string
 }
 
 // Register adds the shared flags to fs.
@@ -36,7 +39,11 @@ func (c *CommonFlags) Act(fs *flag.FlagSet, name string, stdout, stderr io.Write
 		return 0, true
 	}
 	if c.version || c.short {
-		_, _ = fmt.Fprintf(stdout, "%s %s\n", name, Version)
+		if c.Format == "json" {
+			_, _ = fmt.Fprintf(stdout, "{\"version\":%q}\n", Version)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "%s %s\n", name, Version)
+		}
 		return 0, true
 	}
 	if fs.NArg() > 0 {

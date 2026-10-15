@@ -33,7 +33,8 @@ one is absent.
   `internal/images/images_test.go`: digest-pinned bases, exec-form ENTRYPOINT,
   the OCI title/source/documentation/description/version labels, and a `USER` in
   the runtime stage unless the file carries a `No USER:` rationale.
-- `cmd/containerd-shim-katamaran-adopted-v2` is experimental.
+- `cmd/containerd-shim-katamaran-adopted-v2` is experimental. It is not a user CLI.
+- User-facing commands accept `schema` and `-o` / `--output` `auto|text|json` before the command. `auto` stays text on a pipe. Log format stays on stderr. `KATAMARAN_*` marker lines and orchestrator status lines stay unchanged in every output mode.
 - Dashboard assets are vendored under `internal/dashboard/assets/` and served
   same-origin. No CDN references, no remote script loads.
 - Every file under `internal/dashboard/assets/` is third-party code, so it

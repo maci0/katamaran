@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/qmp"
 )
 
@@ -34,6 +36,8 @@ const (
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: qmp-hotplug-disk <qmp-socket> <disk-image>
+       qmp-hotplug-disk schema [command]
+       qmp-hotplug-disk version
 
 Attaches a virtio-blk data disk to a running QEMU over its QMP socket, so a
 booted VM gains a disk without a restart. The disk is pinned to
@@ -45,19 +49,42 @@ Positional arguments:
   <disk-image>   Path to the backing image to attach
 
 Options:
-  -h, --help     Show this help and exit
+  -o, --output FMT   Output format: auto, text, or json [default: auto]. auto stays text on a pipe
+  -v, --version      Show version and exit
+  -h, --help         Show this help and exit
 `)
+}
+
+func specDoc() clispec.Doc {
+	return clispec.New("qmp-hotplug-disk", buildinfo.Version, "Attach a virtio-blk data disk to a running QEMU over QMP.", []clispec.Command{{
+		Name:        "attach",
+		Description: "Attach a disk. Invoked as qmp-hotplug-disk <qmp-socket> <disk-image>, without the word attach. A retry is not safe.",
+		Effects:     "non_idempotent",
+		OutputKind:  "opaque",
+		MediaType:   "text/plain",
+	}}, clispec.Errors())
 }
 
 // Run contains all CLI logic: flag parsing, validation, and the QMP
 // conversation. Extracted from main() so the argument handling is testable
 // without os.Exit.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	mode, rest, code, handled := clispec.Gate(args, stdout, stderr, "qmp-hotplug-disk", buildinfo.Version, specDoc())
+	if !handled {
+		code = run(ctx, rest, stdout, stderr, mode)
+	}
+	clispec.Finish(stderr, mode, code)
+	return code
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, mode string) int {
 	fs := flag.NewFlagSet("qmp-hotplug-disk", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	helpFlag := fs.Bool("help", false, "")
 	helpFlagShort := fs.Bool("h", false, "")
+	versionFlag := fs.Bool("version", false, "")
+	versionShort := fs.Bool("v", false, "")
 
 	fs.Usage = func() { printUsage(stderr) }
 
@@ -67,6 +94,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if *helpFlag || *helpFlagShort {
 		printUsage(stdout)
+		return 0
+	}
+	if *versionFlag || *versionShort {
+		if mode == "json" {
+			fmt.Fprintf(stdout, "{\"version\":%q}\n", buildinfo.Version)
+		} else {
+			fmt.Fprintf(stdout, "qmp-hotplug-disk %s\n", buildinfo.Version)
+		}
 		return 0
 	}
 

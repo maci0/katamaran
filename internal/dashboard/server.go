@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
@@ -84,6 +85,8 @@ func printUsage(w io.Writer) {
 
 Usage:
   katamaran-dashboard [flags]
+  katamaran-dashboard schema [command]
+  katamaran-dashboard version
   katamaran-dashboard --version
   katamaran-dashboard --help
 
@@ -94,6 +97,7 @@ Flags:
   --log-level string     Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
 Other:
+  -o, --output FMT       Output format: auto, text, or json [default: auto]. auto stays text on a pipe
   -v, --version          Show version and exit
   -h, --help             Show this help and exit
 
@@ -125,9 +129,28 @@ func validListenAddr(addr string) bool {
 	return err == nil
 }
 
+func specDoc() clispec.Doc {
+	return clispec.New("katamaran-dashboard", buildinfo.Version, "Web dashboard for Kata Containers live migration.", []clispec.Command{{
+		Name:        "serve",
+		Description: "Listen for the web UI. Invoked as katamaran-dashboard with no subcommand. A retry is not safe.",
+		Effects:     "non_idempotent",
+		OutputKind:  "opaque",
+		MediaType:   "text/plain",
+	}}, clispec.Errors())
+}
+
 // Run contains all CLI logic: flag parsing, validation, and server startup.
 // Extracted from main() so the CLI validation paths can be tested without os.Exit.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	mode, rest, code, handled := clispec.Gate(args, stdout, stderr, "katamaran-dashboard", buildinfo.Version, specDoc())
+	if !handled {
+		code = runCLI(ctx, rest, stdout, stderr, mode)
+	}
+	clispec.Finish(stderr, mode, code)
+	return code
+}
+
+func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, mode string) int {
 	fs := flag.NewFlagSet("katamaran-dashboard", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -136,6 +159,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logLevel := fs.String("log-level", "info", "Log level: 'debug', 'info', 'warn', or 'error'")
 	logFormat := fs.String("log-format", "text", "Log output format: 'text' or 'json'")
 	var common buildinfo.CommonFlags
+	common.Format = mode
 	common.Register(fs)
 
 	fs.Usage = func() { printUsage(stderr) }

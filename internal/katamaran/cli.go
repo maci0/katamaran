@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/migration"
 )
@@ -55,6 +56,8 @@ func printUsage(w io.Writer) {
 
 Usage:
   katamaran --mode <source|dest> [flags]
+  katamaran schema [command]
+  katamaran version
   katamaran --version
   katamaran --help
 
@@ -103,6 +106,7 @@ Output:
   stderr   The full log, in --log-format, plus every error and warning.
 
 Other:
+  -o, --output FMT         Output format: auto, text, or json [default: auto]. auto stays text on a pipe
   -v, --version            Show version and exit
   -h, --help               Show this help and exit
 
@@ -150,9 +154,28 @@ func configUsageError(stderr io.Writer, err error) int {
 	return usageError(stderr, "%s", strings.TrimPrefix(err.Error(), migration.ErrInvalidConfig.Error()+": "))
 }
 
+func specDoc() clispec.Doc {
+	return clispec.New("katamaran", buildinfo.Version, "Zero-packet-drop live migration for Kata Containers.", []clispec.Command{{
+		Name:        "migrate",
+		Description: "Run one side of a migration. Invoked as katamaran --mode source or katamaran --mode dest, without the word migrate. Stdout stays the KATAMARAN_* marker lines. A retry is not safe.",
+		Effects:     "non_idempotent",
+		OutputKind:  "opaque",
+		MediaType:   "text/plain",
+	}}, clispec.ErrorsWithSignal())
+}
+
 // Run contains all CLI logic: flag parsing, validation, and migration execution.
 // It is separate from cmd/katamaran so validation paths can be tested without os.Exit.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	mode, rest, code, handled := clispec.Gate(args, stdout, stderr, "katamaran", buildinfo.Version, specDoc())
+	if !handled {
+		code = run(ctx, rest, stdout, stderr, mode)
+	}
+	clispec.Finish(stderr, mode, code)
+	return code
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, outputMode string) int {
 	fs := flag.NewFlagSet("katamaran", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -180,6 +203,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	replayCmdline := fs.String("replay-cmdline", "", "Dest mode: spawn QEMU by replaying the source cmdline at this path with -incoming defer")
 	replayCmdlineFromPod := fs.String("replay-cmdline-from-pod", "", "Dest mode: fetch the source QEMU cmdline from the named source pod's log (`<namespace>/<name>`) instead of a hostPath file. Requires pods/log get on the SA")
 	var common buildinfo.CommonFlags
+	common.Format = outputMode
 	common.Register(fs)
 
 	fs.Usage = func() { printUsage(stderr) }

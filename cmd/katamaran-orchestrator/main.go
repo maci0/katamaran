@@ -30,6 +30,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/maci0/katamaran/internal/buildinfo"
+	"github.com/maci0/katamaran/internal/clispec"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
 )
@@ -54,6 +55,8 @@ func printUsage(w io.Writer) {
 
 Usage:
   echo '<json>' | katamaran-orchestrator [flags]
+  katamaran-orchestrator schema [command]
+  katamaran-orchestrator version
   katamaran-orchestrator --version
   katamaran-orchestrator --help
 
@@ -71,6 +74,7 @@ Flags:
   --log-level string     Log level: 'debug', 'info', 'warn', or 'error' (default "info")
 
 Other:
+  -o, --output FMT       Output format: auto, text, or json [default: auto]. auto stays text on a pipe
   -v, --version          Show version and exit
   -h, --help             Show this help and exit
 
@@ -104,7 +108,29 @@ func isStdinTTY(f *os.File) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
+func specDoc() clispec.Doc {
+	return clispec.New("katamaran-orchestrator", buildinfo.Version, "Submit a migration request and stream status updates.", []clispec.Command{{
+		Name:         "run",
+		Description:  "Read one migration request from stdin and write status lines on stdout. Invoked as katamaran-orchestrator with no subcommand. A retry is not safe.",
+		Effects:      "non_idempotent",
+		OutputKind:   "stream",
+		StreamFormat: "ndjson",
+	}}, clispec.ErrorsWithSignal())
+}
+
+var cliOutputMode = "auto"
+
+func exitCLI(code int) {
+	clispec.Finish(os.Stderr, cliOutputMode, code)
+	os.Exit(code)
+}
+
 func main() {
+	mode, args, code, handled := clispec.Gate(os.Args[1:], os.Stdout, os.Stderr, "katamaran-orchestrator", buildinfo.Version, specDoc())
+	cliOutputMode = mode
+	if handled {
+		exitCLI(code)
+	}
 	fs := flag.NewFlagSet("katamaran-orchestrator", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
@@ -113,11 +139,12 @@ func main() {
 	var common buildinfo.CommonFlags
 	common.Register(fs)
 	fs.Usage = func() { printUsage(os.Stderr) }
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		os.Exit(2)
+	if err := fs.Parse(args); err != nil {
+		exitCLI(2)
 	}
+	common.Format = mode
 	if code, handled := common.Act(fs, "katamaran-orchestrator", os.Stdout, os.Stderr, printUsage); handled {
-		os.Exit(code)
+		exitCLI(code)
 	}
 
 	*logFormat = strings.ToLower(*logFormat)
@@ -125,24 +152,24 @@ func main() {
 	if err := logging.SetupLogger(os.Stderr, *logFormat, *logLevel, "katamaran-orchestrator"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	if isStdinTTY(os.Stdin) {
 		fmt.Fprintf(os.Stderr, "Error: stdin is a terminal; pipe a JSON request, e.g. `echo '{...}' | katamaran-orchestrator`\n\n")
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	req, err := readRequest(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if err := orchestrator.Validate(req); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid request: %v\n\n", err)
 		printUsage(os.Stderr)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Catch SIGINT/SIGTERM so a Ctrl-C cleanly stops the in-flight migration.
@@ -152,17 +179,17 @@ func main() {
 	o, err := orchestrator.New(*kubeconfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: orchestrator init: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	id, err := o.Apply(ctx, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: apply: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	updates, err := o.Watch(ctx, id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: watch: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -198,7 +225,7 @@ func main() {
 		case <-time.After(signalExitGrace):
 			slog.Warn("Status stream did not close after signal; exiting and leaving migration Jobs to their natural end",
 				"migration_id", string(id), "grace", signalExitGrace)
-			os.Exit(130)
+			exitCLI(130)
 		}
 	}()
 	exit := 0
@@ -206,7 +233,7 @@ func main() {
 	for u := range updates {
 		if err := enc.Encode(newStatusOutput(u)); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: write status update: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		lastPhase = u.Phase
 		if u.Phase == orchestrator.PhaseFailed {
@@ -227,7 +254,7 @@ func main() {
 	// emitted a final PhaseFailed update during teardown: otherwise a
 	// Ctrl-C looks indistinguishable from a real migration failure.
 	if ctx.Err() != nil {
-		os.Exit(130)
+		exitCLI(130)
 	}
-	os.Exit(exit)
+	exitCLI(exit)
 }
