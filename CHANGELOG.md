@@ -12,6 +12,22 @@ workflow refuses to publish a tag that has no section below.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-15
+
+### Fixed
+
+- `go.mod` go directive on 1.26.9, clearing the stdlib advisories
+  govulncheck flagged against 1.26.6 (GO-2026-6617, -6613, -6612, -6611,
+  -6610, -6609, -6608, -6607, -6605, -6603, -6600, -6599), including
+  GO-2026-6600 and GO-2026-6599 in `html/template`.
+- All four Dockerfiles pin the golang builder at go 1.27.2 (previously
+  1.27.1), so the shipped binaries carry the patched stdlib. The image
+  sets `GOTOOLCHAIN=local`, and govulncheck reads the `go` directive
+  rather than that image.
+- `golang.org/x/net` v0.60.0, the published fix for the HTTP/2 advisories
+  govulncheck also reported in v0.59.0 (GO-2026-6617, -6612, -6611,
+  -6610, -6603).
+
 ## [0.8.0] - 2026-10-15
 
 ### Added
@@ -787,7 +803,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/maci0/katamaran/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/maci0/katamaran/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/maci0/katamaran/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/maci0/katamaran/compare/v0.5.0...v0.6.0

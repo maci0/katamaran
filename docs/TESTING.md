@@ -47,7 +47,7 @@ E2E tests run on either minikube or Kind with KVM support. No manual QEMU VM pro
 
 Use Linux (amd64 or arm64, as tested in CI) with:
 
-- Go at least the version in `go.mod` (currently 1.26.6), including `gofmt`.
+- Go at least the version in `go.mod` (currently 1.26.9), including `gofmt`.
 - Git, GNU Make, Bash, and standard Unix utilities.
 - GCC or Clang and C development headers for `go test -race`; CGO must be enabled (`go env CGO_ENABLED` should print `1`).
 - ShellCheck 0.9.0 or newer for `make lint-shell` (CI uses Ubuntu 24.04's package).
