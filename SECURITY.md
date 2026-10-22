@@ -2,14 +2,10 @@
 
 ## Reporting a vulnerability
 
-No private disclosure channel is configured for this project. Until one is,
-there is no address to send a report to and no response time to expect. This
-file does not name one, because inventing a contact is worse than recording
-the gap: a reader who trusts a listed address will wait on it.
-
-Setting up a channel is a decision for the project owner, not for a
-contributor editing this file. Until it exists, treat the absence as a known
-gap, not as permission to publish a vulnerability in a public issue.
+Report suspected vulnerabilities privately to **maci.stgn@gmail.com**.
+Include the affected commit, attacker prerequisites, impact, and a minimal
+reproducer. Do not publish exploit payloads, guest data, or credentials in a
+public issue. There is no promised response or fix-shipped SLA.
 
 ## Supported versions
 

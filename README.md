@@ -765,3 +765,8 @@ Kata Containers supports [Multus CNI](https://github.com/k8snetworkplumbingwg/mu
 - **NetworkAttachmentDefinition replay**: Destination must have matching `NetworkAttachmentDefinition` CRs and available device resources (e.g. SR-IOV VFs) on the target node
 - **IPAM coordination across interfaces**: Each Multus interface may use a different IPAM: the primary CNI's cluster-wide pool plus per-interface static or DHCP assignments that must be preserved or re-acquired
 - **QEMU device topology**: Additional NICs appear as hotplugged PCI devices in the guest VM. The destination QEMU must reconstruct the same PCI topology (device IDs, bus addresses) for the guest to recognize its interfaces after resume
+
+## License
+
+Katamaran is licensed under the [GNU General Public License, version 3 or later](LICENSE)
+(`GPL-3.0-or-later`). Third-party files retain their existing license notices.
