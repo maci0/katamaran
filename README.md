@@ -275,14 +275,15 @@ Dockerfile.mgr                  # Migration controller container image build
 cmd/
   katamaran/
     main.go                     # Thin wrapper around internal/katamaran.Run
-    main_test.go                # CLI validation and flag behavior tests
-  dashboard/
-    main.go                     # Dashboard CLI wrapper
+                                #   (CLI tests live in internal/katamaran/cli_test.go)
+  katamaran-dashboard/
+    main.go                     # Thin wrapper around internal/dashboard.Run
     README.md                   # Dashboard usage guide
   katamaran-orchestrator/
     main.go                     # Structured JSON-in / NDJSON-out orchestrator CLI
     request.go                  # JSON Request decoding helpers
     status.go                   # NDJSON status emission helpers
+    status_test.go              # NDJSON status emission tests
     main_test.go                # CLI validation tests
   katamaran-mgr/
     main.go                     # Migration CRD controller entrypoint
@@ -293,6 +294,9 @@ cmd/
   containerd-shim-katamaran-adopted-v2/
     main.go                     # Containerd v2 shim (ttrpc TaskService) that adopts a migrated QEMU (Approach E)
     main_test.go                # Shim sandbox-id validation tests
+    concurrency_test.go         # Concurrent adoption race tests
+  qmp-hotplug-disk/
+    main.go                     # E2E helper: attach a data disk over QMP (not a shipped image)
   katamaran-factory/
     main.go                     # Kata VM cache gRPC server entrypoint
     main_test.go                # Factory CLI tests
@@ -301,25 +305,40 @@ internal/
     adopt.go                    # Sandbox-adoption contract constants (cgroup root, annotation, default id)
   buildinfo/
     buildinfo.go                # Build version variable (overridden via ldflags)
+    flags.go                    # Shared --version/-v/--help/-h flags every binary registers
+  clispec/
+    clispec.go                  # CLI Spec 0.3 document plus the shared -o/--output gate
+    clispec_test.go             # Spec document and output-mode tests
   controller/
     reconciler.go               # Migration CRD reconcile loop and status patching
     reconciler_test.go          # Controller reconciliation tests
-    admission.go                # Pending-adoption registry + webhook deny decision (ShouldDenyPodCreate)
+    admission.go                # Pending-adoption registry + webhook deny decision
     admission_test.go           # Admission decision tests
+    concurrency_test.go         # Concurrent reconcile race tests
+    recover_timeout_test.go     # Recovery-path timeout tests
+    timeout_budget_test.go      # StatusTimeout vs Job deadline budget tests
   dashboard/
     index.html                  # Embedded dashboard frontend (dark theme, Chart.js)
-    doc.go                      # Package-level overview
-    server.go                   # Dashboard web server and route table
+    index.test.cjs              # Frontend unit tests (Node's built-in test runner)
+    server.go                   # Dashboard web server, CLI, and route table
     server_test.go              # Dashboard endpoint, middleware, and security tests
     loadgen.go                  # Ping and HTTP load generator handlers
     metrics.go                  # expvar counters and duration buckets
+    metrics_test.go             # Metrics endpoint tests
     middleware.go               # HTTP middleware (logging, recovery, CSRF, security headers)
     migrate.go                  # Migration orchestration handler
+    migrate_test.go             # Migration handler tests
+    authorization.go            # Namespace allowlist (KATAMARAN_ALLOWED_NAMESPACES)
+    authorization_test.go       # Namespace allowlist tests
     response.go                 # JSON response + form-POST parsing helpers
     types.go                    # Dashboard state and API response types
     validation.go               # Input validation and SSRF prevention
+    validation_test.go          # Input validation tests
     validation_fuzz_test.go     # Fuzz tests for input validation
+    concurrency_test.go         # Concurrent request race tests
+    assets_test.go              # Vendored asset digest and route tests
     orch_fakes_test.go          # Shared orchestrator fakes for handler tests
+    assets/                     # Vendored third-party bundles (digest-pinned, same-origin)
   factory/
     server.go                   # Kata VM cache gRPC server implementation
     server_test.go              # Cache gRPC server unit tests
@@ -327,9 +346,16 @@ internal/
     watcher_test.go             # Watcher unit tests
     nodeconfig.go               # Node VMConfig loader (Kata sandbox persist.json polling)
     nodeconfig_test.go          # Node VMConfig loader unit tests
+    concurrency_test.go         # Concurrent cache-server race tests
     cachepb/                    # Generated CacheService protobuf bindings
+  hotplug/
+    hotplug.go                  # QMP disk-attach logic behind cmd/qmp-hotplug-disk
+    hotplug_test.go             # Disk-attach unit tests
+  images/
+    images_test.go              # Shipped-image invariants (pins, labels, USER, ENTRYPOINT)
   katamaran/
     cli.go                      # Primary source/destination CLI implementation
+    cli_test.go                 # CLI validation and flag behavior tests
   logging/
     logging.go                  # Logging setup helpers (SetupLogger)
     logging_test.go             # Logging tests
@@ -351,9 +377,12 @@ internal/
     exec_test.go                # Exec unit tests
     podresolve.go               # Resolves pod IP / sandbox UUID / QEMU PID via apiserver + procfs
     podresolve_test.go          # Pod-resolver unit tests
-    meta.go                     # migration-meta.json on-disk contract shared with internal/factory
     qmp_recording_test.go       # QMP command recording helpers for migration tests
     parsers_fuzz_test.go        # Fuzz tests for cmdline and pod-ref parsers
+    markers.go                  # KATAMARAN_* stdout marker lines the orchestrator scrapes
+    meta.go                     # migration-meta.json on-disk contract shared with internal/factory
+    meta_test.go                # migration-meta.json contract tests
+    validation_test.go          # Tap-interface / netns / drive-id validator tests
     source.go                   # Source-side migration logic and polling
     source_test.go              # Source unit tests
     tunnel.go                   # IP tunnel setup/teardown (IPIP/GRE/ip6ip6/ip6gre)
@@ -367,9 +396,23 @@ internal/
     validation.go               # Request validation (Validate, ValidateSafeArgValue)
     validation_test.go          # Request validation tests
     cmdline.go                  # hostPath layout for the captured-cmdline replay flow
-    discovery*.go               # Kubernetes pod/node discovery boundary
-    native*.go                  # client-go implementation that submits migration Jobs
+    discovery.go                # Kubernetes pod/node discovery boundary
+    discovery_native.go         # client-go discovery implementation
+    discovery_native_test.go    # Discovery implementation tests
+    native.go                   # client-go Apply/Watch/Stop that submits migration Jobs
+    native_jobs.go              # Job manifest rendering from the embedded templates
+    native_test.go              # Native orchestrator tests
+    progress.go                 # Source-pod log tail that scrapes KATAMARAN_* markers
+    inflight.go                 # In-flight migration guard (one migration per pod)
+    joberrors.go                # Job failure classification
+    fuzz_test.go                # Fuzz tests for request-argument validation
+    drain_test.go               # Status-stream drain tests
+    inflight_deadline_test.go   # In-flight guard deadline tests
+    job_deadline_test.go        # Job activeDeadlineSeconds budget tests
+    replay_test.go              # Cmdline-replay orchestration tests
     templates/                  # Embedded source/destination Job manifests
+      job-source.yaml           # Source Job template (also rendered by deploy/migrate.sh)
+      job-dest.yaml             # Destination Job template
   qmp/
     client.go                   # QMP client (connect, execute, wait for events)
     client_test.go              # QMP client unit tests
@@ -377,6 +420,7 @@ internal/
     types.go                    # QMP protocol types and command argument structs
   qmptest/
     qmptest.go                  # Shared test helpers for faking a QMP server
+    qmptest_test.go             # QMP test-helper tests
 deploy/
   dashboard.yaml                # Dashboard Kubernetes Deployment (no Service, by design)
   daemonset.yaml                # DaemonSet for node setup (binaries, kernel modules, QMP config when present)
@@ -397,6 +441,8 @@ docs/
   TESTING.md                    # Test environment guide
   STORIES.md                    # User stories
   ROADMAP.md                    # Project roadmap (short/medium/long term)
+  THREAT_MODEL.md               # Risk-ranked threat model
+  screenshots/                  # Dashboard screenshots linked from the READMEs
   logo.png                      # Project logo
 demo/
   nginx-kata.yaml               # Example Kata Containers pod with NGINX + NodePort

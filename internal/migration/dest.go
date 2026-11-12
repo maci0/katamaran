@@ -37,7 +37,11 @@ import (
 //  5. Waits for the RESUME event (unconditional)
 //  6. Flushes all buffered packets via release_indefinite (skipped if no qdisc installed)
 //  7. Stops the NBD server (unless shared-storage mode)
-//  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC)
+//  8. Sends Gratuitous ARP via QEMU announce-self (correct guest MAC);
+//     a failure here is logged and does not fail the migration
+//  9. Writes migration-meta.json for the factory server (best-effort)
+//  10. Re-parents the migrated QEMU into the katamaran-adopted cgroup so it
+//     survives this container's exit (best-effort; see surviveContainerExit)
 func RunDestination(ctx context.Context, cfg DestConfig) (retErr error) {
 	// Stamp dest pod identity onto every log line for this migration so
 	// operators can correlate the whole destination flow in aggregated logs.

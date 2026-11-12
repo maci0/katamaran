@@ -64,9 +64,7 @@ check-biome:
 # Lint every tracked YAML file: the Kubernetes manifests under deploy/ and
 # config/crd/, the Job templates Go embeds, the kind configs and the
 # GitHub Actions workflows. git ls-files keeps this in sync with the tree
-# (same rationale as the gofmt and shellcheck checks above), and .yamllint
-# excludes scripts/manifests/kata-pod.yaml, a shell template that is only
-# valid once e2e.sh has substituted its ${...} placeholders.
+# (same rationale as the gofmt and shellcheck checks above).
 lint-yaml: check-yamllint
 	yamllint -c .yamllint --strict $$(git ls-files '*.yml' '*.yaml')
 

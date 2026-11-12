@@ -49,9 +49,7 @@ one is absent.
 - Every tracked `.yml`/`.yaml` file is linted by `make lint-yaml` against
   `.yamllint`, which keeps the defect rules (syntax, key-duplicates, brackets,
   trailing-spaces) and disables only the stylistic ones, each with a stated
-  reason. `scripts/manifests/kata-pod.yaml` is excluded there: it is a shell
-  template, valid only after `scripts/e2e.sh` substitutes its `${...}`
-  placeholders.
+  reason.
 - `deploy/job-rbac.yaml` is the only file that declares the
   `katamaran-source` ServiceAccount the Job templates pin, and
   `deploy/metrics-services.yaml` is the only file that declares a Service.

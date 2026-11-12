@@ -281,10 +281,13 @@ The same Go package (`internal/orchestrator`) backs the dashboard's `POST /api/m
 | `KATAMARAN_KEEP_JOBS` | operator | `deploy/migrate.sh` only. `true` keeps the migration Jobs after completion instead of deleting them, for post-mortem inspection. |
 | `KATAMARAN_MIGRATION_ID` | dashboard, controller, or job wrapper | Correlation ID added to all log entries. Not set by hand. |
 
-Every one of these is also listed in the `--help` output of the binary that
-reads it, and each is validated at startup: a malformed or missing required
-value exits 2 with a message naming the variable, rather than starting with a
-default that fails later.
+`KATAMARAN_MIGRATION_IMAGE`, `KATAMARAN_POD_WAIT_TIMEOUT`, and
+`KATAMARAN_ALLOWED_NAMESPACES` are listed in the `--help` of the binary that
+reads them, and a malformed or missing required value exits 2 with a message
+naming the variable. `KATAMARAN_KEEP_JOBS` is documented by
+`deploy/migrate.sh --help` and is only honored when it equals `true`.
+`KATAMARAN_MIGRATION_ID` is optional and unvalidated: the orchestration paths
+set it, and the source and dest binaries only attach it to log entries.
 
 ## Validation Rules
 

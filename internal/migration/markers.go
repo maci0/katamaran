@@ -2,7 +2,7 @@ package migration
 
 // Structured stdout markers printed by the source binary on its pod log and
 // scraped from that log by consumers in this package (cmdlinefetch.go) and
-// by the orchestrator's log tailer (internal/orchestrator/native.go). These
+// by the orchestrator's log tailer (internal/orchestrator/progress.go). These
 // strings are a wire protocol between three binaries; every producer and
 // consumer references these constants so the exact spelling cannot drift.
 const (
