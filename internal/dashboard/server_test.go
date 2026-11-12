@@ -596,6 +596,29 @@ func TestHandleStatus_DeltaLogsAndPings(t *testing.T) {
 	if status.LogsReset || status.PingsReset {
 		t.Fatalf("unexpected reset flags: logs=%v pings=%v", status.LogsReset, status.PingsReset)
 	}
+	// The next cursor is the only thing a client has to resume from. A
+	// window that returns the right lines but a cursor at or before the one
+	// the client just sent makes every later poll re-deliver those lines.
+	if status.LogsNext != baseline.LogsNext+1 || status.PingsNext != baseline.PingsNext+1 {
+		t.Fatalf("next cursors = logs %d pings %d, want logs %d pings %d",
+			status.LogsNext, status.PingsNext, baseline.LogsNext+1, baseline.PingsNext+1)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/status?logs_after=%d&pings_after=%d", status.LogsNext, status.PingsNext), nil)
+	w = httptest.NewRecorder()
+	app.handleStatus(w, req)
+	var caught StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &caught); err != nil {
+		t.Fatalf("failed to unmarshal caught-up status: %v", err)
+	}
+	if len(caught.Logs) != 0 || len(caught.Pings) != 0 || caught.LogsReset || caught.PingsReset {
+		t.Fatalf("caught-up poll re-delivered data: logs=%v pings=%v reset=%v/%v",
+			caught.Logs, caught.Pings, caught.LogsReset, caught.PingsReset)
+	}
+	if caught.LogsNext != status.LogsNext || caught.PingsNext != status.PingsNext {
+		t.Fatalf("caught-up cursors moved: logs %d->%d pings %d->%d",
+			status.LogsNext, caught.LogsNext, status.PingsNext, caught.PingsNext)
+	}
 }
 
 func TestHandleStatus_DeltaResetSignals(t *testing.T) {

@@ -77,30 +77,32 @@ func TestRunRejectsUnknownFlag(t *testing.T) {
 // against a stub server and asserts the two commands land in the order QEMU
 // requires, with the arguments the migration topology depends on.
 func TestRunSendsBlockdevThenDeviceAdd(t *testing.T) {
+	var got []string
 	sock := serveStubQMP(t, false, func(cmd string, args json.RawMessage) {
+		got = append(got, cmd)
 		switch cmd {
 		case "blockdev-add":
-			var got qmp.BlockdevAddArgs
-			decode(t, args, &got)
-			if got.Driver != "raw" || got.NodeName != "drive-virtio-disk0" {
-				t.Errorf("blockdev-add = %+v, want raw block node drive-virtio-disk0", got)
+			var decoded qmp.BlockdevAddArgs
+			decode(t, args, &decoded)
+			if decoded.Driver != "raw" || decoded.NodeName != "drive-virtio-disk0" {
+				t.Errorf("blockdev-add = %+v, want raw block node drive-virtio-disk0", decoded)
 			}
-			if got.File.Driver != "file" || got.File.Filename != "/disks/data.img" {
-				t.Errorf("blockdev-add file = %+v, want file backend on /disks/data.img", got.File)
+			if decoded.File.Driver != "file" || decoded.File.Filename != "/disks/data.img" {
+				t.Errorf("blockdev-add file = %+v, want file backend on /disks/data.img", decoded.File)
 			}
 		case "device_add":
-			var got qmp.DeviceAddArgs
-			decode(t, args, &got)
-			if got.Driver != "virtio-blk-pci" || got.Drive != "drive-virtio-disk0" {
-				t.Errorf("device_add = %+v, want virtio-blk-pci on drive-virtio-disk0", got)
+			var decoded qmp.DeviceAddArgs
+			decode(t, args, &decoded)
+			if decoded.Driver != "virtio-blk-pci" || decoded.Drive != "drive-virtio-disk0" {
+				t.Errorf("device_add = %+v, want virtio-blk-pci on drive-virtio-disk0", decoded)
 			}
 			// These two are the reason the tool exists: a different bus or
 			// address on the destination breaks live migration.
-			if got.Bus != "pci-bridge-0" || got.Addr != "0x8" {
-				t.Errorf("device_add = %+v, want bus pci-bridge-0 addr 0x8", got)
+			if decoded.Bus != "pci-bridge-0" || decoded.Addr != "0x8" {
+				t.Errorf("device_add = %+v, want bus pci-bridge-0 addr 0x8", decoded)
 			}
-			if got.ID != "data-disk0" {
-				t.Errorf("device_add id = %q, want data-disk0", got.ID)
+			if decoded.ID != "data-disk0" {
+				t.Errorf("device_add id = %q, want data-disk0", decoded.ID)
 			}
 		default:
 			t.Errorf("unexpected QMP command %q", cmd)
@@ -111,18 +113,29 @@ func TestRunSendsBlockdevThenDeviceAdd(t *testing.T) {
 	if code := Run(context.Background(), []string{sock, "/disks/data.img"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("Run code = %d, want 0 (stderr: %s)", code, stderr.String())
 	}
+	// The callback only sees commands that arrived. Without this, a Run
+	// that exits 0 after sending neither command still passes.
+	if strings.Join(got, ",") != "blockdev-add,device_add" {
+		t.Fatalf("QMP commands = %v, want blockdev-add then device_add", got)
+	}
 	if stdout.Len() != 0 {
 		t.Errorf("Run wrote to stdout: %q", stdout.String())
 	}
 }
 
 func TestRunReportsQEMPErrors(t *testing.T) {
+	var got []string
 	sock := serveStubQMP(t, true, func(cmd string, _ json.RawMessage) {
-		t.Errorf("unexpected command %q after blockdev-add failed", cmd)
+		got = append(got, cmd)
 	})
 
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{sock, "/disks/data.img"}, &stdout, &stderr)
+	// A failed blockdev-add must stop the sequence: attaching the device
+	// anyway leaves a virtio-blk pointing at a node that was never added.
+	if strings.Join(got, ",") != "" {
+		t.Fatalf("commands after a failed blockdev-add = %v, want none", got)
+	}
 	if code != 1 {
 		t.Fatalf("Run code = %d, want 1", code)
 	}

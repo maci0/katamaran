@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/maci0/katamaran/internal/migration"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -85,19 +87,22 @@ func TestWatcherScanReoffersRewrittenMetadata(t *testing.T) {
 	assertStatus(t, srv, nil)
 
 	// A different payload at the same path is a new migration and must be
-	// offered exactly once.
+	// offered exactly once. Status only reports queue depth, so the first
+	// offer has to be consumed before the second scan: otherwise a scan
+	// that offers the same VM again still shows one queued entry and the
+	// duplicate is invisible.
 	writeMigrationMeta(t, dir, "sandbox-reused", second)
 	watcher.scan()
-	assertStatus(t, srv, []wantVMStatus{{pid: 2, cpu: 2, memory: 2048}})
-	watcher.scan()
-	assertStatus(t, srv, []wantVMStatus{{pid: 2, cpu: 2, memory: 2048}})
-
 	got, err = srv.GetBaseVM(context.Background(), &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("GetBaseVM second: %v", err)
 	}
 	assertVM(t, got, second)
-	assertStatus(t, srv, nil)
+
+	watcher.scan()
+	if _, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("second scan re-offered an unchanged migration: %v", err)
+	}
 }
 
 func TestWatcherScanIgnoresInvalidMetadata(t *testing.T) {

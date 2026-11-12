@@ -421,6 +421,24 @@ func completedDestJob(id string) batchv1.Job {
 	}
 }
 
+// terminalJob is a source or dest Job carrying one True terminal condition.
+// Recovery reads the condition's Reason and Message into status.error, so
+// tests that only set the type would pass even if that detail were dropped.
+func terminalJob(id, component string, cond batchv1.JobCondition) batchv1.Job {
+	cond.Status = corev1.ConditionTrue
+	return batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "katamaran-" + component + "-" + id,
+			Namespace: orchestrator.DefaultJobNamespace,
+			Labels: map[string]string{
+				orchestrator.MigrationIDLabel: id,
+				"app.kubernetes.io/component": component,
+			},
+		},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{cond}},
+	}
+}
+
 func newReconcilerWithCR(t *testing.T, orch orchestrator.Orchestrator, cr *unstructured.Unstructured, jobs ...batchv1.Job) (*Reconciler, *fakedyn.FakeDynamicClient, *fakekube.Clientset) {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -1380,6 +1398,75 @@ func TestReconciler_RecoverFromMissingJobs(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("recovery never patched failed/disappeared")
+}
+
+// TestReconciler_RecoverFailedJobKeepsConditionDetails pins the operator
+// contract: a controller restart must not turn a failed Job into a bare
+// "failed" phase. The Job condition's Reason and Message are the only
+// record of why the migration died, and recovery copies them into
+// status.error the same way the live watch does.
+func TestReconciler_RecoverFailedJobKeepsConditionDetails(t *testing.T) {
+	const (
+		reason  = "DeadlineExceeded"
+		message = "pod crashed before opening migration listener"
+	)
+	cases := []struct {
+		name    string
+		id      string
+		jobs    func(id string) []batchv1.Job
+		wantMsg string
+	}{
+		{
+			name: "dest-failed",
+			id:   "id-failed-dest",
+			jobs: func(id string) []batchv1.Job {
+				return []batchv1.Job{terminalJob(id, "dest", batchv1.JobCondition{
+					Type: batchv1.JobFailed, Reason: reason, Message: message,
+				})}
+			},
+			wantMsg: "recovered: dest job failed",
+		},
+		{
+			name: "source-failed-before-dest-started",
+			id:   "id-failed-source",
+			jobs: func(id string) []batchv1.Job {
+				return []batchv1.Job{terminalJob(id, "source", batchv1.JobCondition{
+					Type: batchv1.JobFailed, Reason: reason, Message: message,
+				})}
+			},
+			wantMsg: "recovered: source job failed before dest started",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newMigrationCR(tc.name, []string{finalizerName}, false, map[string]any{
+				"phase":       "transferring",
+				"migrationID": tc.id,
+			})
+			rec, dyn, _ := newReconcilerWithCR(t, &fakeOrch{}, cr, tc.jobs(tc.id)...)
+			rec.PollInterval = time.Millisecond
+			rec.recover(context.Background(), types.NamespacedName{Namespace: "default", Name: tc.name}, cr)
+
+			got, err := dyn.Resource(MigrationGVR).Namespace("default").Get(context.Background(), tc.name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+			statusMsg, _, _ := unstructured.NestedString(got.Object, "status", "message")
+			detail, _, _ := unstructured.NestedString(got.Object, "status", "error")
+			if phase != string(orchestrator.PhaseFailed) {
+				t.Fatalf("phase = %q, want failed", phase)
+			}
+			if statusMsg != tc.wantMsg {
+				t.Fatalf("message = %q, want %q", statusMsg, tc.wantMsg)
+			}
+			for _, want := range []string{"reason=" + reason, "message=" + message} {
+				if !strings.Contains(detail, want) {
+					t.Fatalf("status.error = %q, want it to contain %q", detail, want)
+				}
+			}
+		})
+	}
 }
 
 func TestMarkTracking_SingleClaim(t *testing.T) {
