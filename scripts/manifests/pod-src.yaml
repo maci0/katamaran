@@ -8,6 +8,15 @@ spec:
   runtimeClassName: kata-qemu
   nodeSelector:
     katamaran-role: source
+  # pause ships no USER, so without this floor kubelet runs it as root.
+  # The numeric ids match the container context: a name-based USER fails
+  # the runAsNonRoot check.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
   - name: pause
     image: registry.k8s.io/pause:3.9
@@ -21,6 +30,9 @@ spec:
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
       capabilities:
         drop: ["ALL"]
       seccompProfile:

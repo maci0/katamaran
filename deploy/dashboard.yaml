@@ -178,12 +178,7 @@ spec:
           periodSeconds: 3
           timeoutSeconds: 3
           failureThreshold: 20
-        volumeMounts:
-        - name: tmp
-          mountPath: /tmp
-      volumes:
-      - name: tmp
-        emptyDir: {}
+
 # No UI Service in this file on purpose. The dashboard's ServiceAccount can
 # list, patch, and delete pods cluster-wide and creates hostPID migration
 # Jobs, so nothing here should hand that surface to the cluster at large. Admin
