@@ -25,4 +25,6 @@ LABEL org.opencontainers.image.title="katamaran-factory" \
       org.opencontainers.image.documentation="https://github.com/maci0/katamaran/blob/main/docs/INSTALL.md" \
       org.opencontainers.image.description="Katamaran VM factory: gRPC cache server for Kata live migration" \
       org.opencontainers.image.version="${VERSION}"
+# The gRPC server shuts down on SIGTERM (cmd/katamaran-factory/main.go).
 ENTRYPOINT ["/usr/local/bin/katamaran-factory"]
+STOPSIGNAL SIGTERM

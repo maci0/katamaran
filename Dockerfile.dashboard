@@ -29,8 +29,9 @@ COPY --chown=dashboard:dashboard --from=builder /dashboard .
 
 USER dashboard
 EXPOSE 8080
+# busybox provides wget; the image ships no standalone wget binary.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -q --spider http://localhost:8080/healthz || exit 1
+  CMD ["/bin/busybox", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="katamaran-dashboard" \
       org.opencontainers.image.source="https://github.com/maci0/katamaran" \
@@ -38,4 +39,6 @@ LABEL org.opencontainers.image.title="katamaran-dashboard" \
       org.opencontainers.image.description="Katamaran migration dashboard" \
       org.opencontainers.image.version="${VERSION}"
 
+# The server exits on SIGTERM (cmd/katamaran-dashboard/main.go).
 ENTRYPOINT ["/app/dashboard"]
+STOPSIGNAL SIGTERM

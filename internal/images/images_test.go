@@ -1,6 +1,7 @@
 // Package images owns the invariants of the four shipped container images:
-// digest-pinned bases, exec-form entrypoints, OCI labels, and a documented
-// reason for every image that has to run as root. It holds no code.
+// digest-pinned bases, exec-form entrypoints, a declared SIGTERM stop
+// signal, OCI labels, and a documented reason for every image that has to
+// run as root. It holds no code.
 package images
 
 import (
@@ -85,8 +86,53 @@ func TestEntrypointsAreExecForm(t *testing.T) {
 	}
 }
 
+// TestHealthchecksAreExecForm pins the healthcheck command form. A shell-form
+// HEALTHCHECK runs through /bin/sh -c, and a bare command name hides a missing
+// binary until a container is actually probed.
+func TestHealthchecksAreExecForm(t *testing.T) {
+	for name := range dockerfiles {
+		lines := strings.Split(readDockerfile(t, name), "\n")
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "HEALTHCHECK ") {
+				continue
+			}
+			// The CMD may continue on the next line after a trailing backslash.
+			probe := trimmed
+			if strings.HasSuffix(trimmed, `\`) && i+1 < len(lines) {
+				probe += " " + strings.TrimSpace(lines[i+1])
+			}
+			if !strings.Contains(probe, "CMD [") {
+				t.Errorf("%s: HEALTHCHECK CMD must be exec form: %s", name, probe)
+			}
+		}
+	}
+}
+
+// TestStopSignalIsSIGTERM pins the stop signal. Every shipped binary exits
+// on SIGTERM, and an undeclared STOPSIGNAL leaves the engine guessing,
+// which falls through to SIGKILL once the grace period expires.
+func TestStopSignalIsSIGTERM(t *testing.T) {
+	for name := range dockerfiles {
+		found := false
+		for _, line := range strings.Split(readDockerfile(t, name), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "STOPSIGNAL ") {
+				continue
+			}
+			found = true
+			if trimmed != "STOPSIGNAL SIGTERM" {
+				t.Errorf("%s: STOPSIGNAL must be SIGTERM, the signal the binary handles: %s", name, trimmed)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no STOPSIGNAL", name)
+		}
+	}
+}
+
 func TestOCILabels(t *testing.T) {
-	labels := []string{
+	required := []string{
 		"org.opencontainers.image.title",
 		"org.opencontainers.image.source",
 		"org.opencontainers.image.documentation",
@@ -95,7 +141,7 @@ func TestOCILabels(t *testing.T) {
 	}
 	for name := range dockerfiles {
 		body := readDockerfile(t, name)
-		for _, label := range labels {
+		for _, label := range required {
 			if !strings.Contains(body, label) {
 				t.Errorf("%s: missing %s label", name, label)
 			}

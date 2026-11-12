@@ -34,8 +34,11 @@ COPY --from=builder /containerd-shim-katamaran-adopted-v2 /usr/local/bin/contain
 # image privileged and needs root to write the host binaries under
 # /host/usr/local/bin and to nsenter into the host for modprobe and the
 # containerd restart. A non-root process drops the capability set even in a
-# privileged container, which breaks that path.
+# privileged container, which breaks that path. The CLI exits on SIGTERM
+# (cmd/katamaran/main.go); declare it so a stop does not fall through to
+# SIGKILL after the engine's default grace period.
 ENTRYPOINT ["/usr/local/bin/katamaran"]
+STOPSIGNAL SIGTERM
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="katamaran" \
