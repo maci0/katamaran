@@ -495,11 +495,13 @@ func humanBytes(n int64) string {
 // migrateRunTimeout bounds a dashboard-initiated migration end to end.
 // Without a deadline, a wedged apiserver leaves the poll loop blocked
 // forever, isMigrating never clears, and every later /api/migrate is
-// rejected with 409 for the life of the process. Sized above the migration's
-// own budget (storageSyncTimeout + migrationTimeout, the same sum the Jobs'
-// activeDeadlineSeconds must exceed) with headroom for Job startup and CNI
-// convergence.
-const migrateRunTimeout = 4 * time.Hour
+// rejected with 409 for the life of the process. It is the same budget as
+// the controller's StatusTimeout and both Jobs' activeDeadlineSeconds
+// (migration.JobActiveDeadline), which already sits above
+// storageSyncTimeout + migrationTimeout with headroom for Job startup and
+// CNI convergence, so the three watchers of one migration agree on when it
+// has run too long.
+const migrateRunTimeout = migration.JobActiveDeadline
 
 // migrateStopTimeout bounds the Orchestrator.Stop call in handleMigrateStop.
 // Two Job deletes against the apiserver normally finish in well under a
