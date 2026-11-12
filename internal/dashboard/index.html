@@ -904,7 +904,13 @@
             meta = humanBytes(p.ram_total) + ' VM RAM';
             if (p.downtime_ms) meta += ' · ' + p.downtime_ms + 'ms downtime';
         } else {
-            var pct = Math.min(100, Math.max(0, Math.round((p.ram_transferred * 100) / p.ram_total)));
+            // Divide before scaling. ram_transferred * 100 overflows the
+            // exact integer range of a JS number (2^53) once a transfer
+            // passes ~90 PiB, and the product rounds to a multiple of 200,
+            // so the bar would disagree with the log line's transferPercent
+            // by a whole percent. The quotient of two exact integers is
+            // itself exact.
+            var pct = Math.min(100, Math.max(0, Math.round(p.ram_transferred / p.ram_total * 100)));
             bar.style.width = pct + '%';
             bar.classList.remove('bg-emerald-500');
             bar.classList.add('bg-hull-500');
@@ -1294,7 +1300,7 @@
                     var dur = humanDuration(h.duration_ms);
                     addCell(dur, 'text-right');
                     addCell(h.downtime_ms > 0 ? h.downtime_ms + ' ms' : '—', 'text-right');
-                    var ram = h.ram_total > 0 ? (h.ram_transferred / 1048576).toFixed(0) + '/' + (h.ram_total / 1048576).toFixed(0) + ' MiB' : '—';
+                    var ram = h.ram_total > 0 ? humanBytes(h.ram_transferred) + '/' + humanBytes(h.ram_total) : '—';
                     addCell(ram, 'text-right');
                     if (h.error) tr.title = h.error;
                     histBody.appendChild(tr);

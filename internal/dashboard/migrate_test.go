@@ -75,6 +75,30 @@ func TestTransferPercent(t *testing.T) {
 	}
 }
 
+// TestWholeSeconds pins the rounding behind the status badge and the uptime
+// field. Truncating made a migration 1.9s in report "1s" and one 0.9s in
+// report "0s" for its whole first second; a clock step backwards must report
+// 0 rather than round away from zero.
+func TestWholeSeconds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		d    time.Duration
+		want int64
+	}{
+		{-time.Second, 0},
+		{0, 0},
+		{499 * time.Millisecond, 0},
+		{500 * time.Millisecond, 1},
+		{1900 * time.Millisecond, 2},
+		{90*time.Minute + 400*time.Millisecond, 5400},
+	}
+	for _, tt := range tests {
+		if got := wholeSeconds(tt.d); got != tt.want {
+			t.Errorf("wholeSeconds(%s) = %d, want %d", tt.d, got, tt.want)
+		}
+	}
+}
+
 // TestPhaseBreakdown pins the wall-clock split formatting: empty when the
 // run was too short to round to a second or no transferring timestamp was
 // observed (fast paths and test fakes), setup+xfer split otherwise.

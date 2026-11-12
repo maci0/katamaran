@@ -111,6 +111,18 @@ func durationBucket(duration time.Duration) string {
 	}
 }
 
+// wholeSeconds rounds a duration to the nearest second. Truncation made the
+// status badge read "0s" for the entire first second of a migration and the
+// uptime field report one second for a process up 1.9s. A negative duration
+// (a clock step between the two stamps) reports 0 rather than rounding away
+// from zero into a spurious second.
+func wholeSeconds(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Second/2) / time.Second)
+}
+
 // bucketBoundLabel renders a bucket boundary as the Prometheus label
 // fragment used in durationBucket ("5s", "1500ms").
 func bucketBoundLabel(d time.Duration) string {

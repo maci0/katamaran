@@ -584,7 +584,10 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	var elapsedSeconds int64
 	if status && !migrationStart.IsZero() {
-		elapsedSeconds = int64(time.Since(migrationStart).Seconds())
+		// Round, don't truncate: the badge reads "0s" for the whole first
+		// second of a migration and then jumps, and the same truncation
+		// made a process up for 1.9s report one second of uptime.
+		elapsedSeconds = wholeSeconds(time.Since(migrationStart))
 	}
 
 	a.loadgenMutex.Lock()
@@ -597,7 +600,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, StatusResponse{
 		Version:                 buildinfo.Version,
-		UptimeSeconds:           int64(time.Since(a.startTime).Seconds()),
+		UptimeSeconds:           wholeSeconds(time.Since(a.startTime)),
 		Migrating:               status,
 		MigrationID:             migrationID,
 		MigrationElapsedSeconds: elapsedSeconds,
