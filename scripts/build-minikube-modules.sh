@@ -159,7 +159,9 @@ done
 echo ">>> Building kernel modules (Buildroot toolchain + kernel, first run ~15 min)..."
 
 cat > "${BUILD_DIR}/Dockerfile" <<DOCKERFILE
-FROM ubuntu:24.04 AS toolchain
+# Digest-pinned so a retagged ubuntu:24.04 cannot change the toolchain
+# this script builds kernel modules with. Bump the digest with the tag.
+FROM ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5 AS toolchain
 
 RUN apt-get update && \\
     apt-get install -y --no-install-recommends \\

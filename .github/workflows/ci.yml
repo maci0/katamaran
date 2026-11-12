@@ -199,4 +199,5 @@ jobs:
         env:
           IMAGE_TAG: ${{ matrix.tag }}
           SMOKE_CMD: ${{ matrix.smoke }}
-        run: docker run --rm "${IMAGE_TAG}" ${SMOKE_CMD}
+        # Quoted so a multi-word smoke command is one argv, not word-split.
+        run: docker run --rm "${IMAGE_TAG}" "${SMOKE_CMD}"
