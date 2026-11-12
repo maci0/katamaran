@@ -574,9 +574,18 @@ func writeMigrationMeta(ctx context.Context, cfg DestConfig, client *qmp.Client)
 	// directory fsync) so the factory watcher, which polls this directory from
 	// another process, never reads a half-written file and a node crash cannot
 	// leave an empty one behind.
-	if metaPath, err := WriteMigrationMetaFile(filepath.Dir(cfg.QMPSocket), meta); err != nil {
-		slog.Warn("Failed to write migration metadata", "path", filepath.Join(filepath.Dir(cfg.QMPSocket), MigrationMetaFile), "error", err)
-	} else {
+	metaPath, err := WriteMigrationMetaFile(filepath.Dir(cfg.QMPSocket), meta)
+	if metaPath != "" {
+		// A non-nil error alongside a path means the file is published but the
+		// directory fsync failed: the watcher can still adopt it, and a crash
+		// before the directory is flushed can lose the rename.
 		slog.Info("Migration metadata written for factory adoption", "path", metaPath)
+	}
+	if err != nil {
+		if metaPath == "" {
+			slog.Warn("Failed to write migration metadata", "path", filepath.Join(filepath.Dir(cfg.QMPSocket), MigrationMetaFile), "error", err)
+		} else {
+			slog.Warn("Migration metadata published but not flushed to stable storage", "path", metaPath, "error", err)
+		}
 	}
 }

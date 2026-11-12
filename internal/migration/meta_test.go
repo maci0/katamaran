@@ -51,6 +51,25 @@ func TestWriteMigrationMetaFileRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWriteMigrationMetaFileMissingDir pins the failure signal: a directory
+// that does not exist must come back as an error with no published path, not
+// as a silent no-op the caller could treat as a durable publish.
+func TestWriteMigrationMetaFileMissingDir(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "absent")
+	path, err := WriteMigrationMetaFile(missing, MigrationMeta{ID: "sandbox-1"})
+	if err == nil {
+		t.Fatal("WriteMigrationMetaFile on a missing directory returned nil error")
+	}
+	if path != "" {
+		t.Fatalf("path = %q, want empty when nothing was published", path)
+	}
+	if _, statErr := os.Stat(filepath.Join(missing, MigrationMetaFile)); !os.IsNotExist(statErr) {
+		t.Fatalf("metadata file exists after a failed publish (stat err = %v)", statErr)
+	}
+}
+
 // TestWriteMigrationMetaFileConcurrentRewrites republishes the metadata from
 // many goroutines. The factory watcher polls the same directory, so every
 // observer must see one complete version and never a half-written file: the

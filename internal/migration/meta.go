@@ -2,6 +2,7 @@ package migration
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,7 +74,25 @@ func WriteMigrationMetaFile(dir string, meta MigrationMeta) (string, error) {
 		cleanup()
 		return "", fmt.Errorf("rename %s: %w", metaPath, err)
 	}
-	syncDir(dir)
+	// The file is published either way. A directory fsync failure does not
+	// unpublish it, but it does mean a crash can still lose the rename, so
+	// the caller must hear about it instead of treating the publish as durable.
+	// Flush the directory before closing: a close error must not skip the
+	// flush that makes the rename durable.
+	dirErr := syncDir(dir)
+	// The fd still names the published file after the rename. Close it before
+	// claiming success: a close error is a flush the caller would otherwise
+	// never see, and the fd would stay open until process exit.
+	if err := tmp.Close(); err != nil {
+		err = fmt.Errorf("close %s: %w", metaPath, err)
+		if dirErr != nil {
+			err = errors.Join(err, fmt.Errorf("sync directory %s: %w", dir, dirErr))
+		}
+		return metaPath, err
+	}
+	if dirErr != nil {
+		return metaPath, fmt.Errorf("sync directory %s after publishing %s: %w", dir, metaPath, dirErr)
+	}
 	return metaPath, nil
 }
 
@@ -87,13 +106,17 @@ func writeAndSync(f *os.File, data []byte) error {
 }
 
 // syncDir flushes a directory entry so a completed rename survives a crash.
-// Best-effort: a filesystem that rejects fsync on a directory (some network and
-// overlay mounts) must not fail an otherwise-successful publish.
-func syncDir(dir string) {
+// Both the open and the fsync are returned: dropping either leaves the caller
+// believing the published metadata is durable when a crash can still lose it.
+func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
-		return
+		return err
 	}
-	_ = d.Sync()
-	_ = d.Close()
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
