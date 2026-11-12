@@ -19,8 +19,8 @@ current line only; there is no long-term support branch.
 
 | Version | Supported |
 |---|---|
-| 0.6.x (current) | yes |
-| 0.5.x and older | no |
+| 0.8.x (current) | yes |
+| 0.7.x and older | no |
 
 ## What counts as a security issue
 

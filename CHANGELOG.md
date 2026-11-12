@@ -557,7 +557,9 @@ ships under v0.4.2.
   re-rendering fails.
 - `go.mod` go directive on 1.26.6, clearing the stdlib advisories
   govulncheck flagged against 1.26.2 (GO-2026-6218, -6091, -6090, -6089,
-  GO-2026-5972, -5856, GO-2026-5039, -5038).
+  GO-2026-5972, -5856, GO-2026-5039, -5038). This shipped in the v0.4.1
+  tag, one commit before v0.4.2; it is recorded here because the v0.4.1
+  notes were folded into this section.
 - All four Dockerfiles pin the golang builder at go 1.26.7 (previously
   1.26.2), so the shipped binaries carry the patched stdlib and not just
   the analysis. The old pin could not build against the raised go
@@ -594,8 +596,6 @@ ships under v0.4.2.
 - E2E harness applies RBAC for migration Jobs and detects the container
   engine by daemon reachability rather than binary presence.
 - Makefile passes `TARGETARCH=$(GOARCH)` so native ARM64 image builds work.
-
-[0.3.0]: https://github.com/maci0/katamaran/releases/tag/v0.3.0
 
 ## [0.2.0] - 2026-05-01
 
@@ -645,8 +645,6 @@ works for manual `deploy/migrate.sh` runs.
   rejects with HTTP 406. Drop the header; Go's default `*/*` works.
   Surfaced + fixed live during the v0.2.0 verification run.
 
-[0.2.0]: https://github.com/maci0/katamaran/releases/tag/v0.2.0
-
 ## [0.1.2] - 2026-04-30
 
 ### Added
@@ -679,8 +677,6 @@ works for manual `deploy/migrate.sh` runs.
   recovered-panic path now logs at Debug instead of being
   silently swallowed.
 
-[0.1.2]: https://github.com/maci0/katamaran/releases/tag/v0.1.2
-
 ## [0.1.1] - 2026-04-29
 
 ### Added
@@ -691,8 +687,6 @@ works for manual `deploy/migrate.sh` runs.
   `ghcr.io/<owner>/<image>:<vN.M.P>` and `:latest`; create a GitHub
   Release whose body is the CHANGELOG section for the tag. v0.1.0
   was tagged before this workflow existed; v0.1.1 is the first run.
-
-[0.1.1]: https://github.com/maci0/katamaran/releases/tag/v0.1.1
 
 ## [0.1.0] - 2026-04-29
 
@@ -815,7 +809,9 @@ through QMP, driven from a CRD or a web dashboard.
 [0.7.0]: https://github.com/maci0/katamaran/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/maci0/katamaran/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/maci0/katamaran/compare/v0.4.2...v0.5.0
-[0.4.2]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.2
+[0.4.2]: https://github.com/maci0/katamaran/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/maci0/katamaran/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/maci0/katamaran/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/maci0/katamaran/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/maci0/katamaran/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/maci0/katamaran/compare/v0.1.1...v0.1.2
