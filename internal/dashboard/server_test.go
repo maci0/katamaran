@@ -489,6 +489,41 @@ func TestHandleStatus_MalformedCursorRejected(t *testing.T) {
 	}
 }
 
+// TestHandleStatus_UnknownQueryRejected pins that a query parameter the
+// endpoint does not read answers 400 naming the field, the same contract the
+// POST endpoints already give an unknown form field. Ignoring it would serve
+// a full snapshot to a client that believed it had narrowed the response.
+func TestHandleStatus_UnknownQueryRejected(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodGet, "/api/status?log_after=1", nil)
+	w := httptest.NewRecorder()
+	app.handleStatus(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown query parameter, got %v", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "log_after") {
+		t.Fatalf("expected response to name the unknown field, got %s", w.Body.String())
+	}
+}
+
+// TestHandleStatus_RepeatedCursorRejected pins that a cursor given twice is
+// rejected rather than answered with whichever value Query().Get returns
+// first. The client cannot tell which of its values was applied.
+func TestHandleStatus_RepeatedCursorRejected(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodGet, "/api/status?logs_after=1&logs_after=5", nil)
+	w := httptest.NewRecorder()
+	app.handleStatus(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a repeated cursor, got %v", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "logs_after") {
+		t.Fatalf("expected response to name the repeated field, got %s", w.Body.String())
+	}
+}
+
 // TestHandleStatus_EmptyCursorAccepted pins that omitting a cursor, the
 // documented full-snapshot request, still answers 200.
 func TestHandleStatus_EmptyCursorAccepted(t *testing.T) {

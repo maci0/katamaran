@@ -506,7 +506,15 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 // handleStatus returns the current dashboard state, including active
 // migrations, loadgen samples, and incremental log/ping cursors.
+// statusQueryKeys is the query-string allowlist for GET /api/status. A name
+// outside it is a client bug, same as an unknown form field on the POST
+// endpoints, and is rejected rather than ignored.
+var statusQueryKeys = formFieldSet("logs_after", "pings_after")
+
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if !rejectQueryParams(w, r, statusQueryKeys, "Status request") {
+		return
+	}
 	q := r.URL.Query()
 	rawLogs := q.Get("logs_after")
 	rawPings := q.Get("pings_after")

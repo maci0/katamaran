@@ -86,13 +86,29 @@ func rejectUnknownFormFields(w http.ResponseWriter, r *http.Request, allowed map
 }
 
 func rejectUnknownFields(w http.ResponseWriter, r *http.Request, fields map[string][]string, allowed map[string]struct{}, logCtx string) bool {
+	return checkFields(w, r, fields, allowed, false, logCtx)
+}
+
+// rejectQueryParams applies the allowlist to the query string and rejects a
+// parameter given more than once. Query().Get returns the first value, so a
+// repeated or misspelled cursor would otherwise be answered as if the client
+// had sent the value the handler happened to read.
+func rejectQueryParams(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
+	return checkFields(w, r, r.URL.Query(), allowed, true, logCtx)
+}
+
+func checkFields(w http.ResponseWriter, r *http.Request, fields map[string][]string, allowed map[string]struct{}, rejectRepeated bool, logCtx string) bool {
 	for _, key := range slices.Sorted(maps.Keys(fields)) {
-		if _, ok := allowed[key]; ok {
-			continue
+		if _, ok := allowed[key]; !ok {
+			slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
+			jsonError(w, r, "Unknown form field: "+key, http.StatusBadRequest)
+			return false
 		}
-		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, r, "Unknown form field: "+key, http.StatusBadRequest)
-		return false
+		if rejectRepeated && len(fields[key]) > 1 {
+			slog.Warn(logCtx+": repeated form field", "field", key, "request_id", requestIDFromContext(r.Context()))
+			jsonError(w, r, "Repeated form field: "+key, http.StatusBadRequest)
+			return false
+		}
 	}
 	return true
 }
