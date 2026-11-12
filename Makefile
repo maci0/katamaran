@@ -143,6 +143,7 @@ fuzz-long:
 	go test ./cmd/katamaran-orchestrator/ -fuzz=FuzzReadRequest -fuzztime=30s
 	go test ./cmd/katamaran-mgr/ -fuzz=FuzzHandleAdmit -fuzztime=30s
 	go test ./cmd/containerd-shim-katamaran-adopted-v2/ -fuzz=FuzzValidAdoptedSandboxID -fuzztime=30s
+	go test ./cmd/containerd-shim-katamaran-adopted-v2/ -fuzz=FuzzDecodeAdoptedSandboxID -fuzztime=30s
 
 CE ?= $(shell command -v podman 2>/dev/null || echo docker)
 GOARCH ?= $(shell go env GOARCH)

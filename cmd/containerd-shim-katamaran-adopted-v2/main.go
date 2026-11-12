@@ -902,12 +902,18 @@ func readAdoptedSandboxID(bundleDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading OCI bundle config: %w", err)
 	}
-	// Decode only the annotations map: the full OCI runtime spec is large
-	// and a shim has no business modeling it, but the value still has to
-	// come from a real JSON string. A substring scan for
-	// `"<annotation>":"` also matches the needle inside another
-	// annotation's or label's value, and the shim would then adopt a
-	// sandbox nobody asked for.
+	return decodeAdoptedSandboxID(data)
+}
+
+// decodeAdoptedSandboxID reads the adopted-sandbox-id annotation out of an
+// OCI bundle config.json. config.json is pod-controlled input: anyone who can
+// create a pod with runtimeClassName=katamaran-adopted writes it, and the
+// value is later joined into a cgroup path. Decode only the annotations map:
+// the full OCI runtime spec is large and a shim has no business modeling it,
+// but the value still has to come from a real JSON string. A substring scan
+// for `"<annotation>":"` also matches the needle inside another annotation's
+// or label's value, and the shim would then adopt a sandbox nobody asked for.
+func decodeAdoptedSandboxID(data []byte) (string, error) {
 	var spec struct {
 		Annotations map[string]string `json:"annotations"`
 	}

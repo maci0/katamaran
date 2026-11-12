@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -297,4 +298,71 @@ func TestReadAdoptedSandboxID(t *testing.T) {
 	if got, err := readAdoptedSandboxID(""); err != nil || got != "" {
 		t.Errorf("readAdoptedSandboxID(\"\") = %q, %v, want empty and no error", got, err)
 	}
+}
+
+// FuzzDecodeAdoptedSandboxID feeds arbitrary bytes through the OCI bundle
+// config.json decoder and then through the same path-safety gate Create
+// applies before the value is joined under adoptedCgroupRoot. config.json is
+// written by whoever can create a pod with the adopted runtime class, so a
+// decoder that panics or returns a value it did not actually decode makes the
+// shim adopt (and later signal) the wrong QEMU. The invariant asserted: a
+// nil error means the returned id is exactly the annotation's JSON string
+// value, and one that passes validAdoptedSandboxID stays inside the cgroup
+// root when joined.
+func FuzzDecodeAdoptedSandboxID(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"{}",
+		"[]",
+		"null",
+		`{"annotations":null}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":"sandbox-a"}}`,
+		`{"annotations":{"other":"x"}}`,
+		`{"annotations":{"note":"see \"` + adoptedSandboxAnnotation + `\":\"wrong\"","` + adoptedSandboxAnnotation + `":"right"}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":"sandbox\u002da"}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":"../etc"}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":""}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":"a/b"}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":42}}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":["x"]}}`,
+		`{"annotations":[]}`,
+		`{"annotations":{"` + adoptedSandboxAnnotation + `":"a"`,
+		`{"ociVersion":"1.0.2","annotations":{"` + adoptedSandboxAnnotation + `":"` + defaultAdoptedSandboxID + `"}}`,
+	} {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, err := decodeAdoptedSandboxID(data)
+		if err != nil {
+			if got != "" {
+				t.Fatalf("error path returned id %q", got)
+			}
+			return
+		}
+		var spec struct {
+			Annotations map[string]json.RawMessage `json:"annotations"`
+		}
+		if jsonErr := json.Unmarshal(data, &spec); jsonErr != nil {
+			t.Fatalf("decodeAdoptedSandboxID accepted bytes json.Unmarshal rejects: %v", jsonErr)
+		}
+		raw, present := spec.Annotations[adoptedSandboxAnnotation]
+		if !present {
+			if got != "" {
+				t.Fatalf("absent annotation decoded as %q", got)
+			}
+			return
+		}
+		var want string
+		if jsonErr := json.Unmarshal(raw, &want); jsonErr != nil || got != want {
+			t.Fatalf("decoded %q from %s (unmarshal err %v)", got, raw, jsonErr)
+		}
+		if !validAdoptedSandboxID(got) {
+			return
+		}
+		joined := filepath.Join(adoptedCgroupRoot, got)
+		if !strings.HasPrefix(joined, adoptedCgroupRoot+string(os.PathSeparator)) {
+			t.Fatalf("accepted id %q escapes root: %q", got, joined)
+		}
+	})
 }
