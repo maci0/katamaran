@@ -72,8 +72,8 @@ var (
 
 // migrationProgress tracks per-migration progress for Prometheus export.
 // Keyed by migration ID. Entries are added on dispatch and removed when
-// the dispatch goroutine exits. The /metrics handler iterates this map
-// via MigrationProgressSnapshot and emits labeled gauges.
+// the dispatch or recover goroutine exits. The /metrics handler iterates
+// this map via MigrationProgressSnapshot and emits labeled gauges.
 var migrationProgress sync.Map // map[string]MigrationProgressEntry
 
 // MigrationProgressEntry holds per-migration metrics for Prometheus export.
@@ -725,6 +725,11 @@ func (r *Reconciler) recover(ctx context.Context, key types.NamespacedName, obj 
 	}()
 
 	id, _, _ := unstructured.NestedString(obj.Object, "status", "migrationID")
+	// dispatch drops its progress entry when the watch goroutine exits. This
+	// path publishes the same gauges (see the loop below) but has no such
+	// defer, so every recovered migration would stay in the process-global
+	// map, and in the /metrics series, for the life of the controller.
+	defer migrationProgress.Delete(id)
 	slog.Info("Recovering in-flight Migration after controller restart", "migration", key, "migration_id", id)
 
 	if r.Kube == nil {

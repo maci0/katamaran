@@ -1573,6 +1573,36 @@ func TestUpdateProgressMetricsAndSnapshot(t *testing.T) {
 	}
 }
 
+// TestRecover_DropsProgressEntry pins the lifecycle the dispatch path
+// already has: recover publishes the same per-migration gauges, and every
+// exit, including the ones that return before the poll loop, must drop the
+// entry. The map is process-global, so a controller that restarts often
+// would otherwise keep one series per recovered migration forever.
+func TestRecover_DropsProgressEntry(t *testing.T) {
+	// Not parallel: mutates the process-global migrationProgress map.
+	const id = "id-recover-progress"
+	t.Cleanup(func() { migrationProgress.Delete(id) })
+
+	updateProgressMetrics(orchestrator.StatusUpdate{
+		ID:             id,
+		Phase:          orchestrator.PhaseTransferring,
+		RAMTransferred: 50,
+		RAMTotal:       100,
+	})
+
+	cr := newMigrationCR("m-recover-progress", []string{finalizerName}, false, map[string]any{
+		"phase":       "transferring",
+		"migrationID": id,
+	})
+	rec, _, _ := newReconcilerWithCR(t, &fakeOrch{}, cr)
+	rec.PollInterval = time.Millisecond
+	rec.recover(context.Background(), types.NamespacedName{Namespace: "default", Name: "m-recover-progress"}, cr)
+
+	if _, ok := MigrationProgressSnapshot()[id]; ok {
+		t.Fatalf("progress entry for %q survived recover", id)
+	}
+}
+
 func TestPatchStatusUpdate_PreservesEventTime(t *testing.T) {
 	for _, tc := range []struct {
 		phase orchestrator.StatusPhase
