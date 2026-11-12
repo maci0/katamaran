@@ -725,32 +725,74 @@ func startVirtiofsd(ctx context.Context, socketPath, sharedDir string) error {
 type logWriter struct {
 	process string
 	stream  string
+	// pending holds the tail of a line whose newline has not arrived yet.
+	// os/exec reads the child's pipe in fixed-size chunks, so one Write can
+	// end in the middle of a UTF-8 sequence or a line; logging that chunk on
+	// its own emits invalid UTF-8 and splits one diagnostic across records.
+	pending []byte
 }
 
 const maxChildProcessLogLine = 4096
 
-func (w logWriter) Write(p []byte) (n int, err error) {
+func (w *logWriter) Write(p []byte) (int, error) {
+	w.pending = append(w.pending, p...)
+	for {
+		nl := bytes.IndexByte(w.pending, '\n')
+		if nl < 0 {
+			break
+		}
+		w.emit(w.pending[:nl])
+		w.pending = w.pending[nl+1:]
+	}
+	// A child that logs without newlines must not grow pending without bound.
+	// Flush whole lines' worth; the trailing partial line stays buffered.
+	for len(w.pending) > maxChildProcessLogLine {
+		w.emit(w.pending[:maxChildProcessLogLine])
+		w.pending = w.pending[maxChildProcessLogLine:]
+	}
+	return len(p), nil
+}
+
+// flush emits the trailing partial line when the child exits mid-line.
+func (w *logWriter) flush() {
+	if len(w.pending) == 0 {
+		return
+	}
+	w.emit(w.pending)
+	w.pending = nil
+}
+
+// emit logs one line, dropping a trailing CR and cutting an over-long line on
+// a UTF-8 boundary so the record stays valid text.
+func (w *logWriter) emit(raw []byte) {
+	raw = bytes.TrimRight(raw, "\r")
+	if len(raw) == 0 {
+		return
+	}
+	truncated := false
+	if len(raw) > maxChildProcessLogLine {
+		cut := maxChildProcessLogLine
+		for cut > 0 && !utf8.RuneStart(raw[cut]) {
+			cut--
+		}
+		raw = raw[:cut]
+		truncated = true
+	}
+	// A cut that lands inside a multibyte sequence leaves a partial rune at
+	// the tail. Drop it: slog's JSON handler would otherwise escape the
+	// invalid bytes, and the text handler would print garbage.
+	for len(raw) > 0 && !utf8.Valid(raw) {
+		raw = raw[:len(raw)-1]
+		truncated = true
+	}
+	if len(raw) == 0 {
+		return
+	}
 	level := slog.LevelInfo
 	if w.stream == "stderr" {
 		level = slog.LevelWarn
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\r\n"), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
-			continue
-		}
-		truncated := false
-		if len(line) > maxChildProcessLogLine {
-			cut := maxChildProcessLogLine
-			for cut > 0 && !utf8.RuneStart(line[cut]) {
-				cut--
-			}
-			line = line[:cut]
-			truncated = true
-		}
-		slog.Log(context.Background(), level, "child process output", "process", w.process, "stream", w.stream, "output", line, "truncated", truncated)
-	}
-	return len(p), nil
+	slog.Log(context.Background(), level, "child process output", "process", w.process, "stream", w.stream, "output", string(raw), "truncated", truncated)
 }
 
 // spawnDetachedProcess launches name+args as a detached child process.
@@ -764,8 +806,10 @@ func (w logWriter) Write(p []byte) (n int, err error) {
 // when migration completes (or when the dest job pod is torn down).
 var spawnDetachedProcess = func(name string, args []string) error {
 	cmd := exec.Command(name, args...) // #nosec G204 -- args sourced from captured QEMU cmdline + fixed flag set
-	cmd.Stdout = logWriter{name, "stdout"}
-	cmd.Stderr = logWriter{name, "stderr"}
+	stdout := &logWriter{process: name, stream: "stdout"}
+	stderr := &logWriter{process: name, stream: "stderr"}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
@@ -778,6 +822,10 @@ var spawnDetachedProcess = func(name string, args []string) error {
 			}
 		}()
 		err := cmd.Wait()
+		// Wait drains both pipes, so anything still buffered is a final line
+		// the child wrote without a trailing newline.
+		stdout.flush()
+		stderr.flush()
 		elapsed := time.Since(start).Round(time.Millisecond)
 		if err != nil {
 			slog.Warn("child process exited with error", "process", name, "pid", cmd.Process.Pid, "elapsed", elapsed, "error", err)

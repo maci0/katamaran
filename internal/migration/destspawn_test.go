@@ -33,7 +33,7 @@ func TestLogWriterTruncatesAtUTF8Boundary(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-			n, err := (logWriter{"qemu", "stderr"}).Write([]byte(input))
+			n, err := (&logWriter{process: "qemu", stream: "stderr"}).Write([]byte(input))
 			if n != len(input) || err != nil {
 				t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(input))
 			}
