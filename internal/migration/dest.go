@@ -458,8 +458,13 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 			"qemu_pid", qemuPID, "error", err)
 		return 0
 	}
-	suffix := "-" + qemuPID
+	suffix := []byte("-" + qemuPID)
 	moved := 0
+	// comm is TASK_COMM_LEN (16) bytes plus the trailing newline, so one
+	// buffer covers every process and the walk allocates nothing per PID.
+	// Reused across the whole scan: this runs once per migration but walks
+	// every process on the node.
+	var commBuf [32]byte
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -467,15 +472,16 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		commBytes, err := os.ReadFile(filepath.Join("/proc", e.Name(), "comm"))
-		if err != nil {
+		comm, ok := readProcComm(filepath.Join("/proc", e.Name(), "comm"), commBuf[:])
+		if !ok {
 			continue
 		}
-		comm := strings.TrimSpace(string(commBytes))
 		// kvm-nx-lpage-recovery-<pid> is the common one observed in
 		// live e2e (kernel ≥6.x). Match any kvm- helper whose name
-		// ends in -<qemupid>.
-		if !strings.HasPrefix(comm, "kvm-") || !strings.HasSuffix(comm, suffix) {
+		// ends in -<qemupid>. Both tests run on the raw buffer so the
+		// overwhelming majority of processes never become a string.
+		name, match := kvmHelperName(comm, suffix)
+		if !match {
 			continue
 		}
 		if err := os.WriteFile(procsPath, []byte(e.Name()+"\n"), 0o644); err != nil {
@@ -483,7 +489,7 @@ func moveKVMHelperThreads(qemuPID, procsPath string) int {
 			// exactly the stuck-in-Running condition documented above and the
 			// one an operator needs to see to act on it.
 			slog.Warn("Cannot move KVM helper thread to surviving cgroup",
-				"thread", e.Name(), "comm", comm, "path", procsPath, "error", err)
+				"thread", e.Name(), "comm", string(name), "path", procsPath, "error", err)
 			continue
 		}
 		moved++

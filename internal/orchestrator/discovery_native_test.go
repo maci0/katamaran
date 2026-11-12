@@ -36,6 +36,19 @@ func TestNativeDiscoverer_ListKataPods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fake client ignores field selectors, so the server-side filter that
+	// keeps a whole-cluster pod list off the wire has to be asserted on the
+	// request itself rather than on which pods came back.
+	var fieldSelector string
+	for _, a := range cs.Actions() {
+		la, ok := a.(clienttesting.ListAction)
+		if ok && la.GetResource().Resource == "pods" {
+			fieldSelector = la.GetListRestrictions().Fields.String()
+		}
+	}
+	if fieldSelector != kataPodFieldSelector {
+		t.Fatalf("pod list FieldSelector = %q, want %q", fieldSelector, kataPodFieldSelector)
+	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 kata pods, got %d: %+v", len(got), got)
 	}

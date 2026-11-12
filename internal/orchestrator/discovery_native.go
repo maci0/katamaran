@@ -31,12 +31,23 @@ func NewDiscoverer(kubeconfig string) (Discoverer, error) {
 	return &nativeDiscoverer{client: cs}, nil
 }
 
+// kataPodFieldSelector is the server-side filter for ListKataPods.
+// spec.runtimeClassName is a selectable pod field, so the apiserver drops
+// every non-kata pod before serialization: the picker otherwise transfers and
+// decodes the whole cluster's pod list to keep a handful of VMs. The
+// client-side check below stays as a backstop for an apiserver that ignores
+// the selector.
+const kataPodFieldSelector = "spec.runtimeClassName=" + KataRuntimeClassName
+
 func (d *nativeDiscoverer) ListKataPods(ctx context.Context) ([]PodInfo, error) {
 	// Serve from the apiserver watch cache: a quorum read would hit etcd for
-	// every pod in the cluster each time the dashboard's pod picker opens.
-	// The list feeds a user-facing dropdown, so watch-cache staleness of a
-	// moment is irrelevant. Same rationale as native.poll's cacheRead.
-	list, err := d.client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	// every kata pod in the cluster each time the dashboard's pod picker
+	// opens. The list feeds a user-facing dropdown, so watch-cache staleness
+	// of a moment is irrelevant. Same rationale as native.poll's cacheRead.
+	list, err := d.client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector:   kataPodFieldSelector,
+		ResourceVersion: "0",
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
