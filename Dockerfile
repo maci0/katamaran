@@ -10,14 +10,15 @@ COPY cmd/katamaran-factory/ cmd/katamaran-factory/
 COPY cmd/containerd-shim-katamaran-adopted-v2/ cmd/containerd-shim-katamaran-adopted-v2/
 COPY internal/ internal/
 ARG VERSION=dev
+ENV GOTOOLCHAIN=local
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -mod=readonly \
-    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION} -B none -buildid=" \
     -o /katamaran ./cmd/katamaran/ && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -mod=readonly \
-    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION} -B none -buildid=" \
     -o /katamaran-factory ./cmd/katamaran-factory/ && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -mod=readonly \
-    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION} -B none -buildid=" \
     -o /containerd-shim-katamaran-adopted-v2 ./cmd/containerd-shim-katamaran-adopted-v2/
 
 # Stage 2: runtime

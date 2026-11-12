@@ -17,6 +17,11 @@ workflow refuses to publish a tag that has no section below.
 - `podWaitTimeoutSeconds` is capped at 3600, the Migration CRD schema's
   maximum. `Validate` previously accepted up to 86400, so a pod wait the
   apiserver rejects was submitted by callers that bypass admission.
+- Binaries are built with `CGO_ENABLED=0` and linker flags `-B none
+  -buildid=`, so a host with cgo enabled no longer produces a dynamically
+  linked ELF and the Go build ID no longer changes between otherwise
+  identical builds. The four Dockerfiles set `GOTOOLCHAIN=local` and use
+  the same linker flags.
 
 ## [0.8.1] - 2026-10-15
 

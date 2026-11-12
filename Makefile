@@ -18,8 +18,13 @@ build: build-katamaran
 # -buildvcs=false keeps host VCS state out of the binary; -trimpath keeps the
 # build directory out. Both are what make two builds byte-identical.
 # -mod=readonly makes a build fail rather than silently edit go.mod/go.sum.
+# CGO_ENABLED=0 is pinned, not inherited: the default follows the host, and a
+# cgo build is a dynamically linked ELF that differs from the static one the
+# images ship. -B none and -buildid= are linker flags: the former drops the
+# GNU build-id note the linker derives from the Go build ID, the latter
+# drops the Go build ID itself. Both otherwise differ on every invocation.
 build-%:
-	go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS)" -o "bin/$*" "./cmd/$*/"
+	CGO_ENABLED=0 go build -trimpath -buildvcs=false -mod=readonly -ldflags "$(LDFLAGS) -B none -buildid=" -o "bin/$*" "./cmd/$*/"
 
 # Run go vet and gofmt checks (-s also enforces gofmt simplifications).
 # gofmt covers every tracked .go file so it stays in sync with `./...`

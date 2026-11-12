@@ -9,8 +9,9 @@ RUN go mod download
 COPY cmd/katamaran-dashboard/ cmd/katamaran-dashboard/
 COPY internal/ internal/
 ARG VERSION=dev
+ENV GOTOOLCHAIN=local
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -mod=readonly \
-    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-X github.com/maci0/katamaran/internal/buildinfo.Version=${VERSION} -B none -buildid=" \
     -o /dashboard ./cmd/katamaran-dashboard/
 
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
