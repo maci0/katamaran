@@ -6,9 +6,10 @@
 // Active replica is selected via Lease-based leader election so a
 // Deployment scaled past 1 stays consistent (only the leader reconciles).
 //
-// Observability: a small HTTP server exposes /healthz, /readyz,
-// /metrics, and /debug/vars for controller counters and per-migration
-// progress gauges. /healthz is dependency-free and backs the liveness and
+// Observability: a small HTTP server exposes /healthz, /readyz, and
+// /metrics for controller counters and per-migration progress gauges.
+// /debug/vars (expvar JSON, including runtime memstats) is added only
+// with --enable-debug. /healthz is dependency-free and backs the liveness and
 // startup probes; /readyz additionally requires a reachable apiserver and
 // backs the readiness probe.
 //
@@ -58,7 +59,8 @@ Usage:
 
 Flags:
   --kubeconfig string             Optional path to kubeconfig (out-of-cluster only)
-  --addr string                   HTTP listen address for /healthz, /readyz, /metrics, /debug/vars (default ":8081")
+  --addr string                   HTTP listen address for /healthz, /readyz, /metrics (default ":8081")
+  --enable-debug                  Also serve /debug/vars (expvar JSON including runtime memstats)
   --leader-namespace string       Namespace holding the leader-election Lease (default "kube-system")
   --leader-name string            Lease object name for leader election (default "katamaran-mgr")
   --disable-leader-election       Run reconciler without leader election (single-replica development only)
@@ -86,9 +88,11 @@ Exit codes:
 Environment variables:
   KATAMARAN_MIGRATION_IMAGE    Required trusted image for migration Jobs; spec.image must match exactly
   KATAMARAN_POD_WAIT_TIMEOUT   Overrides the --pod-wait-timeout default; an explicitly set
-                               flag wins (Go duration, e.g. 90s or 5m; an invalid or
-                               non-positive value exits 2 rather than falling back to the
-                               default; per-CR spec.podWaitTimeoutSeconds wins over both)
+                               flag wins (Go duration, e.g. 90s or 5m; surrounding
+                               whitespace is ignored and a whitespace-only value counts
+                               as unset; an invalid or non-positive value exits 2 rather
+                               than falling back to the default; per-CR
+                               spec.podWaitTimeoutSeconds wins over both)
 
 Examples:
   # Run in-cluster with leader election (default)
@@ -128,7 +132,8 @@ func main() {
 	fs := flag.NewFlagSet("katamaran-mgr", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	kubeconfig := fs.String("kubeconfig", "", "Optional path to kubeconfig (out-of-cluster only)")
-	addr := fs.String("addr", ":8081", "HTTP listen address for /healthz, /readyz, /metrics, /debug/vars")
+	addr := fs.String("addr", ":8081", "HTTP listen address for /healthz, /readyz, /metrics")
+	enableDebug := fs.Bool("enable-debug", false, "Also serve /debug/vars (expvar JSON including runtime memstats)")
 	leaderNamespace := fs.String("leader-namespace", "kube-system", "Namespace holding the leader-election Lease")
 	leaderName := fs.String("leader-name", "katamaran-mgr", "Lease object name for leader election")
 	skipLeaderElect := fs.Bool("disable-leader-election", false, "Run reconciler without leader election (single-replica development only)")
@@ -186,7 +191,11 @@ func main() {
 		exitCLI(2)
 	}
 
-	allowedImage := os.Getenv("KATAMARAN_MIGRATION_IMAGE")
+	// Trim before the empty check: a whitespace-only value passes the
+	// character allowlist below, then can never match a real spec.image,
+	// so every Migration fails at reconcile instead of the process
+	// refusing to start.
+	allowedImage := strings.TrimSpace(os.Getenv("KATAMARAN_MIGRATION_IMAGE"))
 	if allowedImage == "" {
 		fmt.Fprintln(os.Stderr, "Error: KATAMARAN_MIGRATION_IMAGE is required; set it to a trusted migration image")
 		exitCLI(2)
@@ -242,7 +251,7 @@ func main() {
 		stop()
 		servers.Wait()
 	}()
-	servers.Go(func() { serveDebug(ctx, *addr, apiServerReachable(kube)) })
+	servers.Go(func() { serveDebug(ctx, *addr, *enableDebug, apiServerReachable(kube)) })
 	// Cert is generated per-process. The serving cert is used by
 	// serveWebhook below; the matching CA bundle is patched onto
 	// the ValidatingWebhookConfiguration only by the leader (see
@@ -352,7 +361,10 @@ func resolvePodWaitTimeout(fs *flag.FlagSet, flagValue time.Duration) (time.Dura
 			setByFlag = true
 		}
 	})
-	env := os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT")
+	// Trim so a value padded by a manifest generator parses, and so a
+	// whitespace-only value counts as unset rather than as a malformed
+	// duration that exits the process.
+	env := strings.TrimSpace(os.Getenv("KATAMARAN_POD_WAIT_TIMEOUT"))
 	if env == "" {
 		return flagValue, nil
 	}

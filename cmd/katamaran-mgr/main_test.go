@@ -42,7 +42,9 @@ func TestMigrationImageStartupValidation(t *testing.T) {
 		main()
 		return
 	}
-	for _, image := range []string{"", "invalid image"} {
+	// "   " passes the character allowlist and then matches no real
+	// spec.image, so it must be rejected at startup like an unset value.
+	for _, image := range []string{"", "   ", "invalid image"} {
 		t.Run(image, func(t *testing.T) {
 			t.Setenv("KATAMARAN_TEST_IMAGE_STARTUP", "1")
 			t.Setenv("KATAMARAN_MIGRATION_IMAGE", image)
@@ -64,7 +66,7 @@ func TestMigrationImageStartupValidation(t *testing.T) {
 func TestDebugReadinessDuringShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mux := debugMux(ctx, nil)
+	mux := debugMux(ctx, false, nil)
 	for _, draining := range []bool{false, true} {
 		if draining {
 			cancel()
@@ -90,7 +92,7 @@ func TestDebugReadinessDuringShutdown(t *testing.T) {
 func TestDebugReadinessChecksDependency(t *testing.T) {
 	ctx := context.Background()
 	down := errors.New("apiserver unreachable")
-	mux := debugMux(ctx, func(context.Context) error { return down })
+	mux := debugMux(ctx, false, func(context.Context) error { return down })
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -102,6 +104,31 @@ func TestDebugReadinessChecksDependency(t *testing.T) {
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("/healthz status=%d, want 200 during a dependency outage", w.Code)
+	}
+}
+
+// TestDebugVarsRequiresEnableDebug pins the default: /debug/vars dumps
+// runtime memstats with no authentication, so it stays unregistered until
+// --enable-debug, matching the dashboard. /metrics keeps serving either way.
+func TestDebugVarsRequiresEnableDebug(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, enabled := range []bool{false, true} {
+		mux := debugMux(ctx, enabled, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+		want := http.StatusNotFound
+		if enabled {
+			want = http.StatusOK
+		}
+		if w.Code != want {
+			t.Fatalf("enableDebug=%v: /debug/vars status=%d, want %d", enabled, w.Code, want)
+		}
+		w = httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("enableDebug=%v: /metrics status=%d, want 200", enabled, w.Code)
+		}
 	}
 }
 
@@ -221,7 +248,9 @@ func TestResolvePodWaitTimeout(t *testing.T) {
 		wantErr string
 	}{
 		{name: "unset keeps the flag default", want: defaultTimeout},
+		{name: "whitespace-only env counts as unset", env: "  ", want: defaultTimeout},
 		{name: "env overrides the default", env: "5m", want: 5 * time.Minute},
+		{name: "padded env parses", env: " 5m ", want: 5 * time.Minute},
 		{name: "explicit flag beats env", env: "5m", args: []string{"--pod-wait-timeout=90s"}, want: 90 * time.Second},
 		{name: "explicit flag wins over a malformed env", env: "not-a-duration", args: []string{"--pod-wait-timeout=90s"}, want: 90 * time.Second},
 		{name: "malformed env is an error", env: "not-a-duration", wantErr: "KATAMARAN_POD_WAIT_TIMEOUT"},

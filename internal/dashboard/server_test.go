@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -242,13 +243,20 @@ func TestRun_InvalidLogFormat(t *testing.T) {
 func TestRun_RequiresMigrationImage(t *testing.T) {
 	origLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
-	t.Setenv("KATAMARAN_MIGRATION_IMAGE", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var stdout, stderr bytes.Buffer
-	code := Run(ctx, []string{"--addr", "127.0.0.1:0"}, &stdout, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "KATAMARAN_MIGRATION_IMAGE is required") {
-		t.Fatalf("code = %d, stderr = %q; want missing image configuration error", code, stderr.String())
+	// A whitespace-only value passes the character allowlist and then can
+	// never match a real image, so it must fail here rather than at the
+	// first migrate request.
+	for _, image := range []string{"", "   "} {
+		t.Run(strconv.Quote(image), func(t *testing.T) {
+			t.Setenv("KATAMARAN_MIGRATION_IMAGE", image)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var stdout, stderr bytes.Buffer
+			code := Run(ctx, []string{"--addr", "127.0.0.1:0"}, &stdout, &stderr)
+			if code != 2 || !strings.Contains(stderr.String(), "KATAMARAN_MIGRATION_IMAGE is required") {
+				t.Fatalf("code = %d, stderr = %q; want missing image configuration error", code, stderr.String())
+			}
+		})
 	}
 }
 

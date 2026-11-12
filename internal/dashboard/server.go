@@ -188,7 +188,11 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, mode s
 		return 2
 	}
 
-	allowedImage := os.Getenv("KATAMARAN_MIGRATION_IMAGE")
+	// Trim before the empty check: a whitespace-only value passes the
+	// character allowlist below, then can never match a real migrate
+	// request, so every migration is rejected at request time instead of
+	// the process refusing to start.
+	allowedImage := strings.TrimSpace(os.Getenv("KATAMARAN_MIGRATION_IMAGE"))
 	if allowedImage != "" && !validFormValue(allowedImage) {
 		fmt.Fprintf(stderr, "Error: KATAMARAN_MIGRATION_IMAGE contains invalid characters\n\n")
 		printUsage(stderr)

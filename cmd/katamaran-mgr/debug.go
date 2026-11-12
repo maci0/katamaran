@@ -25,12 +25,15 @@ import (
 // response write.
 const readinessDependencyTimeout = 2 * time.Second
 
-// serveDebug exposes /healthz, /readyz, /metrics, and /debug/vars (expvar).
-// Failure to listen is fatal because Kubernetes uses these probes for liveness.
-func serveDebug(ctx context.Context, addr string, ready dependencyCheck) {
+// serveDebug exposes /healthz, /readyz, and /metrics. /debug/vars (expvar)
+// is added only when enableDebug is set: it dumps runtime memstats and
+// every published counter as JSON, and the same endpoint on the dashboard
+// stays behind --enable-debug. Failure to listen is fatal because
+// Kubernetes uses these probes for liveness.
+func serveDebug(ctx context.Context, addr string, enableDebug bool, ready dependencyCheck) {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           debugMux(ctx, ready),
+		Handler:           debugMux(ctx, enableDebug, ready),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -45,7 +48,7 @@ func serveDebug(ctx context.Context, addr string, ready dependencyCheck) {
 // usable right now. A nil check means "no dependency to verify".
 type dependencyCheck func(context.Context) error
 
-func debugMux(ctx context.Context, ready dependencyCheck) *http.ServeMux {
+func debugMux(ctx context.Context, enableDebug bool, ready dependencyCheck) *http.ServeMux {
 	mux := http.NewServeMux()
 	// Probes arrive concurrently, so the escalation counter is atomic.
 	var consecutiveReadinessFailures atomic.Int64
@@ -88,7 +91,12 @@ func debugMux(ctx context.Context, ready dependencyCheck) *http.ServeMux {
 		consecutiveReadinessFailures.Store(0)
 		plainOK("ready")(w, r)
 	})
-	mux.Handle("GET /debug/vars", expvar.Handler())
+	if enableDebug {
+		// Runtime internals (memstats plus every published counter) with no
+		// authentication. Off by default; /metrics carries the same counters
+		// in Prometheus text without the runtime dump.
+		mux.Handle("GET /debug/vars", expvar.Handler())
+	}
 	mux.HandleFunc("GET /metrics", servePrometheusMetrics)
 
 	return mux

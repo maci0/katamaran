@@ -29,6 +29,12 @@ workflow refuses to publish a tag that has no section below.
   and is now treated as success. A genuine create failure still removes
   the destination Job.
 
+### Changed
+
+- `katamaran-mgr` no longer serves `/debug/vars` unless started with
+  `--enable-debug`, matching `katamaran-dashboard`. `/metrics` is unchanged
+  and still carries the controller counters.
+
 ## [0.8.1] - 2026-10-15
 
 ### Fixed

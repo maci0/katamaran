@@ -279,7 +279,7 @@ with. This is tracked as a known gap in `docs/ROADMAP.md:43`.
 
 **B8, operator to observability.** expvar exposes runtime internals and
 `--enable-debug` exposes pprof, which allows CPU profiling and forced dumps
-(T8).
+(T8). Without the flag the manager serves `/metrics` only.
 
 Recurring classes: the repository's own history shows repeated hardening at
 the HTTP input layer (CSRF, security headers, request-ID character filtering,

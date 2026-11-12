@@ -288,7 +288,7 @@ cmd/
   katamaran-mgr/
     main.go                     # Migration CRD controller entrypoint
     webhook.go                  # Admission webhook server (deny RS replacements during adoption)
-    debug.go                    # /healthz, /readyz, /metrics, /debug/vars handlers
+    debug.go                    # /healthz, /readyz, /metrics handlers; /debug/vars behind --enable-debug
     main_test.go                # Controller CLI helper tests
     webhook_test.go             # Admission webhook handler tests
   containerd-shim-katamaran-adopted-v2/

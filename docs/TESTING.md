@@ -379,7 +379,7 @@ pod, port 8081):
 
 - `/healthz`, `/readyz`: kubelet probes.
 - `/metrics`: Prometheus text-format counters.
-- `/debug/vars`: same counters as expvar JSON, plus runtime memstats.
+- `/debug/vars`: same counters as expvar JSON, plus runtime memstats, and only when the controller was started with `--enable-debug`.
 
 ```bash
 POD=$(kubectl -n kube-system get pod -l app=katamaran-mgr -o jsonpath='{.items[0].metadata.name}')

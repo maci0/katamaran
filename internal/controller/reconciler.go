@@ -51,9 +51,10 @@ import (
 )
 
 // Process-wide expvar counters surfaced by katamaran-mgr's /metrics
-// (Prometheus text-format) and /debug/vars (JSON) endpoints. Plain
-// expvar (no Prometheus client dep) keeps the mgr image small; the
-// /metrics handler walks the expvar registry in-process.
+// (Prometheus text-format) endpoint, and by /debug/vars (JSON) when the
+// process was started with --enable-debug. Plain expvar (no Prometheus
+// client dep) keeps the mgr image small; the /metrics handler walks the
+// expvar registry in-process.
 var (
 	mDispatched        = expvar.NewInt("katamaran_migrations_dispatched_total")
 	mSucceeded         = expvar.NewInt("katamaran_migrations_succeeded_total")
