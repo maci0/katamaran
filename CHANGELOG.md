@@ -12,6 +12,24 @@ workflow refuses to publish a tag that has no section below.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-13
+
+### Added
+
+- Katamaran is licensed under the [GNU General Public License, version 3 or later](LICENSE) (`GPL-3.0-or-later`).
+- Private security vulnerability reporting contact (`maci.stgn@gmail.com`) published in `SECURITY.md`.
+- Fuzz testing for OCI bundle sandbox-id decoding and status cursors.
+
+### Changed
+
+- `katamaran-mgr` no longer serves `/debug/vars` unless started with
+  `--enable-debug`, matching `katamaran-dashboard`. `/metrics` is unchanged
+  and still carries the controller counters.
+- Dashboard durations round cleanly while keeping progress percentages exact.
+- Shared migration deadline and signal context across components.
+- Bumped Go dependencies: `golang.org/x/net` v0.62.0, `golang.org/x/sys` v0.49.0, `golang.org/x/term` v0.47.0, `google.golang.org/grpc` v1.85.0, `k8s.io/api` v0.37.2, `k8s.io/apimachinery` v0.37.2, `k8s.io/client-go` v0.37.2.
+- Bumped GitHub Actions: `actions/dependency-review-action` v4.10.0 digest, `docker/login-action` v4.8.0, `softprops/action-gh-release` v3.0.4.
+
 ### Fixed
 
 - `podWaitTimeoutSeconds` is capped at 3600, the Migration CRD schema's
@@ -35,12 +53,11 @@ workflow refuses to publish a tag that has no section below.
 - The e2e and downtime-sweep scripts treat both `uname -m` spellings of the
   arm64 target (`aarch64` and `arm64`) as arm64, and the TCG QEMU wrapper is
   written with LF line endings so a macOS host can hand it to a Linux node.
-
-### Changed
-
-- `katamaran-mgr` no longer serves `/debug/vars` unless started with
-  `--enable-debug`, matching `katamaran-dashboard`. `/metrics` is unchanged
-  and still carries the controller counters.
+- Re-offer rewritten `migration-meta.json` and surface fsync/close errors.
+- Filter Kata pod lists and optimize `/proc` scanner allocations.
+- Reassemble child log lines split across character boundaries.
+- Accept all valid spellings of IPv6 addresses in dashboard and CLI.
+- Drop recovered migration progress entries and reject unknown/repeated status query parameters.
 
 ## [0.8.1] - 2026-10-15
 
@@ -827,7 +844,8 @@ through QMP, driven from a CRD or a web dashboard.
   `crypto/tls` and `crypto/x509` (GO-2026-4870 / GO-2026-4946 /
   GO-2026-4947).
 
-[Unreleased]: https://github.com/maci0/katamaran/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/maci0/katamaran/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/maci0/katamaran/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/maci0/katamaran/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/maci0/katamaran/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/maci0/katamaran/compare/v0.6.0...v0.7.0
