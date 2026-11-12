@@ -1,8 +1,13 @@
 package orchestrator
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
 func TestValidateAcceptsAutoSelectedDestForSourcePod(t *testing.T) {
@@ -335,6 +340,66 @@ func TestValidateRejectsOversizedPodWaitTimeout(t *testing.T) {
 	req.PodWaitTimeoutSeconds = maxPodWaitTimeoutSeconds
 	if err := Validate(req); err != nil {
 		t.Fatalf("Validate at upper bound %d: %v", maxPodWaitTimeoutSeconds, err)
+	}
+}
+
+// crdIntegerMaximum reads the schema maximum of a spec integer field from the
+// Migration CRD, the document the apiserver enforces. The Go caps exist so a
+// caller that bypasses admission (the dashboard, deploy/migrate.sh) rejects
+// exactly what the schema rejects; a constant that drifts from the schema
+// accepts a Migration the apiserver refuses, or refuses one it accepts.
+func crdIntegerMaximum(t *testing.T, field string) int64 {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	var crdPath string
+	for {
+		candidate := filepath.Join(dir, "config", "crd", "migration.yaml")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			crdPath = candidate
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find config/crd/migration.yaml above the working directory")
+		}
+		dir = parent
+	}
+	data, err := os.ReadFile(crdPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", crdPath, err)
+	}
+	obj := map[string]any{}
+	if err := k8syaml.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("decode %s: %v", crdPath, err)
+	}
+	versions, _, _ := unstructured.NestedSlice(obj, "spec", "versions")
+	for _, v := range versions {
+		maximum, found, err := unstructured.NestedInt64(v.(map[string]any),
+			"schema", "openAPIV3Schema", "properties", "spec", "properties", field, "maximum")
+		if err != nil {
+			t.Fatalf("read spec.%s maximum: %v", field, err)
+		}
+		if found {
+			return maximum
+		}
+	}
+	t.Fatalf("spec.%s has no maximum in %s", field, crdPath)
+	return 0
+}
+
+// TestDurationCapsMatchCRDSchema pins both duration caps to the CRD schema.
+// maxPodWaitTimeoutSeconds used to be 86400 while the schema's maximum was
+// 3600, so a 2h pod wait the apiserver rejects was accepted by Validate.
+func TestDurationCapsMatchCRDSchema(t *testing.T) {
+	t.Parallel()
+	if got, want := int64(maxPodWaitTimeoutSeconds), crdIntegerMaximum(t, "podWaitTimeoutSeconds"); got != want {
+		t.Errorf("maxPodWaitTimeoutSeconds = %d, CRD schema maximum = %d", got, want)
+	}
+	if got, want := int64(maxCNIConvergenceDelaySeconds), crdIntegerMaximum(t, "cniConvergenceDelaySeconds"); got != want {
+		t.Errorf("maxCNIConvergenceDelaySeconds = %d, CRD schema maximum = %d", got, want)
 	}
 }
 

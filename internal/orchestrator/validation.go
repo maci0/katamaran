@@ -9,10 +9,12 @@ import (
 	"github.com/maci0/katamaran/internal/migration"
 )
 
-// maxPodWaitTimeoutSeconds caps spec.podWaitTimeoutSeconds at 24 hours. See
-// the comment on the PodWaitTimeoutSeconds check in Validate for why an upper
-// bound is required.
-const maxPodWaitTimeoutSeconds = 86400
+// maxPodWaitTimeoutSeconds caps spec.podWaitTimeoutSeconds. Matches the CRD
+// schema's maximum (config/crd/migration.yaml) so the two validators cannot
+// disagree: a value the apiserver accepts must not be rejected here, and a
+// value it rejects must not be accepted. See the comment on the
+// PodWaitTimeoutSeconds check in Validate for why an upper bound is required.
+const maxPodWaitTimeoutSeconds = 3600
 
 // maxCNIConvergenceDelaySeconds caps spec.cniConvergenceDelaySeconds. Matches
 // the CRD schema's maximum so the two validators cannot disagree; see the
@@ -117,9 +119,11 @@ func Validate(req Request) error {
 	// pod-wait deadline (waitForJobPod). That product overflows int64
 	// nanoseconds above ~9.2e9 seconds and wraps negative, making the wait
 	// context expire instantly instead of honoring the requested timeout.
-	// 24h is already far beyond any legitimate pod start (the orchestrator
-	// default is 60s) and keeps the multiplication far from overflow, so any
-	// larger value is treated as a typo rather than an intent to wait days.
+	// The cap is the CRD schema's maximum, 3600s: an hour is already far
+	// beyond any legitimate pod start (the orchestrator default is 60s) and
+	// keeps the multiplication far from overflow. A larger value is rejected
+	// here exactly as the apiserver rejects it, so a Migration the schema
+	// refuses cannot be submitted through a caller that bypasses admission.
 	if req.PodWaitTimeoutSeconds < 0 || req.PodWaitTimeoutSeconds > maxPodWaitTimeoutSeconds {
 		return fmt.Errorf("podWaitTimeoutSeconds must be between 0 and %d, got %d", maxPodWaitTimeoutSeconds, req.PodWaitTimeoutSeconds)
 	}

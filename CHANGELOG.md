@@ -12,6 +12,12 @@ workflow refuses to publish a tag that has no section below.
 
 ## [Unreleased]
 
+### Fixed
+
+- `podWaitTimeoutSeconds` is capped at 3600, the Migration CRD schema's
+  maximum. `Validate` previously accepted up to 86400, so a pod wait the
+  apiserver rejects was submitted by callers that bypass admission.
+
 ## [0.8.1] - 2026-10-15
 
 ### Fixed
