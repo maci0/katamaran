@@ -46,6 +46,14 @@ success() { printf "%s  PASS: %s%s\n" "$stdout_green" "$1" "$stdout_reset"; }
 warn()    { printf "%s  WARN: %s%s\n" "$stdout_yellow" "$1" "$stdout_reset"; }
 error()   { printf "%s  ERROR: %s%s\n" "$stderr_red" "$1" "$stderr_reset" >&2; }
 
+# is_arm64 reports whether a `uname -m` string names the arm64 target the
+# release images ship. Linux prints "aarch64"; Darwin and some kind node
+# images print "arm64". Callers that compared only "aarch64" silently took
+# the x86_64 path on the other spelling.
+is_arm64() {
+    [[ "$1" == "aarch64" || "$1" == "arm64" ]]
+}
+
 # --- Provider-aware remote execution ---
 
 # node_exec runs a command on a cluster node.

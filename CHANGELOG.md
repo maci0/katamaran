@@ -28,6 +28,13 @@ workflow refuses to publish a tag that has no section below.
   Job name is the migration ID, so an existing Job is the same submission
   and is now treated as success. A genuine create failure still removes
   the destination Job.
+- The dashboard ping load generator now probes once a second. iputils, the
+  ping the dashboard image ships, rejects a sub-second `-i` for the
+  unprivileged user the image runs as, so the previous 200ms interval made
+  every probe exit before recording a sample.
+- The e2e and downtime-sweep scripts treat both `uname -m` spellings of the
+  arm64 target (`aarch64` and `arm64`) as arm64, and the TCG QEMU wrapper is
+  written with LF line endings so a macOS host can hand it to a Linux node.
 
 ### Changed
 

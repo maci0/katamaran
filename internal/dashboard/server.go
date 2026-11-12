@@ -71,8 +71,13 @@ const (
 	maxLogLineSize = 8 * 1024    // Maximum stored dashboard log line size.
 
 	// Load generator intervals.
-	httpLoadInterval  = 200 * time.Millisecond
-	pingInterval      = 200 * time.Millisecond
+	httpLoadInterval = 200 * time.Millisecond
+	// pingInterval stays at a whole second. iputils (the ping the dashboard
+	// image ships, see Dockerfile.dashboard) rejects any -i below one second
+	// unless the caller is root or holds CAP_NET_RAW, and the dashboard
+	// process runs as the unprivileged "dashboard" user. A fractional value
+	// makes ping exit immediately, so the load generator records nothing.
+	pingInterval      = time.Second
 	httpClientTimeout = 2 * time.Second
 
 	// maxResponseDiscard is the maximum response body bytes to consume

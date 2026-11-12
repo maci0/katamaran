@@ -206,7 +206,7 @@ for DOWNTIME in "${DOWNTIMES[@]}"; do
     # the QEMU binary per host architecture. kernel_irqchip is x86-only, so
     # resolve both the binary and the machine type from the node's uname -m.
     DEST_ARCH=$(node_exec "$DEST_NODE" "uname -m")
-    if [[ "$DEST_ARCH" == "aarch64" ]]; then
+    if is_arm64 "$DEST_ARCH"; then
         HELPER_QEMU="/opt/kata/bin/qemu-system-aarch64"
         HELPER_MACHINE="virt,accel=kvm,gic-version=host"
     else

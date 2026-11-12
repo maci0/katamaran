@@ -90,7 +90,7 @@ echo "    Kernel version: ${KVER}"
 KARCH=$(minikube -p "${PROFILE}" ssh -- "uname -m" | tr -d '\r')
 case "${KARCH}" in
     x86_64)  BR2_ARCH=BR2_x86_64;  TUPLE=x86_64-buildroot-linux-gnu;  KERNEL_ARCH=x86_64 ;;
-    aarch64) BR2_ARCH=BR2_aarch64; TUPLE=aarch64-buildroot-linux-gnu; KERNEL_ARCH=arm64 ;;
+    aarch64|arm64) BR2_ARCH=BR2_aarch64; TUPLE=aarch64-buildroot-linux-gnu; KERNEL_ARCH=arm64 ;;
     *)
         echo "ERROR: unsupported node architecture '${KARCH}'." >&2
         echo "       Supported: x86_64 (amd64), aarch64 (arm64)." >&2

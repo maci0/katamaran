@@ -367,8 +367,13 @@ NODE_ARCH=$(node_exec "${NODE1}" "uname -m")
 if [[ "${TCG}" == "true" ]]; then
     log "Applying TCG (no-KVM) patches for software emulation..."
     QEMU_BIN=$(node_exec "${NODE1}" "grep '^path = ' '${KATA_CFG}'" | sed 's|path = "\(.*\)"|\1|')
-    TCG_WRAPPER=$(mktemp)
-    if [[ "${NODE_ARCH}" == "aarch64" ]]; then
+    # mktemp follows the host: on macOS (the documented TCG path) it yields a
+    # file with no extension, which node_cp_to then installs as the QEMU
+    # binary inside the node. The node executes it, so force a .sh suffix the
+    # copy preserves and strip any CRLF a macOS checkout would otherwise hand
+    # the node as its shebang.
+    TCG_WRAPPER=$(mktemp "${TMPDIR:-/tmp}/katamaran-tcg.XXXXXX.sh")
+    if is_arm64 "${NODE_ARCH}"; then
         # aarch64: rewrite accel, gic-version, and cpu for TCG compatibility.
         cat > "${TCG_WRAPPER}" <<'EOF'
 #!/bin/bash
@@ -395,6 +400,12 @@ done
 exec "${0}.real" "${args[@]}"
 EOF
     fi
+    # macOS (the documented TCG host) ships BSD sed, whose -i requires a
+    # suffix, and a core.autocrlf checkout feeds this heredoc CRLF. The node
+    # executes the result, so a CR on the shebang makes the kernel reject it.
+    # An explicit suffix keeps -i portable. The substitution only strips a
+    # trailing CR, so an LF checkout is left untouched.
+    sed -i.bak 's/\r$//' "${TCG_WRAPPER}" && rm -f "${TCG_WRAPPER}.bak"
     for node in "${NODE1}" "${NODE2}"; do
         node_exec "${node}" "${SUDO} cp '${QEMU_BIN}' '${QEMU_BIN}.real'"
         node_cp_to "${node}" "${TCG_WRAPPER}" "${QEMU_BIN}"
@@ -404,7 +415,7 @@ EOF
         node_exec "${node}" "${SUDO} sed -i 's|^default_memory = 2048|default_memory = 512|' '${KATA_CFG}'"
         # Avoid cgroup.subtree_control errors in containerized environments (kind/Docker).
         node_exec "${node}" "${SUDO} sed -i 's|^#*sandbox_cgroup_only.*|sandbox_cgroup_only = true|' '${KATA_CFG}'"
-        if [[ "${NODE_ARCH}" == "aarch64" ]]; then
+        if is_arm64 "${NODE_ARCH}"; then
             # aarch64-only: pmu=off unsupported, nvdimm crashes under TCG.
             node_exec "${node}" "${SUDO} sed -i 's|^cpu_features = \"pmu=off\"|cpu_features = \"\"|' '${KATA_CFG}'"
             node_exec "${node}" "${SUDO} sed -i 's|^disable_image_nvdimm = false|disable_image_nvdimm = true|' '${KATA_CFG}'"
@@ -646,7 +657,7 @@ DST_CMDLINE=$(echo "${SRC_CMDLINE}" \
     | sed "s|${SRC_SANDBOX_DIR}|${DST_VM_DIR}|g" \
     | sed "s|sandbox-${SRC_SANDBOX_ID}|sandbox-${DST_SANDBOX}|g" \
     | sed "s|sandboxes/${SRC_SANDBOX_ID}|sandboxes/${DST_SANDBOX}|g" \
-    | if [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]]; then cat; else sed "s|,readonly=on||g; s|,readonly=true||g"; fi \
+    | if [[ "${TCG}" == "true" ]] && is_arm64 "${NODE_ARCH}"; then cat; else sed "s|,readonly=on||g; s|,readonly=true||g"; fi \
     | sed "s|unix:fd=[0-9]*,server=on,wait=off|unix:${DST_VM_DIR}/qmp.sock,server=on,wait=off|g" \
 )
 [[ -n "${SRC_NVDIMM_PATH}" ]] && \
@@ -693,7 +704,7 @@ while IFS= read -r arg; do
     case "${arg}" in
         -daemonize) continue ;;
         -incoming)  skip_next=true; continue ;;
-        --no-reboot) [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]] && continue ;;
+        --no-reboot) [[ "${TCG}" == "true" ]] && is_arm64 "${NODE_ARCH}" && continue ;;
         -qmp)
             # Read the next arg to check if it's fd-based.
             read -r next_arg || true
@@ -710,7 +721,7 @@ while IFS= read -r arg; do
     DST_QEMU_CMD+=" $(printf '%q' "${arg}")"
 done <<< "${DST_CMDLINE}"
 DST_QEMU_CMD+=" -incoming defer"
-if [[ "${TCG}" == "true" && "${NODE_ARCH}" == "aarch64" ]]; then
+if [[ "${TCG}" == "true" ]] && is_arm64 "${NODE_ARCH}"; then
     # aarch64 TCG: --no-reboot is stripped so -daemonize would exit on guest
     # crash. Run via nohup instead and log stderr for diagnostics.
     node_exec "${NODE2}" "${SUDO} bash -c 'nohup ${DST_QEMU_CMD} -D /tmp/dest-qemu-debug.log > /tmp/dest-qemu-stdout.log 2>&1 &'"

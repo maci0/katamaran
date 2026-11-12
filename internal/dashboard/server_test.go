@@ -889,6 +889,18 @@ func TestHandlePingStart_RecordsCLocaleLatency(t *testing.T) {
 		"  echo 'unreachable from 10.0.0.1'\n" +
 		"  exec sleep 30\n" +
 		"fi\n" +
+		"# iputils refuses a fractional -i for an unprivileged caller, which is\n" +
+		"# how the dashboard image runs. Walk the real flags so the assertion\n" +
+		"# pins the interval the handler hands ping, not a fixed argv slot.\n" +
+		"prev=\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = -i ]; then\n" +
+		"    case \"$a\" in\n" +
+		"      *.?*) echo 'ping: cannot flood; minimal interval allowed for user is 200ms' >&2; exec sleep 30 ;;\n" +
+		"    esac\n" +
+		"  fi\n" +
+		"  prev=$a\n" +
+		"done\n" +
 		"echo '64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.123 ms'\n" +
 		"exec sleep 30\n"
 	if err := os.WriteFile(filepath.Join(dir, "ping"), []byte(script), 0o700); err != nil {
