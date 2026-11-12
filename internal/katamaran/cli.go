@@ -106,7 +106,7 @@ Output:
   stderr   The full log, in --log-format, plus every error and warning.
 
 Other:
-  -o, --output FMT         Output format: auto, text, or json [default: auto]. auto stays text on a pipe
+  -o, --output FMT         Output format: auto, text, or json [default: auto]; also -oFMT and --output=FMT. auto stays text on a pipe
   -v, --version            Show version and exit
   -h, --help               Show this help and exit
 

@@ -35,7 +35,7 @@ katamaran --mode <source|dest> [flags]
 | `--log-format` | no | `text` | Log output format: `text` or `json` |
 | `--log-level` | no | `info` | Log level: `debug`, `info`, `warn`, or `error` |
 | `--version`, `-v` | no | n/a | Show version and exit |
-| `--output`, `-o` | no | `auto` | `auto`, `text`, or `json`. `auto` stays text on a pipe. Place it before the command |
+| `--output`, `-o` | no | `auto` | `auto`, `text`, or `json`. `auto` stays text on a pipe. Place it before the command. `-oFMT` and `--output=FMT` are accepted |
 | `schema` | no | n/a | Print the CLI spec. `katamaran schema` needs no cluster and no config |
 
 ### Source mode flags
