@@ -175,11 +175,12 @@ func TestRealProcPIDsForSandboxes_FindsSpawnedProcess(t *testing.T) {
 	pidPath := fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := os.Stat(pidPath); err == nil {
+		// The proc file may exist before exec publishes the helper's argv.
+		if raw, err := os.ReadFile(pidPath); err == nil && bytes.Contains(raw, []byte("sandbox-"+uuid)) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("helper pid %d never appeared under /proc", cmd.Process.Pid)
+			t.Fatalf("helper pid %d never published its sandbox command line under /proc", cmd.Process.Pid)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
