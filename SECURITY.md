@@ -32,8 +32,9 @@ short, a report is in scope when it concerns:
   through the `Migration` CRD (B9).
 - Reading or altering guest memory or disk images in flight (B7), which
   cross node boundaries unencrypted.
-- Controlling the destination QEMU process through a crafted source pod log
-  (B6).
+- Controlling the destination QEMU's argument vector, and through it the
+  guest, through a crafted source pod log (B6). The binary executed is pinned
+  and is not attacker-chosen.
 - Reaching the factory gRPC socket or the QMP socket on a node (B5).
 - Bypassing the target screening on the dashboard load generators (B1).
 
