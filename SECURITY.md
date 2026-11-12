@@ -46,14 +46,17 @@ own workload, and anything needing physical access to a node.
 These are operator choices, not project defaults, and they are what the
 threat model's severity ratings are stated against:
 
-- The dashboard is expected to be reached over `kubectl port-forward` by a
-  cluster admin. It has no authentication of its own
-  (`internal/dashboard/authorization.go:23`).
+- The dashboard has no authentication of its own
+  (`internal/dashboard/authorization.go:23`). The shipped manifests publish
+  it as the cluster-wide ClusterIP `katamaran-dashboard-metrics`
+  (`deploy/metrics-services.yaml:36`), so every pod in the cluster can reach
+  it; restricting it to `kubectl port-forward` by a cluster admin is an
+  operator choice the default install does not make.
 - `KATAMARAN_MIGRATION_IMAGE` is expected to be set to a digest-pinned image
-  the operator trusts (`README.md:720`).
+  the operator trusts (`README.md:776`).
 - The `katamaran-adopted` runtime class is optional and experimental
   (`AGENTS.md`).
 
-Deploying the dashboard with a ClusterIP Service reachable by every pod in the
-cluster puts it on an internet-adjacent boundary, and the ratings in the threat
-model for B1 get worse, not the model's accuracy.
+That ClusterIP Service is the default install, not an extra step, so the
+dashboard is on an internet-adjacent boundary unless an operator removes the
+Service. The B1 ratings in the threat model are stated against that default.
