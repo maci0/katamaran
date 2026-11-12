@@ -497,16 +497,47 @@
             return String(n) === part && n >= 0 && n <= 255;
         });
     }
+    // An IPv6 address has several spellings of one address: compressed zeros
+    // ("2001:db8::1"), the fully expanded form, a trailing "::0", and an
+    // IPv4-mapped tail ("::ffff:192.0.2.1"). The URL parser accepts all of
+    // them but returns only its own canonical form, so comparing that form
+    // back to the typed text rejects addresses the server (netip.ParseAddr)
+    // accepts. Check the shape instead: eight hextets, exactly one "::"
+    // compression, and at most one dotted-decimal IPv4 tail as the final
+    // hextet. Zone identifiers stay rejected: the server accepts them but
+    // QEMU's colon-delimited URIs cannot carry one.
+    function isIPv6(value) {
+        if (value.indexOf('%') !== -1) return false;
+        var halves = value.split('::');
+        if (halves.length > 2) return false;
+        var groups = [];
+        for (var h = 0; h < halves.length; h++) {
+            if (halves[h] === '') continue;
+            var parts = halves[h].split(':');
+            for (var i = 0; i < parts.length; i++) {
+                if (parts[i] === '') return false;
+                groups.push(parts[i]);
+            }
+        }
+        var v4 = groups.length > 0 && groups[groups.length - 1].indexOf('.') !== -1;
+        if (v4) {
+            if (!isIPv4(groups.pop())) return false;
+            groups.push('0', '0');
+        }
+        var compressed = halves.length === 2;
+        if (!compressed && groups.length !== 8) return false;
+        // "::" is the unspecified address: a compression standing for all
+        // eight zero hextets, so the compressed form may carry none.
+        if (compressed && groups.length > 7) return false;
+        for (var g = 0; g < groups.length; g++) {
+            if (!/^[0-9a-fA-F]{1,4}$/.test(groups[g])) return false;
+        }
+        return true;
+    }
+
     function isIPAddress(value) {
         value = value.trim();
-        if (isIPv4(value)) return true;
-        if (value.indexOf(':') === -1) return false;
-        try {
-            var url = new URL('http://[' + value + ']/');
-            return url.hostname.replace(/^\[|\]$/g, '').toLowerCase() === value.toLowerCase();
-        } catch(e) {
-            return false;
-        }
+        return isIPv4(value) || isIPv6(value);
     }
     function validateIPField(field, emptyMessage, invalidMessage) {
         var value = field.value.trim();

@@ -208,3 +208,49 @@ test('history durations keep hours, minutes and seconds readable', () => {
         assert.equal(context.humanDuration(ms), want, `humanDuration(${ms})`);
     }
 });
+
+// isIPAddress is the browser preflight for the dest and VM IP fields. It has
+// to accept every spelling netip.ParseAddr accepts (and the CLI therefore
+// migrates), not just the one form the URL parser prints back.
+test('IP fields accept every spelling of one IPv6 address', () => {
+    const html = readFileSync(join(__dirname, 'index.html'), 'utf8');
+    const start = html.indexOf('    function isIPv4(value) {');
+    const end = html.indexOf('    function validateIPField(', start);
+    assert.notEqual(start, -1);
+    assert.notEqual(end, -1);
+    const context = {};
+    runInNewContext(`${html.slice(start, end)}\nthis.isIPAddress = isIPAddress;`, context, { timeout: 1000 });
+    for (const value of [
+        '192.0.2.1',
+        '::1',
+        '0:0:0:0:0:0:0:1',
+        '::',
+        '0:0:0:0:0:0:0:0',
+        '2001:db8::1',
+        '2001:DB8::1',
+        '2001:0db8:0000:0000:0000:0000:0000:0001',
+        '2001:db8::0',
+        '2001:db8:0:0:1::1',
+        '::ffff:192.0.2.1',
+        '::FFFF:192.0.2.1',
+        '0:0:0:0:0:ffff:192.0.2.1',
+        ' 2001:db8::1 '
+    ]) {
+        assert.equal(context.isIPAddress(value), true, value);
+    }
+    for (const value of [
+        '',
+        'not-an-ip',
+        '192.0.2.1.5',
+        '::gg',
+        'fe80::1%eth0',
+        '1::2::3',
+        ':::1',
+        '2001:db8::1:',
+        '::ffff:192.0.2.256',
+        '12345::1',
+        '1:2:3:4:5:6:7:8:9'
+    ]) {
+        assert.equal(context.isIPAddress(value), false, value);
+    }
+});
