@@ -72,16 +72,9 @@ func formFieldSet(keys ...string) map[string]struct{} {
 	return set
 }
 
+// rejectUnknownPostFormFields applies the allowlist to the request body only.
 func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
-	for _, key := range slices.Sorted(maps.Keys(r.PostForm)) {
-		if _, ok := allowed[key]; ok {
-			continue
-		}
-		slog.Warn(logCtx+": unknown form field", "field", key, "request_id", requestIDFromContext(r.Context()))
-		jsonError(w, r, "Unknown form field: "+key, http.StatusBadRequest)
-		return false
-	}
-	return true
+	return rejectUnknownFields(w, r, r.PostForm, allowed, logCtx)
 }
 
 // rejectUnknownFormFields applies the allowlist to r.Form, the merge of the
@@ -89,7 +82,11 @@ func rejectUnknownPostFormFields(w http.ResponseWriter, r *http.Request, allowed
 // parameter in either place need this rather than rejectUnknownPostFormFields,
 // so a misspelled name is rejected whichever transport carried it.
 func rejectUnknownFormFields(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}, logCtx string) bool {
-	for _, key := range slices.Sorted(maps.Keys(r.Form)) {
+	return rejectUnknownFields(w, r, r.Form, allowed, logCtx)
+}
+
+func rejectUnknownFields(w http.ResponseWriter, r *http.Request, fields map[string][]string, allowed map[string]struct{}, logCtx string) bool {
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
 		if _, ok := allowed[key]; ok {
 			continue
 		}

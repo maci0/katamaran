@@ -788,6 +788,29 @@ type v2Adapter struct {
 	inner *adoptedTaskService
 }
 
+// proxyCall translates a v2 request into v3req, runs call, and translates
+// the response back. Both generations are generated from the same proto
+// shape, so the bytes round-trip.
+func proxyCall[ReqV2 proto.Message, RespV2 proto.Message, ReqV3 proto.Message, RespV3 proto.Message](
+	ctx context.Context,
+	req ReqV2,
+	v3req ReqV3,
+	call func(context.Context, ReqV3) (RespV3, error),
+	newResp func() RespV2,
+) (RespV2, error) {
+	if err := proxyMessage(req, v3req); err != nil {
+		var zero RespV2
+		return zero, err
+	}
+	v3resp, err := call(ctx, v3req)
+	if err != nil {
+		var zero RespV2
+		return zero, err
+	}
+	out := newResp()
+	return out, proxyMessage(v3resp, out)
+}
+
 func proxyMessage(in proto.Message, out proto.Message) error {
 	if in == nil {
 		return nil
@@ -800,68 +823,23 @@ func proxyMessage(in proto.Message, out proto.Message) error {
 }
 
 func (a *v2Adapter) State(ctx context.Context, req *taskAPIv2.StateRequest) (*taskAPIv2.StateResponse, error) {
-	v3req := &taskAPI.StateRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.State(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.StateResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.StateRequest{}, a.inner.State, func() *taskAPIv2.StateResponse { return &taskAPIv2.StateResponse{} })
 }
 
 func (a *v2Adapter) Create(ctx context.Context, req *taskAPIv2.CreateTaskRequest) (*taskAPIv2.CreateTaskResponse, error) {
-	v3req := &taskAPI.CreateTaskRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Create(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.CreateTaskResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.CreateTaskRequest{}, a.inner.Create, func() *taskAPIv2.CreateTaskResponse { return &taskAPIv2.CreateTaskResponse{} })
 }
 
 func (a *v2Adapter) Start(ctx context.Context, req *taskAPIv2.StartRequest) (*taskAPIv2.StartResponse, error) {
-	v3req := &taskAPI.StartRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Start(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.StartResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.StartRequest{}, a.inner.Start, func() *taskAPIv2.StartResponse { return &taskAPIv2.StartResponse{} })
 }
 
 func (a *v2Adapter) Delete(ctx context.Context, req *taskAPIv2.DeleteRequest) (*taskAPIv2.DeleteResponse, error) {
-	v3req := &taskAPI.DeleteRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Delete(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.DeleteResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.DeleteRequest{}, a.inner.Delete, func() *taskAPIv2.DeleteResponse { return &taskAPIv2.DeleteResponse{} })
 }
 
 func (a *v2Adapter) Pids(ctx context.Context, req *taskAPIv2.PidsRequest) (*taskAPIv2.PidsResponse, error) {
-	v3req := &taskAPI.PidsRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Pids(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.PidsResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.PidsRequest{}, a.inner.Pids, func() *taskAPIv2.PidsResponse { return &taskAPIv2.PidsResponse{} })
 }
 
 func (a *v2Adapter) Pause(_ context.Context, _ *taskAPIv2.PauseRequest) (*emptypb.Empty, error) {
@@ -893,31 +871,13 @@ func (a *v2Adapter) Update(_ context.Context, _ *taskAPIv2.UpdateTaskRequest) (*
 	return &emptypb.Empty{}, nil
 }
 func (a *v2Adapter) Wait(ctx context.Context, req *taskAPIv2.WaitRequest) (*taskAPIv2.WaitResponse, error) {
-	v3req := &taskAPI.WaitRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Wait(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.WaitResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.WaitRequest{}, a.inner.Wait, func() *taskAPIv2.WaitResponse { return &taskAPIv2.WaitResponse{} })
 }
 func (a *v2Adapter) Stats(_ context.Context, _ *taskAPIv2.StatsRequest) (*taskAPIv2.StatsResponse, error) {
 	return &taskAPIv2.StatsResponse{}, nil
 }
 func (a *v2Adapter) Connect(ctx context.Context, req *taskAPIv2.ConnectRequest) (*taskAPIv2.ConnectResponse, error) {
-	v3req := &taskAPI.ConnectRequest{}
-	if err := proxyMessage(req, v3req); err != nil {
-		return nil, err
-	}
-	v3resp, err := a.inner.Connect(ctx, v3req)
-	if err != nil {
-		return nil, err
-	}
-	out := &taskAPIv2.ConnectResponse{}
-	return out, proxyMessage(v3resp, out)
+	return proxyCall(ctx, req, &taskAPI.ConnectRequest{}, a.inner.Connect, func() *taskAPIv2.ConnectResponse { return &taskAPIv2.ConnectResponse{} })
 }
 func (a *v2Adapter) Shutdown(ctx context.Context, req *taskAPIv2.ShutdownRequest) (*emptypb.Empty, error) {
 	v3req := &taskAPI.ShutdownRequest{}

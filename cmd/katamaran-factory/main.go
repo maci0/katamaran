@@ -48,11 +48,9 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"syscall"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -63,6 +61,7 @@ import (
 	"github.com/maci0/katamaran/internal/factory"
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"github.com/maci0/katamaran/internal/logging"
+	"github.com/maci0/katamaran/internal/signalctx"
 )
 
 // recoverUnaryInterceptor catches panics in gRPC handlers, logs them with a
@@ -201,13 +200,8 @@ func main() {
 
 	srv := factory.NewServer()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalctx.Notify()
 	defer stop()
-
-	go func() {
-		<-ctx.Done()
-		stop() // A second signal will now force exit.
-	}()
 
 	// Kata stages per-sandbox state (persist.json) in the sbs dir, the
 	// sibling of the watch dir (/run/vc/vm/ and /run/vc/sbs by default).

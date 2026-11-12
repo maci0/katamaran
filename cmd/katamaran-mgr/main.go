@@ -27,10 +27,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +43,7 @@ import (
 	"github.com/maci0/katamaran/internal/controller"
 	"github.com/maci0/katamaran/internal/logging"
 	"github.com/maci0/katamaran/internal/orchestrator"
+	"github.com/maci0/katamaran/internal/signalctx"
 )
 
 func printUsage(w io.Writer) {
@@ -235,13 +234,8 @@ func main() {
 	rec := controller.NewReconciler(dyn, kube, orch, disc)
 	rec.AllowedImage = allowedImage
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalctx.Notify()
 	defer stop()
-
-	go func() {
-		<-ctx.Done()
-		stop() // A second signal will now force exit.
-	}()
 
 	var servers sync.WaitGroup
 	defer func() {

@@ -313,23 +313,16 @@ func (c *Client) execute(ctx context.Context, cmd string, args Args) (json.RawMe
 		return nil, fmt.Errorf("marshaling QMP request %q: %w", cmd, err)
 	}
 
-	// Set a deadline so we don't block forever waiting for a response.
 	deadline := time.Now().Add(executeTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
 
-	// Set both read and write deadlines to prevent getting stuck writing
-	// to a full socket buffer.
 	if err = conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("setting IO deadline for %q: %w", cmd, err)
 	}
 	defer func() { _ = conn.SetDeadline(time.Time{}) }()
 
-	// On context cancellation, shorten the deadline to unblock in-progress reads
-	// rather than closing the connection. This preserves the socket for deferred
-	// cleanup commands (migrate-cancel, block-job-cancel) that run after the main
-	// context is cancelled.
 	release := interruptOnCancel(ctx, conn, conn.SetDeadline)
 	defer release()
 
@@ -423,8 +416,6 @@ func (c *Client) waitForEvent(ctx context.Context, eventName string, timeout tim
 		return fmt.Errorf("waiting for QMP event %q: connection is closed", eventName)
 	}
 
-	// Set a read deadline for the event wait. Use the shorter of the
-	// explicit timeout or the parent context's deadline.
 	eventDeadline := time.Now().Add(timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(eventDeadline) {
 		eventDeadline = d
@@ -434,8 +425,6 @@ func (c *Client) waitForEvent(ctx context.Context, eventName string, timeout tim
 	}
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	// On context cancellation, shorten the read deadline instead of closing the
-	// connection, same strategy as Execute().
 	release := interruptOnCancel(ctx, conn, conn.SetReadDeadline)
 	defer release()
 

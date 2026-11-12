@@ -77,30 +77,25 @@ type MigrateInfo struct {
 	TotalTime int64 `json:"total-time,omitempty"`
 }
 
-// NBDServerStartArgs are the arguments for the nbd-server-start command.
 type NBDServerStartArgs struct {
 	Addr NBDServerAddr `json:"addr"`
 }
 
-// NBDServerAddr describes the listen address for the NBD server.
 type NBDServerAddr struct {
 	Type string            `json:"type"`
 	Data NBDServerAddrData `json:"data"`
 }
 
-// NBDServerAddrData contains the host and port for the NBD server address.
 type NBDServerAddrData struct {
 	Host string `json:"host"`
 	Port string `json:"port"`
 }
 
-// NBDServerAddArgs are the arguments for the nbd-server-add command.
 type NBDServerAddArgs struct {
 	Device   string `json:"device"`
 	Writable bool   `json:"writable"`
 }
 
-// DriveMirrorArgs are the arguments for the drive-mirror command.
 type DriveMirrorArgs struct {
 	Device string `json:"device"`
 	Target string `json:"target"`
@@ -109,36 +104,30 @@ type DriveMirrorArgs struct {
 	JobID  string `json:"job-id"`
 }
 
-// BlockJobCancelArgs are the arguments for the block-job-cancel command.
 type BlockJobCancelArgs struct {
 	Device string `json:"device"` // accepts either a device name or job-id
 	Force  bool   `json:"force"`
 }
 
-// MigrateSetCapabilitiesArgs are the arguments for migrate-set-capabilities.
 type MigrateSetCapabilitiesArgs struct {
 	Capabilities []MigrationCapability `json:"capabilities"`
 }
 
-// MigrationCapability describes a single migration capability toggle.
 type MigrationCapability struct {
 	Capability string `json:"capability"`
 	State      bool   `json:"state"`
 }
 
-// MigrateSetParametersArgs are the arguments for migrate-set-parameters.
 type MigrateSetParametersArgs struct {
 	DowntimeLimit   int64 `json:"downtime-limit,omitempty"`
 	MaxBandwidth    int64 `json:"max-bandwidth,omitempty"`
 	MultifdChannels int64 `json:"multifd-channels,omitempty"`
 }
 
-// MigrateArgs are the arguments for the migrate command.
 type MigrateArgs struct {
 	URI string `json:"uri"`
 }
 
-// AnnounceSelfArgs are the arguments for the announce-self command.
 type AnnounceSelfArgs struct {
 	Initial int `json:"initial"` // Delay before first announcement (ms).
 	Max     int `json:"max"`     // Maximum delay between announcements (ms).
@@ -146,7 +135,6 @@ type AnnounceSelfArgs struct {
 	Step    int `json:"step"`    // Delay increase per round (ms).
 }
 
-// BlockdevAddArgs are the arguments for the blockdev-add command.
 type BlockdevAddArgs struct {
 	Driver   string           `json:"driver"`
 	NodeName string           `json:"node-name"`
@@ -159,7 +147,6 @@ type BlockdevFileSpec struct {
 	Filename string `json:"filename"`
 }
 
-// DeviceAddArgs are the arguments for the device_add command.
 type DeviceAddArgs struct {
 	Driver string `json:"driver"`
 	Drive  string `json:"drive"`
