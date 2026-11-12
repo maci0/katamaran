@@ -27,7 +27,6 @@ one is absent.
 - `make repro-check` builds everything twice under a different locale and
   timezone and diffs the result. The binaries must stay byte-identical; a diff
   means host state reached the build.
-- Serialize calls on each `internal/qmp` client; it is not concurrency-safe.
 - The four shipped images (`Dockerfile`, `Dockerfile.dashboard`,
   `Dockerfile.factory`, `Dockerfile.mgr`) are checked by
   `internal/images/images_test.go`: digest-pinned bases, exec-form ENTRYPOINT,
@@ -52,11 +51,12 @@ one is absent.
   reason.
 - `deploy/job-rbac.yaml` is the only file that declares the
   `katamaran-source` ServiceAccount the Job templates pin, and
-  `deploy/metrics-services.yaml` is the only file that declares a Service.
-  Two files emitting the same object makes the applier's ordering decide
-  which one's teardown removes it, so each object has exactly one owner.
-  `internal/manifests` fails the gate if that stops being true, or if any
-  manifest stops decoding into a typed API object.
+  `deploy/metrics-services.yaml` is the only file that declares the metrics
+  Services. `deploy/manager.yaml` owns the webhook Service. Two files emitting
+  the same object makes the applier's ordering decide which one's teardown
+  removes it, so each object has exactly one owner. `internal/manifests` fails
+  the gate if a ServiceAccount gains a second owner, or if any manifest stops
+  decoding into a typed API object.
 - Migration timeouts and buffer sizes are named constants, not literals. Keep
   the controller's `StatusTimeout` and both Jobs' `activeDeadlineSeconds` equal
   in duration and above `storageSyncTimeout + migrationTimeout`, with headroom
