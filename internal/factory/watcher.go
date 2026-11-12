@@ -2,6 +2,7 @@ package factory
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -25,7 +26,13 @@ const (
 type Watcher struct {
 	dir    string
 	server *Server
-	seen   map[string]struct{}
+	// seen records the content fingerprint of each migration-meta.json already
+	// offered. Keying on the path alone would treat a republish of the same
+	// file (the dest sandbox directory is reused across migrations, and the
+	// dest binary rewrites the file in place) as already handled, so the new
+	// VM would never be offered. A changed fingerprint is a new migration and
+	// is offered again; an unchanged one is a repeated poll and is skipped.
+	seen map[string][sha256.Size]byte
 	// consecutiveErrors counts scans that ended with at least one error. A
 	// persistent error (unmounted hostPath, wrong permissions) otherwise
 	// re-logs the same warning every poll interval for the life of the
@@ -39,7 +46,7 @@ func NewWatcher(dir string, server *Server) *Watcher {
 	return &Watcher{
 		dir:    dir,
 		server: server,
-		seen:   make(map[string]struct{}),
+		seen:   make(map[string][sha256.Size]byte),
 	}
 }
 
@@ -112,9 +119,6 @@ func (w *Watcher) scan() {
 		}
 		metaPath := filepath.Join(w.dir, e.Name(), migration.MigrationMetaFile)
 		current[metaPath] = struct{}{}
-		if _, ok := w.seen[metaPath]; ok {
-			continue
-		}
 
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
@@ -145,8 +149,17 @@ func (w *Watcher) scan() {
 			continue
 		}
 
+		// Fingerprint the bytes that parsed, not the path. The same path is
+		// rewritten when the dest sandbox directory is reused, and only a new
+		// payload is a new VM; an identical rewrite is the same migration seen
+		// on a later poll and must not be offered twice.
+		sum := sha256.Sum256(data)
+		if prev, ok := w.seen[metaPath]; ok && prev == sum {
+			continue
+		}
+
 		slog.Info("Discovered migration metadata", "path", metaPath, "id", state.ID)
-		w.seen[metaPath] = struct{}{}
+		w.seen[metaPath] = sum
 		if len(state.VMConfig) > 0 {
 			w.server.SetConfig(state.VMConfig, state.AgentConfig)
 			slog.Info("VMConfig set from migration metadata", "id", state.ID)

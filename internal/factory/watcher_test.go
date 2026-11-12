@@ -56,6 +56,50 @@ func TestWatcherScanOffersMetadataAndConfigOnce(t *testing.T) {
 	assertStatus(t, srv, nil)
 }
 
+// TestWatcherScanReoffersRewrittenMetadata pins the republish contract: the
+// dest sandbox directory is reused, so a later migration rewrites the same
+// migration-meta.json in place. The watcher must offer the new VM, and must
+// not offer it again when the rewrite carries identical bytes.
+func TestWatcherScanReoffersRewrittenMetadata(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	srv := NewServer()
+	watcher := NewWatcher(dir, srv)
+
+	first := MigrationState{ID: "first", QEMUPid: 1, CPU: 1, Memory: 1024}
+	second := MigrationState{ID: "second", QEMUPid: 2, CPU: 2, Memory: 2048}
+	writeMigrationMeta(t, dir, "sandbox-reused", first)
+	watcher.scan()
+	assertStatus(t, srv, []wantVMStatus{{pid: 1, cpu: 1, memory: 1024}})
+
+	got, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetBaseVM first: %v", err)
+	}
+	assertVM(t, got, first)
+
+	// Same bytes rewritten in place are the same migration, not a new one.
+	writeMigrationMeta(t, dir, "sandbox-reused", first)
+	watcher.scan()
+	assertStatus(t, srv, nil)
+
+	// A different payload at the same path is a new migration and must be
+	// offered exactly once.
+	writeMigrationMeta(t, dir, "sandbox-reused", second)
+	watcher.scan()
+	assertStatus(t, srv, []wantVMStatus{{pid: 2, cpu: 2, memory: 2048}})
+	watcher.scan()
+	assertStatus(t, srv, []wantVMStatus{{pid: 2, cpu: 2, memory: 2048}})
+
+	got, err = srv.GetBaseVM(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetBaseVM second: %v", err)
+	}
+	assertVM(t, got, second)
+	assertStatus(t, srv, nil)
+}
+
 func TestWatcherScanIgnoresInvalidMetadata(t *testing.T) {
 	t.Parallel()
 
