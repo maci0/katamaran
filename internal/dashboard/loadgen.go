@@ -102,6 +102,14 @@ func (a *App) resetLoadgen() {
 
 // handleLoadgenStop processes a request to stop the currently running load generator.
 func (a *App) handleLoadgenStop(w http.ResponseWriter, r *http.Request) {
+	// The body carries no parameters, but it still has to clear the same
+	// content-type and size checks as the load generator start endpoints.
+	if !parseFormPOST(w, r, "Load generator stop request") {
+		return
+	}
+	if !rejectUnknownPostFormFields(w, r, formFieldSet(), "Load generator stop request") {
+		return
+	}
 	a.loadgenMutex.Lock()
 	wasRunning := a.loadgenRunning
 	loadgenType := a.loadgenType

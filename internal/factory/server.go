@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/maci0/katamaran/internal/factory/cachepb"
 	"github.com/maci0/katamaran/internal/migration"
@@ -51,6 +52,11 @@ type Server struct {
 	vmConfig                  []byte // JSON-serialized VMConfig for Config() RPC
 	agentConfig               []byte // JSON-serialized AgentConfig for Config() RPC
 	vmConfigUnavailableLogged bool
+
+	// dequeueAttempts counts entries into the locked section of GetBaseVM.
+	// Tests use it to cancel a caller after it has passed the pre-lock
+	// context check and is blocked on s.mu; it is not part of the protocol.
+	dequeueAttempts atomic.Int64
 }
 
 // NewServer returns a Server ready to accept OfferVM calls and serve
@@ -145,12 +151,23 @@ func (s *Server) GetBaseVM(ctx context.Context, _ *emptypb.Empty) (*cachepb.Grpc
 		}
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
+	s.dequeueAttempts.Add(1)
 	s.mu.Lock()
 	select {
 	case <-s.quit:
 		s.mu.Unlock()
 		return nil, status.Error(codes.Unavailable, "factory shutting down")
 	default:
+	}
+	// Recheck under the lock: the pre-lock check above misses a context that
+	// expired while this call waited for s.mu, and popping the queue for a
+	// caller that will never see the VM drops a migrated state permanently.
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, err.Error())
+		}
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
 	if len(s.queue) == 0 {
 		s.mu.Unlock()

@@ -519,6 +519,15 @@ const migrateStopTimeout = 10 * time.Second
 // controller's deletion path makes); failures are logged and the watch
 // stream still reports the eventual terminal phase.
 func (a *App) handleMigrateStop(w http.ResponseWriter, r *http.Request) {
+	// The body carries no parameters, but it still has to clear the same
+	// content-type and size checks as the other POST endpoints: a JSON body
+	// here is a client bug, and ParseForm would otherwise drop it silently.
+	if !parseFormPOST(w, r, "Migration stop request") {
+		return
+	}
+	if !rejectUnknownPostFormFields(w, r, formFieldSet(), "Migration stop request") {
+		return
+	}
 	a.migrationMutex.Lock()
 	wasRunning := a.migrationCancel != nil
 	migrationID := a.migrationID

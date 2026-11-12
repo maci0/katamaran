@@ -538,6 +538,31 @@ func TestHandleStatus_EmptyCursorAccepted(t *testing.T) {
 	}
 }
 
+// The parameter-free list endpoints must reject a query string the way
+// /api/status rejects an unknown cursor: a name the handler never reads
+// would otherwise be answered as a full listing, hiding the client bug.
+func TestListEndpointsRejectQueryParams(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	cases := []string{
+		"/api/pods?namespace=default",
+		"/api/nodes?label=kata",
+		"/api/history?limit=10",
+		"/api/history?limit=10&limit=20",
+	}
+	for _, path := range cases {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			app.newMux(false).ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %v (body=%s)", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleStatus_DeltaLogsAndPings(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1364,6 +1389,18 @@ func TestHandleMigrateStop_ReturnsBody(t *testing.T) {
 	}
 }
 
+func TestHandleMigrateStop_RejectsNonFormBody(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodPost, "/api/migrate/stop", strings.NewReader(`{"note":"stop"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.handleMigrateStop(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %v (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleLoadgenStop_ReturnsBody(t *testing.T) {
 	t.Parallel()
 	app := &App{}
@@ -1385,6 +1422,18 @@ func TestHandleLoadgenStop_ReturnsBody(t *testing.T) {
 	}
 	if loadStopResp["stopped"] != false {
 		t.Errorf("stopped = %v, want false (no loadgen was running)", loadStopResp["stopped"])
+	}
+}
+
+func TestHandleLoadgenStop_RejectsNonFormBody(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	req := httptest.NewRequest(http.MethodPost, "/api/ping/stop", strings.NewReader(`{"note":"stop"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	app.handleLoadgenStop(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %v (body=%s)", w.Code, w.Body.String())
 	}
 }
 

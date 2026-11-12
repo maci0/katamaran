@@ -468,6 +468,9 @@ func (a *App) requireDiscoverer(w http.ResponseWriter, r *http.Request, subject 
 
 // handleListPods returns kata-runtime pods discovered from Kubernetes.
 func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
+	if !rejectQueryParams(w, r, formFieldSet(), "List pods request") {
+		return
+	}
 	if !a.requireDiscoverer(w, r, "pods") {
 		return
 	}
@@ -482,6 +485,9 @@ func (a *App) handleListPods(w http.ResponseWriter, r *http.Request) {
 
 // handleListNodes returns nodes labeled for the kata runtime.
 func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	if !rejectQueryParams(w, r, formFieldSet(), "List nodes request") {
+		return
+	}
 	if !a.requireDiscoverer(w, r, "nodes") {
 		return
 	}
@@ -501,6 +507,9 @@ func (a *App) handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 // handleHistory returns completed migrations, newest first.
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if !rejectQueryParams(w, r, formFieldSet(), "History request") {
+		return
+	}
 	writeJSON(w, r, http.StatusOK, a.historySnapshot())
 }
 

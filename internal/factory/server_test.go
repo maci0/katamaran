@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -169,6 +170,57 @@ func TestServerGetBaseVMHonorsCanceledContext(t *testing.T) {
 	if _, err := srv.GetBaseVM(ctx, &emptypb.Empty{}); status.Code(err) != codes.Canceled {
 		t.Fatalf("GetBaseVM canceled status = %v, want %v; err=%v", status.Code(err), codes.Canceled, err)
 	}
+}
+
+// A context that expires while GetBaseVM waits for the server lock must not
+// consume the queued VM: the caller gets a deadline error and never receives
+// the state, so the next live caller has to be able to serve it.
+func TestServerGetBaseVMExpiredContextDoesNotConsumeQueue(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer()
+	offered := MigrationState{ID: "vm-1", QEMUPid: 101, CPU: 2, Memory: 1024, HypervisorState: []byte("hv")}
+	srv.OfferVM(offered)
+
+	release := make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		srv.mu.Lock()
+		close(held)
+		<-release
+		srv.mu.Unlock()
+	}()
+	<-held
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := srv.GetBaseVM(ctx, &emptypb.Empty{})
+		done <- err
+	}()
+	// dequeueAttempts increments after the pre-lock context check and before
+	// s.mu is taken, so the cancel lands while the call is blocked on the
+	// lock: the window the recheck under the lock has to close.
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.dequeueAttempts.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("GetBaseVM did not reach the server lock")
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	close(release)
+
+	err := <-done
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("GetBaseVM status = %v, want %v; err=%v", status.Code(err), codes.Canceled, err)
+	}
+
+	got, err := srv.GetBaseVM(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("queued VM was consumed by the canceled call: %v", err)
+	}
+	assertVM(t, got, offered)
 }
 
 func TestServerGetBaseVMHonorsDeadline(t *testing.T) {

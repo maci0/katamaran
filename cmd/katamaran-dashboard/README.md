@@ -77,14 +77,15 @@ Non-2xx responses:
 | `400` | Missing, unknown, or invalid form field |
 | `403` | A pod namespace is outside `KATAMARAN_ALLOWED_NAMESPACES` |
 | `409` | A migration is already running; the body carries its `migration_id` |
+| `413` | Body larger than 1 MB |
 | `415` | Body sent with a content type other than `application/x-www-form-urlencoded` |
 | `503` | No Kubernetes client is wired, or the source pod cannot be resolved |
 
 API conventions:
 
-- State-changing `/api/*` endpoints accept `application/x-www-form-urlencoded` request bodies. Empty-body calls may pass parameters in the query string only where the endpoint description says so.
+- State-changing `/api/*` endpoints accept `application/x-www-form-urlencoded` request bodies, capped at 1 MB (`413` above that). Empty-body calls may pass parameters in the query string only where the endpoint description says so.
 - JSON responses set `Cache-Control: no-store`; errors use `{"error":"..."}` and may include endpoint-specific fields such as `migration_id`, `loadgen_type`, or `allow`.
-- Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values. `/api/ping` and `/api/httpgen` take `target` from the body or the query string and apply the same one-field allowlist to both.
+- Unknown form fields are rejected with `400 Bad Request` so typos do not silently run a migration with defaulted values. `/api/ping` and `/api/httpgen` take `target` from the body or the query string and apply the same one-field allowlist to both. `/api/pods`, `/api/nodes`, and `/api/history` take no parameters; a query parameter on any of them answers `400` naming the field.
 - List endpoints (`/api/pods`, `/api/nodes`, `/api/history`, and the `logs`, `pings`, and `history` arrays in `/api/status`) answer `[]` on an empty result, never `null`, so clients can iterate them without a nil check.
 - A wrong method on a known `/api/*` path answers `405` with an `Allow` header and the same `{"error":...}` envelope; an unknown `/api/*` path answers `404`.
 
