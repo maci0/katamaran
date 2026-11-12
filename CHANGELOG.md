@@ -22,6 +22,12 @@ workflow refuses to publish a tag that has no section below.
   linked ELF and the Go build ID no longer changes between otherwise
   identical builds. The four Dockerfiles set `GOTOOLCHAIN=local` and use
   the same linker flags.
+- A retried migration whose source Job create had already been persisted
+  (the API server answered `AlreadyExists` after a lost response) failed
+  the whole migration and deleted the running destination Job. The source
+  Job name is the migration ID, so an existing Job is the same submission
+  and is now treated as success. A genuine create failure still removes
+  the destination Job.
 
 ## [0.8.1] - 2026-10-15
 

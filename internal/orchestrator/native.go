@@ -302,9 +302,8 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			n.cleanupDestJob(ctx, destJob.Name, "source job re-render failed")
 			return "", fmt.Errorf("re-render source job: %w", err)
 		}
-		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
-			return "", fmt.Errorf("create source job: %w", err)
+		if err := n.createSourceJob(ctx, srcJob, destJob.Name); err != nil {
+			return "", err
 		}
 		emitStarting(PhaseSrcStarting)
 		slog.Info("Auto-select: migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "source_node", req.SourceNode, "dest_node", req.DestNode, "namespace", n.namespace)
@@ -316,9 +315,8 @@ func (n *native) Apply(ctx context.Context, req Request) (MigrationID, error) {
 			return n.joinInFlight(joined, req), nil
 		}
 		emitStarting(PhaseDestStarting)
-		if _, err := n.client.BatchV1().Jobs(n.namespace).Create(ctx, srcJob, metav1.CreateOptions{}); err != nil {
-			n.cleanupDestJob(ctx, destJob.Name, "source create failed; manual cleanup may be required")
-			return "", fmt.Errorf("create source job: %w", err)
+		if err := n.createSourceJob(ctx, srcJob, destJob.Name); err != nil {
+			return "", err
 		}
 		emitStarting(PhaseSrcStarting)
 		slog.Info("Migration jobs created", "migration_id", id, "source_job", srcJob.Name, "dest_job", destJob.Name, "namespace", n.namespace)
